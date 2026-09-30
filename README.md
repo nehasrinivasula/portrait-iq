@@ -25,9 +25,9 @@ are intentionally unimplemented stubs — see `backend/README.md`'s
 
 ## Team
 
-Neha Srinivasula: Product Owner
-Ashley Rong: Scrum Master
-Hudson Treinen: UX
-Abhijay Movva: Demo Coordinator
-Chang Zhou: Scribe
-Qiancheng Yang: Testing Lead
+- Neha Srinivasula: Product Owner
+- Ashley Rong: Scrum Master
+- Hudson Treinen: UX
+- Abhijay Movva: Demo Coordinator
+- Chang Zhou: Scribe
+- Qiancheng Yang: Testing Lead
