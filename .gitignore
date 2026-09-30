@@ -1,4 +1,30 @@
-# Byte-compiled / optimized / DLL files
+# --- Portrait IQ specific ---
+
+# SQLite dev database (config.py default: sqlite:///./portrait_iq.db)
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+
+# Local env overrides (see .env.example — that file IS committed)
+.env
+
+# Anything a collector run or manual capture produces locally.
+# Packaged diagnostic zips can contain PHI/PII (per the requirements doc's
+# privacy section) and must never be committed, even from a lab run.
+/data/
+/captures/
+*.pcap
+*.pcapng
+*.zip
+
+# GE-provided material: manuals, branding assets, real log exports.
+# Keep these out of git entirely — share via Drive/Slack instead.
+/manuals/
+/branding/
+
+# --- Byte-compiled / optimized / DLL files ---
 __pycache__/
 *.py[codz]
 *$py.class
@@ -148,7 +174,6 @@ activemq-data/
 *.sage.py
 
 # Environments
-.env
 .envrc
 .venv
 env/
@@ -216,3 +241,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- OS noise ---
+.DS_Store
+Thumbs.db
