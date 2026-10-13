@@ -18,7 +18,7 @@ app/
   db.py                SQLAlchemy engine/session setup
   models.py             ORM tables: Device, Job, NormalizedEvent, Signal, AuditLogEntry
   schemas.py             Pydantic request/response models
-  auth.py                 Stub auth + in-memory session lock (NOT real security yet)
+  auth.py                 Local-demo bearer auth + in-memory session activity tracking
   audit.py                 Audit log helper, used everywhere an action happens
 
   orchestrator/
@@ -68,11 +68,39 @@ tests/
 ## Running it
 
 ```bash
+cd backend
+cp .env.example .env
+# Edit .env: set DEMO_AUTH_USERNAME, DEMO_AUTH_PASSWORD, and AUTH_TOKEN_SECRET.
+# Generate a token secret with: python -c "import secrets; print(secrets.token_urlsafe(32))"
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 # API docs at http://localhost:8000/docs
 pytest tests/
 ```
+
+## Local demo login
+
+This is a local demo implementation, not GE SSO. The one demo user's username,
+password, and token signing secret are read from `backend/.env` (which is
+gitignored). Do not use GE credentials or any real hospital account.
+
+Log in, keep the returned bearer token, and send it with each diagnostic API
+request:
+
+```bash
+curl -X POST http://localhost:8000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"your-demo-user","password":"your-demo-password"}'
+
+curl http://localhost:8000/api/auth/me \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
+`GET /health` is public. Every diagnostic route (`/api/connect`, `/api/devices`,
+`/api/jobs`, job status/findings, and package export) requires
+`Authorization: Bearer <access_token>`. Invalid credentials and missing or
+invalid tokens return safe `401` responses. Tokens expire after
+`AUTH_TOKEN_TTL_SECONDS` (one hour by default).
 
 ## Data & privacy
 
@@ -86,7 +114,7 @@ uses for GE-provided files instead.
 
 ## Deliberately not built yet
 
-- Real auth (`auth.py` is a stub — anyone is "authenticated")
+- GE SSO / production identity-provider integration (the current auth is local-demo only)
 - Real device discovery/SSH/Kubernetes API calls (`collectors/base.py` TODOs)
 - The compute-platform log parser (`parsers/compute_csv.py` — need a sample)
 - Manual/documentation matching (`knowledge/lookup.py` always returns unconfirmed)

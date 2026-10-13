@@ -3,6 +3,7 @@ Central settings. Everything here is a placeholder default for local/lab use —
 override via a .env file before this touches anything resembling production.
 """
 from pydantic_settings import BaseSettings
+from pydantic import SecretStr
 
 
 class Settings(BaseSettings):
@@ -20,6 +21,15 @@ class Settings(BaseSettings):
 
     # Session lock, per the requirements doc's "Security" section (5 minutes).
     session_idle_timeout_seconds: int = 300
+
+    # Local-demo authentication only. These have no defaults so credentials and
+    # signing material can never be accidentally committed to source control.
+    # A future identity-provider integration can replace this configuration and
+    # the token helpers in auth.py without changing protected routes.
+    demo_auth_username: str | None = None
+    demo_auth_password: SecretStr | None = None
+    auth_token_secret: SecretStr | None = None
+    auth_token_ttl_seconds: int = 3600
 
     class Config:
         env_file = ".env"
