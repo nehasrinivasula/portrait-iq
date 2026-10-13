@@ -21,6 +21,22 @@ class Settings(BaseSettings):
     # Session lock, per the requirements doc's "Security" section (5 minutes).
     session_idle_timeout_seconds: int = 300
 
+    # --- Log acquisition (SCRUM-43) ---
+    # Where acquired files land before ingestion. Relative to where uvicorn
+    # runs (backend/). Gitignored: acquired logs can contain PHI/PII.
+    staging_dir: str = "./data/staging"
+    # Objective 1: logs from "a user-selected time range within the last 30 days".
+    acquire_max_days: int = 30
+    # A ZIP with more entries than this is refused (zip-bomb guard).
+    zip_max_members: int = 1000
+
+    # Box (optional). Not secrets, so they live here and in .env. The client
+    # ID / secret are secrets and come from secrets_loader (see SECRETS.md).
+    # Client Credentials Grant needs exactly one of enterprise_id / user_id.
+    box_folder_id: str | None = None
+    box_enterprise_id: str | None = None
+    box_user_id: str | None = None
+
     class Config:
         env_file = ".env"
 

@@ -14,6 +14,7 @@
 # Packaged diagnostic zips can contain PHI/PII (per the requirements doc's
 # privacy section) and must never be committed, even from a lab run.
 /data/
+/backend/data/
 /captures/
 *.pcap
 *.pcapng
