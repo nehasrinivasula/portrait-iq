@@ -9,6 +9,43 @@ Nothing here has been run against real lab hardware. Treat every `TODO` as a
 task, and treat anything that *does* run (the CSV parser, the rule thresholds)
 as provisional, built from the 35 sample log files, not a full spec.
 
+## SCRUM-32 — Login: frontend handoff
+
+This branch provides the backend contract for the Login UI. It is a **local
+demo** authentication flow only; it is not GE SSO and must not use GE or
+hospital credentials.
+
+1. Send `POST /api/auth/login` with JSON:
+
+   ```json
+   {"username": "your-demo-user", "password": "your-demo-password"}
+   ```
+
+   A successful response is `200` and contains:
+
+   ```json
+   {"access_token": "<signed-token>", "token_type": "bearer", "expires_in": 3600}
+   ```
+
+2. Store the token only for the active local-demo session and use it to check
+   whether the user is signed in: `GET /api/auth/me` with
+   `Authorization: Bearer <access_token>`. A `200` response returns the demo
+   user's `username` and `name`.
+
+3. Send the same `Authorization` header on every diagnostic request:
+   `/api/connect`, `/api/devices`, `/api/jobs`, job status, findings, and
+   package export. `GET /health` intentionally needs no token.
+
+Invalid login credentials return `401` with `Invalid username or password.`
+Missing tokens return `401` with `Authentication required.` Invalid or expired
+tokens return `401` with `Invalid or expired bearer token.` If the backend demo
+credentials have not been configured, login returns `503`.
+
+The implementation is in `app/auth.py`; route definitions are in `app/main.py`;
+the request and response shapes are in `app/schemas.py`. This dependency
+boundary is deliberate so a real identity provider can replace the local-demo
+implementation later without changing the frontend's protected-route pattern.
+
 ## Layout
 
 ```
@@ -78,7 +115,7 @@ uvicorn app.main:app --reload
 pytest tests/
 ```
 
-## Local demo login
+## Login setup
 
 This is a local demo implementation, not GE SSO. The one demo user's username,
 password, and token signing secret are read from `backend/.env` (which is
