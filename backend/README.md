@@ -74,6 +74,22 @@ uvicorn app.main:app --reload
 pytest tests/
 ```
 
+## Connectivity preflight
+
+Before starting diagnostics, the backend can run bounded TCP checks against a
+target host. The endpoint returns HTTP 200 even when the target is unreachable;
+inspect the overall status and each port result for the observed reason.
+
+```bash
+curl -X POST http://localhost:8000/api/connectivity-check \
+  -H 'Content-Type: application/json' \
+  -d '{"target":"192.168.0.3","ports":[22,443,6443],"timeout_seconds":3}'
+```
+
+A timeout is reported as potentially filtered or unresponsive. TCP alone cannot
+prove that a remote firewall blocked the port. Requests are limited to 16 unique
+ports and a maximum 10-second timeout per port.
+
 ## Data & privacy
 
 Never commit real log exports, GE service manuals, branding assets, or

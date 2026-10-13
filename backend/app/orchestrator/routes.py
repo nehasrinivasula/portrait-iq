@@ -11,12 +11,47 @@ from app.audit import log_action
 from app.auth import User, get_current_user, is_locked, touch_session
 from app.collectors.base import ResourceLimits
 from app.config import settings
+from app.connectivity.service import check_connectivity
 from app.db import get_db
 from app.models import Device, Job, Signal
 from app.orchestrator.jobs import create_job, run_job
-from app.schemas import ConnectRequest, DeviceOut, JobCreateRequest, JobOut, SignalOut
+from app.schemas import (
+    ConnectRequest,
+    ConnectivityCheckRequest,
+    ConnectivityCheckResponse,
+    DeviceOut,
+    JobCreateRequest,
+    JobOut,
+    SignalOut,
+)
 
 router = APIRouter()
+
+
+@router.post("/connectivity-check", response_model=ConnectivityCheckResponse)
+def connectivity_check(
+    req: ConnectivityCheckRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Run a bounded TCP reachability check before diagnostics start.
+
+    An unreachable result is returned as a successful HTTP response because
+    the check itself completed successfully; callers should inspect `status`
+    and the per-port results.
+    """
+    if is_locked(user.id):
+        raise HTTPException(423, "Session locked — unlock before checking connectivity.")
+
+    response = check_connectivity(req.target, req.ports, req.timeout_seconds)
+    log_action(
+        db,
+        user.id,
+        "connectivity_check",
+        detail=f"target={req.target} ports={req.ports} result={response.status}",
+    )
+    touch_session(user.id)
+    return response
 
 
 @router.post("/connect", response_model=list[DeviceOut])
