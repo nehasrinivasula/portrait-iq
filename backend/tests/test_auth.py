@@ -49,14 +49,14 @@ def test_invalid_login_is_rejected(client: TestClient, demo_credentials):
     )
 
     assert response.status_code == 401
-    assert response.json() == {"detail": "Invalid username or password."}
+    assert response.json() == {"detail": "Invalid username or password.", "code": "invalid_credentials"}
 
 
 def test_protected_route_rejects_missing_token(client: TestClient, demo_credentials):
     response = client.get("/api/devices")
 
     assert response.status_code == 401
-    assert response.json() == {"detail": "Authentication required."}
+    assert response.json() == {"detail": "Authentication required.", "code": "auth_required"}
 
 
 def test_authenticated_protected_route_is_allowed(client: TestClient, demo_credentials):

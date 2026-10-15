@@ -1,0 +1,20 @@
+.prereq { max-width: 760px; margin: 0 auto; padding: 24px 16px; }
+.prereq-banner { padding: 12px 16px; border-radius: 6px; border: 2px solid var(--line); background: var(--panel); font-weight: 700; font-size: 18px; margin-bottom: 16px; }
+.prereq-banner.ok { background: var(--ok-bg); border-color: var(--ok); }
+.prereq-banner.bad { background: var(--error-bg); border-color: var(--error); }
+.prereq-actions { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.prereq-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.prereq-item { background: var(--panel); border: 1px solid var(--line); border-left-width: 6px; border-radius: 6px; padding: 10px 14px; }
+.prereq-item.pass { border-left-color: var(--ok); }
+.prereq-item.fail { border-left-color: var(--error); background: var(--error-bg); }
+.prereq-item.checking { border-left-color: var(--info); }
+.prereq-row { display: flex; justify-content: space-between; gap: 12px; font-weight: 600; }
+.prereq-status { white-space: nowrap; }
+.prereq-msg { margin: 6px 0 0; font-weight: 400; }
+.prereq .btn:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+.app-header .btn:focus-visible { outline-color: #fff; }
+.header-user { display: flex; align-items: center; gap: 20px; }
+.notice { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; background: var(--bg); border: 1px solid var(--line); border-left: 4px solid var(--info); border-radius: 6px; padding: 10px 14px; margin-bottom: 16px; }
+.notice-close { background: none; border: 0; font-size: 24px; line-height: 1; cursor: pointer; padding: 0 4px; color: var(--muted); }
+.prereq-pick { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.prereq-pick input { width: 20px; height: 20px; accent-color: var(--primary); }

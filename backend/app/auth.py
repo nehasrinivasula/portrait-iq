@@ -21,6 +21,17 @@ _last_seen: dict[str, float] = {}
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
+class AuthError(HTTPException):
+    """HTTPException carrying a machine-readable ``code`` the frontend switches on."""
+
+    def __init__(self, status_code: int, detail: str, code: str, headers: dict | None = None):
+        super().__init__(status_code=status_code, detail=detail, headers=headers)
+        self.code = code
+
+
+NOT_CONFIGURED_DETAIL = "Demo authentication is not configured."
+
+
 @dataclass
 class User:
     id: str
@@ -61,9 +72,8 @@ def authenticate_demo_user(username: str, password: str) -> User | None:
     """Validate local-demo credentials from environment variables."""
     configured = _configured_demo_credentials()
     if configured is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Demo authentication is not configured.",
+        raise AuthError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, NOT_CONFIGURED_DETAIL, "not_configured"
         )
 
     configured_username, configured_password, _ = configured
@@ -79,9 +89,8 @@ def create_access_token(user: User) -> tuple[str, int]:
     """Create a signed, expiring token for the local demo."""
     configured = _configured_demo_credentials()
     if configured is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Demo authentication is not configured.",
+        raise AuthError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, NOT_CONFIGURED_DETAIL, "not_configured"
         )
 
     _, _, secret = configured
@@ -95,10 +104,11 @@ def create_access_token(user: User) -> tuple[str, int]:
     return f"v1.{encoded_payload}.{_sign(encoded_payload, secret)}", expires_at
 
 
-def _unauthorized(detail: str) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail=detail,
+def _unauthorized(detail: str, code: str) -> AuthError:
+    return AuthError(
+        status.HTTP_401_UNAUTHORIZED,
+        detail,
+        code,
         headers={"WWW-Authenticate": "Bearer"},
     )
 
@@ -108,15 +118,14 @@ def get_current_user(
 ) -> User:
     """FastAPI dependency that verifies a local-demo bearer token."""
     if credentials is None:
-        raise _unauthorized("Authentication required.")
+        raise _unauthorized("Authentication required.", "auth_required")
 
     try:
         version, encoded_payload, signature = credentials.credentials.split(".")
         configured = _configured_demo_credentials()
         if configured is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Demo authentication is not configured.",
+            raise AuthError(
+                status.HTTP_503_SERVICE_UNAVAILABLE, NOT_CONFIGURED_DETAIL, "not_configured"
             )
         username, _, secret = configured
         expected_signature = _sign(encoded_payload, secret)
@@ -133,7 +142,7 @@ def get_current_user(
     except HTTPException:
         raise
     except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
-        raise _unauthorized("Invalid or expired bearer token.") from None
+        raise _unauthorized("Invalid or expired bearer token.", "token_invalid") from None
 
     return User(id=username, name=username)
 
