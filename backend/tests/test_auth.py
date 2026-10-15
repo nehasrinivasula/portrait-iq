@@ -72,3 +72,29 @@ def test_health_is_public(client: TestClient):
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_login_not_configured_returns_503(client: TestClient, monkeypatch):
+    monkeypatch.setattr(settings, "demo_auth_username", None)
+    response = client.post("/api/auth/login", json={"username": "a", "password": "b"})
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "not_configured"
+
+
+def test_tampered_token_is_rejected(client: TestClient, demo_credentials):
+    token = login(client, demo_credentials)
+    tampered = token[:-4] + ("AAAA" if not token.endswith("AAAA") else "BBBB")
+    response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {tampered}"})
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "token_invalid"
+
+
+def test_expired_token_is_rejected(client: TestClient, demo_credentials, monkeypatch):
+    monkeypatch.setattr(settings, "auth_token_ttl_seconds", -10)
+    token = login(client, demo_credentials)
+    response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "token_invalid"

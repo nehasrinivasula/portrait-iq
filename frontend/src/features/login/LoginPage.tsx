@@ -9,7 +9,7 @@ import "./login.css";
 type Reason = { kind: "error" | "warn"; title: string; body: string };
 
 // Maps backend/network failures to a specific, actionable reason (SCRUM-32).
-function reasonFor(err: unknown): Reason {
+export function reasonFor(err: unknown): Reason {
   if (err instanceof ApiError) {
     const code = err.status === 0 ? "network" : err.code;
     switch (code) {
