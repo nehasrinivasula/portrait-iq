@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useAuth } from '../../auth/AuthContext';
+import { IDLE_LABEL, useAuth } from '../../auth/AuthContext';
 import { CHECKS, runChecks, type CheckResult } from './checks';
 import './prerequisites.css';
 
@@ -86,7 +86,7 @@ export default function PrerequisitesPage() {
         {showIdleNotice && (
           <div className="notice" role="note">
             <span>
-              <strong>Heads up:</strong> you'll be signed out automatically after 5 minutes of
+              <strong>Heads up:</strong> you'll be signed out automatically after {IDLE_LABEL} of
               inactivity.
             </span>
             <button

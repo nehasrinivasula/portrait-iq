@@ -9,7 +9,7 @@ export interface CheckResult {
 }
 
 /** Demo toggle: when true, mocked results include failing items. */
-export const SIMULATE_FAILURES = true;
+const SIMULATE_FAILURES = true;
 
 export const CHECKS = [
   { id: 'docker', label: 'Docker daemon reachable' },

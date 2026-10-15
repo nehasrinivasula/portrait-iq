@@ -7,7 +7,7 @@ export interface SystemInfo {
 }
 
 /** Demo toggle: no backend endpoint exists yet, so this returns mocked values. */
-export const MOCK_SYSTEM_INFO: SystemInfo = {
+const MOCK_SYSTEM_INFO: SystemInfo = {
   hostname: 'piq-box-01',
   boxId: 'PIQ-0001',
   appVersion: '0.1.0-demo',

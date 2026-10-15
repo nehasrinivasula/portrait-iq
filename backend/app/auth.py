@@ -24,7 +24,7 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 class AuthError(HTTPException):
     """HTTPException carrying a machine-readable ``code`` the frontend switches on."""
 
-    def __init__(self, status_code: int, detail: str, code: str, headers: dict | None = None):
+    def __init__(self, status_code: int, detail: str, code: str, headers: dict[str, str] | None = None):
         super().__init__(status_code=status_code, detail=detail, headers=headers)
         self.code = code
 
