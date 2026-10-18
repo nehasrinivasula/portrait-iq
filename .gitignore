@@ -245,3 +245,5 @@ __marimo__/
 # --- OS noise ---
 .DS_Store
 Thumbs.db
+# --- Lab deployment (SCRUM-86): per-person settings ---
+deploy/lab.mk

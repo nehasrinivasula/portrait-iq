@@ -1,0 +1,91 @@
+# Portrait IQ in the lab cluster (SCRUM-86). Applied by `make deploy`, which
+# fills in the __PLACEHOLDERS__ and the namespace; do not apply it by hand.
+#
+# Everything carries the label app.kubernetes.io/name=portrait-iq, which is
+# how `make undeploy` finds and removes it.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: portrait-iq-data
+  labels:
+    app.kubernetes.io/name: portrait-iq
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # Uses the cluster's default storage class. If the claim stays Pending,
+  # run `kubectl get storageclass` on the node: there may be none.
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portrait-iq
+  labels:
+    app.kubernetes.io/name: portrait-iq
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # SQLite on a ReadWriteOnce volume: never two pods at once
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: portrait-iq
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: portrait-iq
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001  # lets the app read the 0440 secret files
+      containers:
+        - name: backend
+          image: __IMAGE__
+          imagePullPolicy: Never  # the lab has no internet: images are imported by `make image-load`
+          ports:
+            - containerPort: 8000
+          env:
+            - name: LOG_EXPORT_URL
+              value: "__LOG_EXPORT_URL__"
+            # Secrets are files, never env values (backend/SECRETS.md).
+            - name: SESSION_SIGNING_KEY_FILE
+              value: /run/secrets/portrait-iq/SESSION_SIGNING_KEY
+          # The pod shares the MiniEdge with the Portrait software and must
+          # not starve it. Raise only after watching real usage.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+            - {name: secrets, mountPath: /run/secrets/portrait-iq, readOnly: true}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: portrait-iq-data
+        - name: tmp
+          emptyDir: {}
+        - name: secrets
+          secret:
+            secretName: portrait-iq-secrets
+            defaultMode: 0440
+            optional: true  # the pod starts before `make secrets` has been run

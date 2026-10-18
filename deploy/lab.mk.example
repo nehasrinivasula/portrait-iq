@@ -1,0 +1,27 @@
+# Copy to deploy/lab.mk (gitignored) and fill in. Values here are not
+# secrets: never put a password or key in this file; secrets go in
+# SECRETS_DIR, one file per secret (backend/SECRETS.md).
+#
+# Run `make api-check` first: it prints the namespace, CPU type and
+# container runtime you need below.
+
+NODE                 = gehc@192.168.0.3
+
+# From the node's "arch=" line: amd64 -> linux/amd64, arm64 -> linux/arm64.
+PLATFORM             =
+
+# From the node's "runtime=" line:
+#   containerd under k3s:     k3s ctr images import -
+#   plain containerd:         ctr -n k8s.io images import -
+#   docker:                   docker load
+IMPORT_CMD           =
+
+# From "Log Export service namespace:".
+LOG_EXPORT_NAMESPACE =
+
+# Our own namespace (created and removed by make deploy / undeploy).
+NAMESPACE            = portrait-iq
+NODE_PORT            = 30080
+
+# Absolute path to a folder outside the repo, e.g. $(HOME)/portrait-iq-secrets
+SECRETS_DIR          =
