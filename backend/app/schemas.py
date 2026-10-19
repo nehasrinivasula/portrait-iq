@@ -2,7 +2,7 @@
 sync with models.py by hand for now; consider generating one from the other
 once the shape stabilizes."""
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
@@ -28,11 +28,24 @@ class DeviceOut(BaseModel):
 
 class JobCreateRequest(BaseModel):
     mode: str = "live"
-    tools: list[str] = []                 # e.g. ["netshoot", "rti"]
-    tshark_mode: Optional[str] = None      # "run" | "import" | None
+    tools: list[str] = []                 # plugin names, e.g. ["netshoot", "tshark"]
+    # Per-plugin options, keyed by plugin name, e.g. {"tshark": {"mode": "import"}}.
+    # Each plugin's configure() validates its own entry.
+    plugin_options: dict[str, dict[str, Any]] = {}
     cpu_limit_pct: Optional[int] = None
     mem_limit_mb: Optional[int] = None
     max_output_mb: Optional[int] = None
+
+
+class PluginOut(BaseModel):
+    name: str
+    display_name: str
+    description: str
+
+
+class PluginListOut(BaseModel):
+    plugins: list[PluginOut]
+    load_errors: dict[str, str] = {}   # module -> error, for plugins that failed to load
 
 
 class JobOut(BaseModel):

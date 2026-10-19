@@ -26,8 +26,10 @@ app/
     jobs.py               Job state machine (queued -> running -> done/failed)
 
   collectors/
-    base.py               Collector interface: resource limits, run(), cleanup()
+    base.py               Plugin contract: configure(), run(), cleanup(), resource limits
+    registry.py            Finds plugins in this package; the orchestrator looks them up by name
     netshoot.py, rti.py, tshark.py, hub_import.py    One file per tool. All stubs.
+                          To add a tool: one new file here with an @register class. Nothing else changes.
 
   ingestion/
     schema.py             NormalizedEvent — the one shape everything downstream reads

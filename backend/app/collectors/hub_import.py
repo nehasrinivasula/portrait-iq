@@ -15,10 +15,14 @@ becomes real, it plugs in here as a second, non-manual mode — this file
 is where that change would live, not a new top-level collector.
 """
 from app.collectors.base import Collector, CollectorResult
+from app.collectors.registry import register
 
 
+@register
 class HubImportCollector(Collector):
     name = "hub_import"
+    display_name = "Hub log import"
+    description = "Accepts a hub log a field engineer already pulled by hand."
 
     def run(self, target_ip: str) -> CollectorResult:
         raise NotImplementedError(

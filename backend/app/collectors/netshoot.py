@@ -8,10 +8,14 @@ MiniEdge P360 (namespace `portrait`), exec the actual checks (e.g. nc -zv,
 dig, traceroute), capture stdout, then delete the pod in cleanup().
 """
 from app.collectors.base import Collector, CollectorResult
+from app.collectors.registry import register
 
 
+@register
 class NetshootCollector(Collector):
     name = "netshoot"
+    display_name = "Netshoot"
+    description = "Network tests from inside the cluster: DNS, ports, routes."
 
     def run(self, target_ip: str) -> CollectorResult:
         raise NotImplementedError(
