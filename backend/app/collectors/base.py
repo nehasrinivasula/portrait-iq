@@ -15,8 +15,8 @@ Lifecycle, enforced by orchestrator/jobs.py:
   3. cleanup()           tear down whatever run() created. Always called,
                          also after a failure in this or another plugin.
 
-To add a plugin, drop a module into this package with a Collector subclass
-decorated with @register (see registry.py). Nothing else changes.
+To add a plugin, write a Collector subclass in a new module in this package
+and add one register() line in registry.py. Nothing else changes.
 
 Nothing here actually reaches a device yet: every built-in run() is a stub.
 """

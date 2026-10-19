@@ -13,10 +13,8 @@ PHI/PII, per the requirements doc's privacy section — don't flip that
 default without an explicit, logged reason.
 """
 from app.collectors.base import Collector, CollectorResult, PluginConfigError
-from app.collectors.registry import register
 
 
-@register
 class TsharkCollector(Collector):
     name = "tshark"
     display_name = "Wireshark / tshark"

@@ -2,30 +2,14 @@
 Plugin registry (SCRUM-38). The orchestrator looks plugins up here by name
 and never imports a plugin module directly.
 
-To add a plugin, create one new module in app/collectors/:
+To add a plugin, write a Collector subclass in its own module in
+app/collectors/, then add one register() line in _register_defaults() below.
+Nothing in the orchestrator, the API or the other plugins changes.
 
-    from app.collectors.base import Collector, CollectorResult
-    from app.collectors.registry import register
-
-    @register
-    class PingPlugin(Collector):
-        name = "ping"
-        display_name = "Ping"
-        description = "Checks that the target answers ICMP echo."
-
-        def run(self, target_ip): ...
-        def cleanup(self): ...
-
-discover() imports every module in the package, and @register adds the
-class. No existing plugin, the orchestrator or the API changes.
-
-A module that fails to import is logged and listed in load_errors; the
-other plugins still load, so one broken plugin cannot take the tool down.
+Same style as the log-source registry (sources/registry.py): one explicit
+list, so every available plugin is visible in one place.
 """
-import importlib
 import inspect
-import logging
-import pkgutil
 from typing import Any
 
 from app.collectors.base import (
@@ -36,10 +20,6 @@ from app.collectors.base import (
     ResourceLimits,
 )
 
-log = logging.getLogger(__name__)
-
-DEFAULT_PACKAGE = "app.collectors"
-_NOT_PLUGINS = {"base", "registry"}
 
 
 class UnknownPluginError(PluginError):
@@ -49,8 +29,6 @@ class UnknownPluginError(PluginError):
 class PluginRegistry:
     def __init__(self) -> None:
         self._plugins: dict[str, type[Collector]] = {}
-        self.load_errors: dict[str, str] = {}   # module name -> error message
-        self._discovered: set[str] = set()
 
     # -- registration ------------------------------------------------------
 
@@ -74,23 +52,6 @@ class PluginRegistry:
             )
         self._plugins[cls.name] = cls
         return cls
-
-    def discover(self, package: str = DEFAULT_PACKAGE) -> None:
-        """Import every module in `package` so their @register calls run.
-        Safe to call more than once."""
-        if package in self._discovered:
-            return
-        pkg = importlib.import_module(package)
-        for info in pkgutil.iter_modules(pkg.__path__):
-            if info.name in _NOT_PLUGINS or info.name.startswith("_"):
-                continue
-            module_name = f"{package}.{info.name}"
-            try:
-                importlib.import_module(module_name)
-            except Exception as exc:  # noqa: BLE001  one bad plugin must not stop the rest
-                self.load_errors[module_name] = f"{type(exc).__name__}: {exc}"
-                log.error("plugin module %s failed to load: %s", module_name, exc)
-        self._discovered.add(package)
 
     # -- lookup ------------------------------------------------------------
 
@@ -138,10 +99,27 @@ class PluginRegistry:
 
 
 registry = PluginRegistry()
-register = registry.register
+
+
+def register(cls: type[Collector]) -> type[Collector]:
+    return registry.register(cls)
 
 
 def get_registry() -> PluginRegistry:
-    """The shared registry with the built-in package already discovered."""
-    registry.discover()
+    """The shared registry, with the built-in plugins registered."""
     return registry
+
+
+def _register_defaults() -> None:
+    from app.collectors.hub_import import HubImportCollector
+    from app.collectors.netshoot import NetshootCollector
+    from app.collectors.rti import RtiCollector
+    from app.collectors.tshark import TsharkCollector
+
+    register(HubImportCollector)
+    register(NetshootCollector)
+    register(RtiCollector)
+    register(TsharkCollector)
+
+
+_register_defaults()

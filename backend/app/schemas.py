@@ -45,7 +45,6 @@ class PluginOut(BaseModel):
 
 class PluginListOut(BaseModel):
     plugins: list[PluginOut]
-    load_errors: dict[str, str] = {}   # module -> error, for plugins that failed to load
 
 
 class JobOut(BaseModel):

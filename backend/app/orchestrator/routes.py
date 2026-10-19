@@ -64,7 +64,6 @@ def list_plugins():
             PluginOut(name=p.name, display_name=p.display_name or p.name, description=p.description)
             for p in reg.all()
         ],
-        load_errors=reg.load_errors,
     )
 
 

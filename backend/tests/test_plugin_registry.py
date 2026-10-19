@@ -1,12 +1,10 @@
 """
 SCRUM-38: plugin contract and registry. The key acceptance check is
-test_drop_in_plugin_runs_without_core_changes: a brand-new module in a
-package is discovered, configured, run and cleaned up by the orchestrator
-with no edit to any existing plugin, the orchestrator or the API.
+test_new_plugin_needs_only_a_register_line: a brand-new plugin class is
+registered and then configured, run and cleaned up by the orchestrator with
+no edit to any existing plugin, the orchestrator or the API.
 """
 import json
-import sys
-import textwrap
 
 import pytest
 from fastapi import HTTPException
@@ -21,7 +19,7 @@ from app.collectors.base import (
     PluginConfigError,
     ResourceLimits,
 )
-from app.collectors.registry import PluginRegistry, UnknownPluginError, get_registry, registry
+from app.collectors.registry import PluginRegistry, UnknownPluginError, get_registry
 from app.collectors.tshark import TsharkCollector
 from app.db import Base
 from app.orchestrator import routes
@@ -39,33 +37,6 @@ def db():
     session = sessionmaker(bind=engine)()
     yield session
     session.close()
-
-
-@pytest.fixture
-def restore_global_registry():
-    """Tests that discover extra packages must not leak plugins into others."""
-    saved = (dict(registry._plugins), dict(registry.load_errors), set(registry._discovered))
-    yield registry
-    registry._plugins, registry.load_errors, registry._discovered = (
-        saved[0], saved[1], saved[2]
-    )
-
-
-def _make_package(tmp_path, monkeypatch, name, modules: dict[str, str]):
-    pkg = tmp_path / name
-    pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    for mod, code in modules.items():
-        (pkg / f"{mod}.py").write_text(textwrap.dedent(code))
-    monkeypatch.syspath_prepend(str(tmp_path))
-
-
-@pytest.fixture
-def cleanup_modules():
-    before = set(sys.modules)
-    yield
-    for name in set(sys.modules) - before:
-        del sys.modules[name]
 
 
 # Test plugins -------------------------------------------------------------
@@ -115,76 +86,33 @@ def _job(db, tools):
     return create_job(db, mode="live", tools=tools, limits=LIMITS)
 
 
-# Discovery ----------------------------------------------------------------
+# Registry contents ------------------------------------------------------
 
-def test_builtin_plugins_are_discovered():
-    reg = get_registry()
-    assert BUILTINS <= set(reg.names())
-    assert reg.load_errors == {}
+def test_builtin_plugins_are_registered():
+    assert BUILTINS <= set(get_registry().names())
 
 
-def test_drop_in_plugin_runs_without_core_changes(
-    tmp_path, monkeypatch, db, restore_global_registry, cleanup_modules
-):
-    _make_package(tmp_path, monkeypatch, "extplugins", {"ping": """
-        from app.collectors.base import Collector, CollectorResult
-        from app.collectors.registry import register
+def test_new_plugin_needs_only_a_register_line(db):
+    """A plugin the orchestrator has never seen: one register() call (the
+    line that would go in _register_defaults) and run_job handles it."""
+    events = []
 
-        EVENTS = []
+    class PingPlugin(Collector):
+        name = "ping"
 
-        @register
-        class PingPlugin(Collector):
-            name = "ping"
-            display_name = "Ping"
+        def run(self, target_ip):
+            events.append(("run", target_ip))
+            return CollectorResult(tool=self.name)
 
-            def run(self, target_ip):
-                EVENTS.append(("run", target_ip))
-                return CollectorResult(tool=self.name)
+        def cleanup(self):
+            events.append(("cleanup",))
 
-            def cleanup(self):
-                EVENTS.append(("cleanup",))
-    """})
-
-    reg = restore_global_registry
-    reg.discover("extplugins")
-    assert "ping" in reg.names()
+    reg = PluginRegistry()
+    reg.register(PingPlugin)
 
     job = run_job(db, _job(db, ["ping"]), "192.0.2.10", registry=reg)
     assert job.status == "done"
-    events = sys.modules["extplugins.ping"].EVENTS
     assert events == [("run", "192.0.2.10"), ("cleanup",)]
-
-
-def test_broken_plugin_module_does_not_stop_the_others(
-    tmp_path, monkeypatch, cleanup_modules
-):
-    # Send this package's @register calls to a fresh registry, not the global one.
-    reg = PluginRegistry()
-    monkeypatch.setattr("app.collectors.registry.register", reg.register)
-    _make_package(tmp_path, monkeypatch, "mixedplugins", {
-        "broken": "raise ImportError('missing dependency')\n",
-        "fine": """
-            from app.collectors.base import Collector
-            from app.collectors.registry import register
-
-            @register
-            class Fine(Collector):
-                name = "fine"
-                def run(self, target_ip): ...
-                def cleanup(self): ...
-        """,
-    })
-
-    reg.discover("mixedplugins")
-    assert reg.names() == ["fine"]
-    assert "missing dependency" in reg.load_errors["mixedplugins.broken"]
-
-
-def test_discover_is_idempotent():
-    reg = get_registry()
-    before = reg.names()
-    reg.discover()
-    assert reg.names() == before
 
 
 # Registration rules -------------------------------------------------------
