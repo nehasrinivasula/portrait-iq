@@ -4,7 +4,7 @@ once the shape stabilizes."""
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ConnectRequest(BaseModel):
@@ -27,6 +27,11 @@ class DeviceOut(BaseModel):
 
 
 class JobCreateRequest(BaseModel):
+    # Unknown fields are an error, not silently ignored: a client still
+    # sending the old tshark_mode gets a 422 naming it, instead of a job
+    # that quietly runs with defaults.
+    model_config = ConfigDict(extra="forbid")
+
     mode: str = "live"
     tools: list[str] = []                 # plugin names, e.g. ["netshoot", "tshark"]
     # Per-plugin options, keyed by plugin name, e.g. {"tshark": {"mode": "import"}}.
@@ -45,6 +50,7 @@ class PluginOut(BaseModel):
 
 class PluginListOut(BaseModel):
     plugins: list[PluginOut]
+    load_errors: dict[str, str] = {}   # plugins skipped at startup, and why
 
 
 class JobOut(BaseModel):

@@ -8,6 +8,7 @@ import json
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -89,7 +90,29 @@ def _job(db, tools):
 # Registry contents ------------------------------------------------------
 
 def test_builtin_plugins_are_registered():
-    assert BUILTINS <= set(get_registry().names())
+    reg = get_registry()
+    assert BUILTINS <= set(reg.names())
+    assert reg.load_errors == {}
+
+
+def test_broken_plugin_entries_are_skipped_not_fatal():
+    reg = PluginRegistry()
+    reg.load([
+        "app.collectors.netshoot:NetshootCollector",   # fine
+        "app.collectors.does_not_exist:Anything",      # module fails to import
+        "app.collectors.rti:NoSuchClass",              # class missing
+        "app.collectors.base:Collector",               # not a usable plugin (abstract)
+        "no-colon-here",                               # malformed entry
+        "app.collectors.tshark:TsharkCollector",       # fine, after the failures
+    ])
+    assert reg.names() == ["netshoot", "tshark"]
+    assert set(reg.load_errors) == {
+        "app.collectors.does_not_exist:Anything",
+        "app.collectors.rti:NoSuchClass",
+        "app.collectors.base:Collector",
+        "no-colon-here",
+    }
+    assert "ModuleNotFoundError" in reg.load_errors["app.collectors.does_not_exist:Anything"]
 
 
 def test_new_plugin_needs_only_a_register_line(db):
@@ -216,8 +239,15 @@ def test_unknown_plugin_fails_the_job(db, local_registry):
 
 # API ----------------------------------------------------------------------
 
+def test_job_request_rejects_unknown_fields():
+    # The old tshark_mode field must fail loudly, not be silently ignored.
+    with pytest.raises(ValidationError, match="tshark_mode"):
+        JobCreateRequest(tools=["tshark"], tshark_mode="import")
+
+
 def test_list_plugins_endpoint():
     out = routes.list_plugins()
+    assert out.load_errors == {}
     assert BUILTINS <= {p.name for p in out.plugins}
     tshark = next(p for p in out.plugins if p.name == "tshark")
     assert tshark.display_name == "Wireshark / tshark"

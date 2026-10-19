@@ -3,13 +3,17 @@ Plugin registry (SCRUM-38). The orchestrator looks plugins up here by name
 and never imports a plugin module directly.
 
 To add a plugin, write a Collector subclass in its own module in
-app/collectors/, then add one register() line in _register_defaults() below.
+app/collectors/, then add one "module:Class" line to PLUGINS below.
 Nothing in the orchestrator, the API or the other plugins changes.
 
-Same style as the log-source registry (sources/registry.py): one explicit
-list, so every available plugin is visible in one place.
+One explicit list, like the log-source registry (sources/registry.py), so
+every available plugin is visible in one place. Each entry is loaded on its
+own: a plugin that fails to import or is invalid is logged and listed in
+load_errors, and the app still starts with the others.
 """
+import importlib
 import inspect
+import logging
 from typing import Any
 
 from app.collectors.base import (
@@ -20,6 +24,15 @@ from app.collectors.base import (
     ResourceLimits,
 )
 
+log = logging.getLogger(__name__)
+
+# Built-in plugins, as "module:Class". Add new plugins here.
+PLUGINS = [
+    "app.collectors.hub_import:HubImportCollector",
+    "app.collectors.netshoot:NetshootCollector",
+    "app.collectors.rti:RtiCollector",
+    "app.collectors.tshark:TsharkCollector",
+]
 
 
 class UnknownPluginError(PluginError):
@@ -29,6 +42,7 @@ class UnknownPluginError(PluginError):
 class PluginRegistry:
     def __init__(self) -> None:
         self._plugins: dict[str, type[Collector]] = {}
+        self.load_errors: dict[str, str] = {}   # "module:Class" -> why it was skipped
 
     # -- registration ------------------------------------------------------
 
@@ -52,6 +66,21 @@ class PluginRegistry:
             )
         self._plugins[cls.name] = cls
         return cls
+
+    def load(self, paths: list[str]) -> None:
+        """Import and register each "module:Class" entry independently.
+        A failing entry is recorded in load_errors and skipped; it never
+        stops the other plugins (or the app) from loading."""
+        for path in paths:
+            try:
+                module_name, sep, class_name = path.partition(":")
+                if not (sep and module_name and class_name):
+                    raise ValueError("expected 'module:Class'")
+                cls = getattr(importlib.import_module(module_name), class_name)
+                self.register(cls)
+            except Exception as exc:  # noqa: BLE001  one bad plugin must not stop the rest
+                self.load_errors[path] = f"{type(exc).__name__}: {exc}"
+                log.error("plugin %s skipped: %s", path, exc)
 
     # -- lookup ------------------------------------------------------------
 
@@ -99,6 +128,7 @@ class PluginRegistry:
 
 
 registry = PluginRegistry()
+registry.load(PLUGINS)
 
 
 def register(cls: type[Collector]) -> type[Collector]:
@@ -106,20 +136,5 @@ def register(cls: type[Collector]) -> type[Collector]:
 
 
 def get_registry() -> PluginRegistry:
-    """The shared registry, with the built-in plugins registered."""
+    """The shared registry, with the built-in plugins loaded."""
     return registry
-
-
-def _register_defaults() -> None:
-    from app.collectors.hub_import import HubImportCollector
-    from app.collectors.netshoot import NetshootCollector
-    from app.collectors.rti import RtiCollector
-    from app.collectors.tshark import TsharkCollector
-
-    register(HubImportCollector)
-    register(NetshootCollector)
-    register(RtiCollector)
-    register(TsharkCollector)
-
-
-_register_defaults()

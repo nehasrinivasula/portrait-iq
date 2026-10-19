@@ -29,7 +29,7 @@ app/
     base.py               Plugin contract: configure(), run(), cleanup(), resource limits
     registry.py            The list of plugins; the orchestrator looks them up by name
     netshoot.py, rti.py, tshark.py, hub_import.py    One file per tool. All stubs.
-                          To add a tool: one new file here + one register() line in registry.py.
+                          To add a tool: one new file here + one line in PLUGINS in registry.py.
 
   ingestion/
     schema.py             NormalizedEvent — the one shape everything downstream reads

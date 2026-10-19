@@ -16,7 +16,7 @@ Lifecycle, enforced by orchestrator/jobs.py:
                          also after a failure in this or another plugin.
 
 To add a plugin, write a Collector subclass in a new module in this package
-and add one register() line in registry.py. Nothing else changes.
+and add one line to PLUGINS in registry.py. Nothing else changes.
 
 Nothing here actually reaches a device yet: every built-in run() is a stub.
 """
