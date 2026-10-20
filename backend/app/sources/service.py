@@ -85,12 +85,17 @@ def _utc(dt: datetime) -> datetime:
 
 
 def resolve_window(since: datetime | None, until: datetime | None, now: datetime | None = None,
-                   max_days: int | None = None) -> tuple[datetime, datetime]:
-    """Defaults to the full allowed window. Naive datetimes are taken as UTC."""
+                   max_days: int | None = None,
+                   default_lookback: timedelta | None = None) -> tuple[datetime, datetime]:
+    """Defaults to the full allowed window, or to default_lookback when the
+    source sets one. Naive datetimes are taken as UTC."""
     now = _utc(now or datetime.now(timezone.utc))
     max_days = max_days or settings.acquire_max_days
     earliest = now - timedelta(days=max_days)
-    since = _utc(since) if since else earliest
+    if since:
+        since = _utc(since)
+    else:
+        since = max(earliest, now - default_lookback) if default_lookback else earliest
     until = _utc(until) if until else now
     if since >= until:
         raise WindowError("The start of the time range must be before the end.")
@@ -229,7 +234,7 @@ def acquire(
     """Pull every new file from source in [since, until]. Raises WindowError
     for a bad range and SourceError if the source cannot be listed at all;
     per-file problems are reported in the result instead."""
-    since, until = resolve_window(since, until, now=now)
+    since, until = resolve_window(since, until, now=now, default_lookback=source.default_lookback)
     status = source.is_configured()
     if not status.ok:
         raise SourceError(status.reason)

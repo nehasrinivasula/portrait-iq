@@ -34,6 +34,8 @@ app/
     base.py               LogSource interface every source implements
     registry.py            The list of sources; add one line here per new source
     local_import.py         Local file / folder / ZIP / upload. Works offline
+    axone_client.py          Client for GE's log export API (all 8 endpoints)
+    axone_export.py          Log source that pulls hour by hour from that API
     box.py                   Optional Box folder (needs internet + credentials)
     service.py                acquire(): only-new-files, limits, safe ZIPs, audit
     routes.py                  /api/sources endpoints
@@ -89,7 +91,8 @@ pytest tests/
 
 Every way of getting raw logs into the tool is a `LogSource`
 (`app/sources/base.py`). The acquisition service lists what a source has in
-the requested time range (default and maximum: last 30 days), skips anything
+the requested time range (maximum: last 30 days; default 30 days, or 24 hours
+for the log export API), skips anything
 already in the `acquired_files` manifest, downloads the rest into
 `data/staging/`, unpacks ZIPs safely, and hands CSVs to
 `ingestion.pipeline.ingest_file`. Running it twice pulls nothing new; a file
@@ -100,7 +103,7 @@ and retried next run without losing the others. Every run is audit-logged.
 |---|---|---|
 | `local` | Working | Nothing. Path to a file/folder/ZIP, or upload through the API |
 | `box` | Working against a mocked Box; untested against a real folder | Internet, `BOX_CLIENT_ID` / `BOX_CLIENT_SECRET`, `BOX_FOLDER_ID`, one of `BOX_ENTERPRISE_ID` / `BOX_USER_ID` |
-| Portrait diags | Not built yet | Waiting on what the `/portrait/diags` export requests look like |
+| `axone` | Working against a fake of the API; to be verified on the lab system | `AXONE_BASE_URL` pointing at the log export API (see below) |
 
 ```
 GET  /api/sources                  sources + whether each is usable (and why not)
@@ -112,6 +115,37 @@ POST /api/sources/local/upload     multipart files / ZIPs
 
 To add a source: subclass `LogSource`, add a `register()` line in
 `sources/registry.py`. Nothing else changes.
+
+### Log export API (`axone`)
+
+GE's Axone log export API (port 9200) is the preferred source: it returns the
+same CSV format as the "all device log" exports. It only answers from inside
+the Kubernetes cluster. The source splits a range into the windows the API
+accepts (1 hour for all devices, up to 7 days for one device), pulls only
+complete hours, makes one call at a time with a short pause, and records
+each window so it is never pulled twice. Optional `options`:
+`{"device_uuid": "...", "event_category": "3"}` (category is the API's
+integer code; the name mapping is not confirmed yet).
+
+Reaching it from a laptop on the lab network (development only):
+
+```bash
+# 1. On the MiniEdge, as root: find the service, then forward it to the box itself
+kubectl get svc -A | grep axone-log-export
+kubectl port-forward -n pm svc/axone-log-export-tcp 9200:9200
+
+# 2. On the laptop: carry that port over SSH
+ssh -N -L 9200:localhost:9200 gehc@192.168.0.3
+
+# 3. Start the backend pointed at it
+AXONE_BASE_URL=http://localhost:9200 uvicorn app.main:app
+```
+
+Settings: `AXONE_BASE_URL`, `AXONE_TIMEOUT_SECONDS` (60),
+`AXONE_REQUEST_DELAY_SECONDS` (0.5), `AXONE_TIMEZONE` (UTC, the timezone the
+API's timestamps are in), `AXONE_DEFAULT_LOOKBACK_HOURS` (24). Running inside
+the cluster later only changes `AXONE_BASE_URL` to
+`http://axone-log-export-tcp.pm.svc.cluster.local:9200`.
 
 PHI/PII collection point: acquired files are raw logs and may contain
 patient or staff data. They stay in the gitignored staging folder and are

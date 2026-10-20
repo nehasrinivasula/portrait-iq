@@ -94,7 +94,7 @@ def preview_files(
 ):
     source = _source(source_id)
     try:
-        since, until = resolve_window(since, until)
+        since, until = resolve_window(since, until, default_lookback=source.default_lookback)
         remotes = source.list_available(since, until, {"path": path} if path else {})
     except (WindowError, SourceError) as e:
         raise HTTPException(400, str(e))

@@ -21,10 +21,12 @@ def all_sources() -> list[LogSource]:
 
 
 def _register_defaults() -> None:
+    from app.sources.axone_export import AxoneLogExportSource
     from app.sources.box import BoxSource
     from app.sources.local_import import LocalImportSource
 
     register(LocalImportSource())
+    register(AxoneLogExportSource())
     register(BoxSource())
 
 

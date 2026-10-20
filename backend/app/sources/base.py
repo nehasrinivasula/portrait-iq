@@ -15,7 +15,7 @@ those into NormalizedEvent rows is ingestion's job (pipeline.ingest_file).
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # File types worth acquiring. ZIPs are unpacked by the acquisition service.
@@ -61,6 +61,10 @@ class LogSource(ABC):
     id: str = "unnamed"
     display_name: str = "Unnamed source"
     needs_network: bool = False      # False means it works offline
+    # How far back to look when the caller gives no start time. None means
+    # the global limit (settings.acquire_max_days). Sources where each window
+    # is an API call set something smaller.
+    default_lookback: timedelta | None = None
 
     @abstractmethod
     def is_configured(self) -> SourceStatus:

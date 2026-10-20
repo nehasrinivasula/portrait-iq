@@ -20,7 +20,9 @@ import pandas as pd
 
 from app.ingestion.schema import NormalizedEvent
 
-_PROC_STRIP = re.compile(r"\[.*")  # "axone_logger[777:0]" -> "axone_logger"
+# "axone_logger[777:0]" (sample exports) and "axone-log-export:4521:main"
+# (log export API) both -> the bare process name.
+_PROC_STRIP = re.compile(r"\[.*|:\d+:.*$")
 
 
 def sniff(path: Path) -> bool:
