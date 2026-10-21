@@ -6,5 +6,6 @@ pydantic-settings==2.5.2
 pandas==2.2.2
 python-multipart==0.0.9
 pytest==8.3.3
+tzdata==2024.2       # timezone database for zoneinfo on Windows (AXONE_TIMEZONE)
 httpx==0.28.1        # Axone log export API client (also used by FastAPI TestClient)
 box-sdk-gen==1.17.0  # optional Box log source (SCRUM-43)

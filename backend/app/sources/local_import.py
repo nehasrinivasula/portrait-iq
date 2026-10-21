@@ -10,8 +10,10 @@ field engineer pulled manually comes in through here.
 remote_id is the file's sha256, so importing the same file twice is skipped
 even if it was renamed or copied somewhere else.
 
-No time filtering at listing time: modified times on copied media are not
-reliable. Apply the time window after parsing instead.
+Local imports are not time-filtered: modified times on copied media are not
+reliable, so every file chosen is imported in full and the since/until range
+is ignored. Filtering by log timestamp would belong in the ingestion
+pipeline (follow-up).
 """
 import hashlib
 import shutil

@@ -29,17 +29,21 @@ from app.config import settings
 from app.ingestion.pipeline import ingest_file
 from app.models import AcquiredFileRecord
 from app.secrets_loader import redact
-from app.sources.base import LogSource, RemoteFile, SourceError
+from app.sources.base import ALLOWED_SUFFIXES, LogSource, RemoteFile, SourceError
 from app.sources.local_import import sha256_of
 
 log = logging.getLogger(__name__)
 
+# Counted as "new" in a run's result.
 SUCCESS_STATUSES = ("acquired", "ingested", "unrecognized")
+# Fully handled: never pulled again. "unrecognized" is NOT here on purpose, so
+# a file pulled before its parser existed is retried once one is added.
+DONE_STATUSES = ("acquired", "ingested")
 # Skipped on the next run. "duplicate" = same bytes as a file we already have
 # under another id; remembered so it is not downloaded again every run.
-SKIP_STATUSES = SUCCESS_STATUSES + ("duplicate",)
-CLOCK_SKEW = timedelta(minutes=5)
-OVER_BUDGET_MSG = "Skipped: this run reached its size limit. Narrow the time range or raise the limit."  # tolerate a laptop clock slightly behind the platform
+SKIP_STATUSES = DONE_STATUSES + ("duplicate",)
+CLOCK_SKEW = timedelta(minutes=5)  # tolerate a laptop clock slightly behind the platform
+OVER_BUDGET_MSG = "Skipped: this run reached its size limit. Narrow the time range or raise the limit."
 
 
 class WindowError(ValueError):
@@ -129,7 +133,7 @@ def _content_seen(db: Session, source: str, sha256: str, exclude_remote_id: str)
         AcquiredFileRecord.source == source,
         AcquiredFileRecord.sha256 == sha256,
         AcquiredFileRecord.remote_id != exclude_remote_id,
-        AcquiredFileRecord.status.in_(SUCCESS_STATUSES),
+        AcquiredFileRecord.status.in_(DONE_STATUSES),
     ).first() is not None
 
 
@@ -157,10 +161,14 @@ def _record(db: Session, remote: RemoteFile, outcome: FileOutcome, sha256: str |
 
 # --- ZIP handling -------------------------------------------------------------
 
+ZIP_LOG_SUFFIXES = ALLOWED_SUFFIXES - {".zip"}  # no nested ZIPs
+
 def safe_extract(zip_path: Path, dest: Path, max_bytes: int, max_members: int | None = None) -> list[Path]:
     """Extract a ZIP without trusting it: refuse entries that would land
     outside dest, symlinks, too many entries, or more than max_bytes once
-    uncompressed (checked while writing, not from the header, which can lie)."""
+    uncompressed (checked while writing, not from the header, which can lie).
+    Only log files (.csv/.log/.txt) are written; anything else in the archive
+    is skipped, so stray documents or binaries never land in staging."""
     max_members = max_members or settings.zip_max_members
     dest = dest.resolve()
     written: list[Path] = []
@@ -171,6 +179,8 @@ def safe_extract(zip_path: Path, dest: Path, max_bytes: int, max_members: int | 
             if len(infos) > max_members:
                 raise SourceError(f"{zip_path.name} has {len(infos)} files; the limit is {max_members}.")
             for info in infos:
+                if Path(info.filename).suffix.lower() not in ZIP_LOG_SUFFIXES:
+                    continue
                 if (info.external_attr >> 16) & 0o170000 == 0o120000:
                     raise SourceError(f"{zip_path.name} contains a symbolic link, which is not allowed.")
                 target = (dest / info.filename).resolve()

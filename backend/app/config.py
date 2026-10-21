@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     axone_timezone: str = "UTC"
     # Default range when no start time is given: one API call per hour.
     axone_default_lookback_hours: int = 24
+    # Wait this long after an hour ends before pulling it, so logs that
+    # devices upload a little late still land in that hour's pull.
+    axone_settle_minutes: int = 15
 
     class Config:
         env_file = ".env"

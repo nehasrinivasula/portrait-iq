@@ -143,9 +143,18 @@ AXONE_BASE_URL=http://localhost:9200 uvicorn app.main:app
 
 Settings: `AXONE_BASE_URL`, `AXONE_TIMEOUT_SECONDS` (60),
 `AXONE_REQUEST_DELAY_SECONDS` (0.5), `AXONE_TIMEZONE` (UTC, the timezone the
-API's timestamps are in), `AXONE_DEFAULT_LOOKBACK_HOURS` (24). Running inside
+API's timestamps are in; confirmed on the lab system), `AXONE_DEFAULT_LOOKBACK_HOURS`
+(24), `AXONE_SETTLE_MINUTES` (15, wait after an hour ends before pulling it,
+for late-arriving logs). Running inside
 the cluster later only changes `AXONE_BASE_URL` to
 `http://axone-log-export-tcp.pm.svc.cluster.local:9200`.
+
+Security note: the local source's `path` option (preview, acquire) reads
+any file or folder the server process can read. That is how thumb-drive
+and folder imports work, and it is acceptable only while the backend runs
+on the field engineer's own laptop bound to localhost (uvicorn's default,
+127.0.0.1). Real authentication and a path allow-list must come before the
+backend is ever exposed on a shared network or deployed as a pod.
 
 PHI/PII collection point: acquired files are raw logs and may contain
 patient or staff data. They stay in the gitignored staging folder and are

@@ -122,7 +122,7 @@ def acquire_logs(source_id: str, req: AcquireRequest, db: Session = Depends(get_
 
 
 @router.post("/local/upload", response_model=AcquisitionOut)
-async def upload_logs(
+def upload_logs(
     files: list[UploadFile] = File(...),
     job_id: str | None = None,
     ingest: bool = True,
@@ -131,7 +131,11 @@ async def upload_logs(
 ):
     """Save uploads to a fresh folder, then acquire that folder through the
     local import source, so uploads get the same dedupe, ZIP checks, limits
-    and audit as everything else."""
+    and audit as everything else.
+
+    Deliberately a plain `def`: acquiring and ingesting a big ZIP takes tens
+    of seconds of blocking work, and FastAPI runs plain routes in a worker
+    thread. As `async def` it would freeze the whole server meanwhile."""
     inbox = Path(settings.staging_dir) / "uploads" / uuid.uuid4().hex[:12]
     limit = settings.default_max_output_mb * 1024 * 1024
     total = 0
@@ -145,7 +149,7 @@ async def upload_logs(
             dest = inbox / f"{i:04d}" / name  # same-named uploads must not overwrite each other
             dest.parent.mkdir(parents=True, exist_ok=True)
             with dest.open("wb") as out:
-                while chunk := await upload.read(1024 * 1024):
+                while chunk := upload.file.read(1024 * 1024):
                     total += len(chunk)
                     if total > limit:
                         raise HTTPException(413, f"Upload is larger than the {settings.default_max_output_mb} MB limit.")

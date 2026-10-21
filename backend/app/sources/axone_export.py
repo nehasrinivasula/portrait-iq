@@ -7,9 +7,10 @@ How a pull works:
   - The requested range is split into windows the API accepts: 1 hour for
     all-device queries (always HH:00:00.000 to HH:59:59.999, because both
     timestamps must be in the same hour), up to 7 days for one device.
-  - Only complete windows are pulled. If it is 14:20, the 14:00 hour is left
-    for later; otherwise it would be recorded as done and 14:20-14:59 would
-    never be fetched.
+  - Only complete, settled windows are pulled. An hour is pulled once it has
+    ended plus AXONE_SETTLE_MINUTES (default 15), so at 15:10 the 14:00 hour
+    is left for later and at 15:20 it is pulled. Pulling earlier would record
+    the hour as done and miss logs devices upload a little late.
   - Each window is one CSV request, saved as a file and handed to the normal
     acquisition flow, so the manifest skips windows already pulled and
     retries windows that failed.
@@ -49,11 +50,14 @@ class AxoneLogExportSource(LogSource):
     needs_network = True
 
     def __init__(self, client_factory: Callable[[], AxoneLogExportClient] | None = None,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
         # Settings are read at call time so the tool starts without them.
+        # sleep and clock are injectable so tests need no real waiting or time.
         self._client_factory = client_factory
         self._client: AxoneLogExportClient | None = None
         self._sleep = sleep
+        self._clock = clock
 
     @property
     def default_lookback(self) -> timedelta:  # type: ignore[override]
@@ -112,9 +116,9 @@ class AxoneLogExportSource(LogSource):
         device, category = self._parse_options(options or {})
         scope = _scope(device, category)
         start = _floor_hour(since)
-        # Complete windows only: never past the start of the current hour.
-        now_hour = _floor_hour(datetime.now(timezone.utc))
-        end = min(_floor_hour(until), now_hour)
+        # Complete, settled windows only (see module docstring).
+        cutoff = self._clock() - timedelta(minutes=settings.axone_settle_minutes)
+        end = min(_floor_hour(until), _floor_hour(cutoff))
 
         step = MAX_DEVICE_RANGE if device else timedelta(hours=1)
         windows: list[RemoteFile] = []
