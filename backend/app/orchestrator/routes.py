@@ -43,15 +43,45 @@ def connectivity_check(
     if is_locked(user.id):
         raise HTTPException(423, "Session locked — unlock before checking connectivity.")
 
-    response = check_connectivity(req.target, req.ports, req.timeout_seconds)
     log_action(
         db,
         user.id,
         "connectivity_check",
-        detail=f"target={req.target} ports={req.ports} result={response.status}",
+        detail=json.dumps(
+            {"target": req.target, "ports": req.ports, "event": "started"},
+            ensure_ascii=True,
+        ),
     )
-    touch_session(user.id)
-    return response
+    try:
+        response = check_connectivity(req.target, req.ports, req.timeout_seconds)
+    except Exception:
+        log_action(
+            db,
+            user.id,
+            "connectivity_check",
+            detail=json.dumps(
+                {"target": req.target, "ports": req.ports, "event": "failed"},
+                ensure_ascii=True,
+            ),
+        )
+        raise
+    else:
+        log_action(
+            db,
+            user.id,
+            "connectivity_check",
+            detail=json.dumps(
+                {
+                    "target": req.target,
+                    "ports": req.ports,
+                    "event": "completed",
+                    "result": response.status,
+                },
+                ensure_ascii=True,
+            ),
+        )
+        touch_session(user.id)
+        return response
 
 
 @router.post("/connect", response_model=list[DeviceOut])

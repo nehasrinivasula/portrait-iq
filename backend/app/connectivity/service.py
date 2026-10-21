@@ -8,13 +8,24 @@ from __future__ import annotations
 
 import errno
 import socket
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 
 from app.schemas import ConnectivityCheckResponse, ConnectivityPortResult
 
 MAX_WORKERS = 8
+DNS_WORKERS = 4
+
+# These executors are shared by every request. This keeps simultaneous checks
+# from multiplying the number of threads and sockets used by the process.
+_DNS_EXECUTOR = ThreadPoolExecutor(max_workers=DNS_WORKERS, thread_name_prefix="connectivity-dns")
+_CONNECT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=MAX_WORKERS,
+    thread_name_prefix="connectivity-tcp",
+)
+_SOCKET_SLOTS = threading.BoundedSemaphore(MAX_WORKERS)
 
 
 @dataclass(frozen=True)
@@ -50,19 +61,29 @@ def _resolve(target: str) -> list[ResolvedEndpoint]:
     return endpoints
 
 
+def _resolve_with_timeout(target: str, timeout_seconds: float) -> list[ResolvedEndpoint]:
+    """Resolve a target without allowing DNS to hold the request indefinitely."""
+    future = _DNS_EXECUTOR.submit(_resolve, target)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError:
+        future.cancel()
+        raise socket.gaierror(socket.EAI_AGAIN, "DNS resolution timed out") from None
+
+
 def _display_addresses(endpoints: list[ResolvedEndpoint]) -> list[str]:
     return list(dict.fromkeys(str(endpoint.address[0]) for endpoint in endpoints))
 
 
 def _status_for_errno(error_number: int) -> tuple[str, str]:
     if error_number == errno.ECONNREFUSED:
-        return "connection_refused", "Host is reachable, but the port refused the connection."
-    if error_number in {errno.ETIMEDOUT, getattr(errno, "EWOULDBLOCK", errno.ETIMEDOUT)}:
+        return "connection_refused", "The connection was refused; no TCP service accepted it."
+    if error_number == errno.ETIMEDOUT:
         return (
             "timeout",
             "Connection timed out; the target may be unresponsive or traffic may be filtered.",
         )
-    if error_number in {errno.EHOSTUNREACH, getattr(errno, "EHOSTDOWN", errno.EHOSTUNREACH)}:
+    if error_number in {errno.EHOSTUNREACH, errno.EHOSTDOWN}:
         return "host_unreachable", "The operating system reported that the host is unreachable."
     if error_number == errno.ENETUNREACH:
         return "network_unreachable", "The operating system reported no route to the network."
@@ -75,6 +96,14 @@ def _status_for_errno(error_number: int) -> tuple[str, str]:
     return "connection_error", f"Connection failed with {description}."
 
 
+def _connect(endpoint: ResolvedEndpoint, port: int, timeout_seconds: float) -> int:
+    """Connect through a small seam that tests can replace without patching socket globally."""
+    with _SOCKET_SLOTS:
+        with socket.socket(endpoint.family, endpoint.socket_type, endpoint.protocol) as client:
+            client.settimeout(timeout_seconds)
+            return client.connect_ex(endpoint.for_port(port))
+
+
 def _check_port(
     port: int,
     endpoints: list[ResolvedEndpoint],
@@ -84,29 +113,28 @@ def _check_port(
     deadline = started + timeout_seconds
     failures: list[tuple[str, str]] = []
 
-    for endpoint in endpoints:
+    for index, endpoint in enumerate(endpoints):
         remaining_seconds = deadline - time.perf_counter()
         if remaining_seconds <= 0:
             failures.append(_status_for_errno(errno.ETIMEDOUT))
             break
+        # Do not let an unresponsive address (commonly an IPv6 address) consume
+        # the budget before another resolved address gets an attempt.
+        endpoint_timeout = remaining_seconds / (len(endpoints) - index)
+        attempt_started = time.perf_counter()
         try:
-            with socket.socket(endpoint.family, endpoint.socket_type, endpoint.protocol) as client:
-                # The request timeout is a budget for the whole port check, not
-                # a fresh timeout for every IPv4/IPv6 address the name resolves to.
-                client.settimeout(remaining_seconds)
-                error_number = client.connect_ex(endpoint.for_port(port))
+            error_number = _connect(endpoint, port, endpoint_timeout)
         except socket.timeout:
             error_number = errno.ETIMEDOUT
         except OSError as exc:
             error_number = exc.errno or errno.EIO
 
-        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         if error_number == 0:
             return ConnectivityPortResult(
                 port=port,
                 status="reachable",
                 message="TCP connection succeeded.",
-                latency_ms=elapsed_ms,
+                latency_ms=round((time.perf_counter() - attempt_started) * 1000, 2),
             )
         failures.append(_status_for_errno(error_number))
 
@@ -136,8 +164,8 @@ def check_connectivity(
 ) -> ConnectivityCheckResponse:
     """Resolve target and check requested TCP ports with bounded concurrency."""
     try:
-        endpoints = _resolve(target)
-    except (socket.gaierror, UnicodeError) as exc:
+        endpoints = _resolve_with_timeout(target, timeout_seconds)
+    except (socket.gaierror, UnicodeError, ValueError) as exc:
         message = f"Target name could not be resolved: {exc}."
         return ConnectivityCheckResponse(
             target=target,
@@ -168,14 +196,11 @@ def check_connectivity(
             ],
         )
 
-    worker_count = min(MAX_WORKERS, len(ports))
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        results = list(
-            executor.map(
-                lambda port: _check_port(port, endpoints, timeout_seconds),
-                ports,
-            )
-        )
+    futures = [
+        _CONNECT_EXECUTOR.submit(_check_port, port, endpoints, timeout_seconds)
+        for port in ports
+    ]
+    results = [future.result() for future in futures]
 
     reachable_count = sum(result.status == "reachable" for result in results)
     if reachable_count == len(results):
