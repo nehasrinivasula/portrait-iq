@@ -148,8 +148,11 @@ def _cleanup_all(db: Session, job: Job, started: list[Collector]) -> bool:
         except Exception as e:
             failed = True
             log.exception("job %s: cleanup of plugin %s failed", job.id, plugin.name)
-            log_action(
-                db, "system", "plugin_cleanup_failed",
-                detail=f"job={job.id} plugin={plugin.name} error={type(e).__name__}",
-            )
+            try:
+                log_action(
+                    db, "system", "plugin_cleanup_failed",
+                    detail=f"job={job.id} plugin={plugin.name} error={type(e).__name__}",
+                )
+            except Exception:  # an audit write error must not stop the remaining cleanups
+                log.exception("job %s: could not audit the failed cleanup", job.id)
     return failed
