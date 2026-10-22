@@ -150,44 +150,7 @@ Things to know:
 
 Because the tool runs inside the cluster, it does not need a kubeconfig. Kubernetes gives the pod a token for its **ServiceAccount**, and the Kubernetes client library can use it directly (for the Python client, `config.load_incluster_config()`). That removes one secret, but the token is still a credential: whatever the Role allows, anyone who compromises the tool can do. So keep the Role small.
 
-An illustrative starting point. **Adjust the resources and verbs to what the plugins actually do, and ask the cluster admin to review it:**
-
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: iomt-tool
-  namespace: <namespace>
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: iomt-tool
-  namespace: <namespace>
-rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["create", "get", "list", "watch", "delete"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: iomt-tool
-  namespace: <namespace>
-subjects:
-  - kind: ServiceAccount
-    name: iomt-tool
-    namespace: <namespace>
-roleRef:
-  kind: Role
-  name: iomt-tool
-  apiGroup: rbac.authorization.k8s.io
-```
-
-Then set `serviceAccountName: iomt-tool` in the tool's pod spec.
+The real one is `deploy/k8s/tool-rbac.yaml` (SCRUM-39): ServiceAccount `portrait-iq`, and a Role in our own namespace with only what the Netshoot and tshark plugins use: pods create/get/list/delete and pods/exec. The tool pods it starts get no token at all (`automountServiceAccountToken: false`). Exec is the broadest of these rights: it runs commands in any pod of our namespace, which is why tool pods never share that namespace with anything else. **Ask the cluster admin to review it.**
 
 Keep it tight:
 - Use a **Role** (one namespace), not a ClusterRole, unless the plugins truly need more.
@@ -239,7 +202,7 @@ If a secret leaks: rotate first, investigate second.
 - [ ] Confirm with compliance whether Kubernetes Secrets / a secrets file are acceptable storage.
 - [ ] Wire `assert_no_secrets` into the zip export when SCRUM-61 is built.
 - [x] Where the tool runs: **inside the cluster on the MiniEdge**. Team members connect from their laptops over ethernet through an unmanaged switch. No kubeconfig is stored; the tool uses a ServiceAccount.
-- [ ] Have the cluster admin review the Role in section 4 and name the namespace(s) the tool may create pods in.
+- [ ] Have the cluster admin review the Role in `deploy/k8s/tool-rbac.yaml` (namespace `portrait-iq`, pods and pods/exec).
 - [ ] Only if Box mode is wanted: confirm pods in the cluster can reach Box. The lab switch may have no internet connection, in which case Box mode will not work there.
 - [ ] Open `http://<PLATFORM_IP>/portrait/diags` and see whether the log download page asks for a login. If yes, which account, and can we get a separate service account for the tool? Also confirm a pod in the cluster can reach that address, because the tool runs there, not on the laptop.
 - [ ] Confirm which environment the final demo runs in (lab cluster with internet, or offline). If offline, Box mode cannot be used and Import mode is the main path.

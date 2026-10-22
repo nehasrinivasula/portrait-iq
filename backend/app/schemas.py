@@ -85,6 +85,12 @@ class JobOut(BaseModel):
         from_attributes = True
 
 
+class UploadOut(BaseModel):
+    upload_id: str
+    kind: str
+    size_bytes: int
+
+
 class SignalOut(BaseModel):
     id: str
     rule_id: str

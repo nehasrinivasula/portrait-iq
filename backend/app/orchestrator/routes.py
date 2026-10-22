@@ -3,18 +3,20 @@ HTTP surface. One router, mounted in main.py. Endpoint shapes follow the
 prototype's five tabs: Connect, Choose tools, Collect, Insights, Package.
 """
 import json
+import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+from app import uploads
 from app.audit import log_action
 from app.auth import User, get_current_user, is_locked, touch_session
-from app.collectors.base import PluginError, ResourceLimits
+from app.collectors.base import Collector, PluginError, ResourceLimits
 from app.collectors.registry import get_registry
 from app.config import settings
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.models import Device, Job, Signal
-from app.orchestrator.jobs import create_job, run_job
+from app.orchestrator.jobs import create_job, read_results, run_job
 from app.schemas import (
     ConnectRequest,
     DeviceOut,
@@ -23,8 +25,11 @@ from app.schemas import (
     PluginListOut,
     PluginOut,
     SignalOut,
+    UploadOut,
 )
 from app.secrets_loader import redaction_scope
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -82,9 +87,13 @@ def list_devices(db: Session = Depends(get_db), user: User = Depends(get_current
 def start_job(
     req: JobCreateRequest,
     target_ip: str,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """Validates the selection, creates the job and returns it "queued".
+    The job runs after the response is sent; poll GET /jobs/{id}. It keeps
+    running if the UI session locks (S-2)."""
     if is_locked(user.id):
         raise HTTPException(423, "Session locked — unlock before starting a collection.")
 
@@ -114,14 +123,56 @@ def start_job(
         detail=f"job={job.id} tools={req.tools} option_keys={option_keys} audited={audited}",
     )
 
-    # Synchronous for the skeleton — see orchestrator/jobs.py's docstring
-    # for why this needs to become a background task before it's real.
-    try:
-        run_job(db, job, target_ip, plugins=plugins)
-    except Exception:
-        pass  # job.status is already "failed" or "cleanup_failed"; don't crash the request
-
+    background_tasks.add_task(_run_in_background, job.id, target_ip, plugins)
     return job
+
+
+def _run_in_background(job_id: str, target_ip: str, plugins: list[Collector]) -> None:
+    """Runs after the response, with its own session: the request's session
+    is closed by then."""
+    db = SessionLocal()
+    try:
+        run_existing_job(db, job_id, target_ip, plugins)
+    finally:
+        db.close()
+
+
+def run_existing_job(db: Session, job_id: str, target_ip: str, plugins: list[Collector]) -> None:
+    try:
+        run_job(db, db.get(Job, job_id), target_ip, plugins=plugins)
+    except Exception:
+        # job.status is already "failed" or "cleanup_failed".
+        log.exception("job %s stopped with an unexpected error", job_id)
+
+
+@router.get("/jobs/{job_id}/results")
+def get_job_results(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Each plugin's summary, warnings and files, or the error that stopped
+    it, in the order the plugins ran. Partial while the job is running."""
+    if db.get(Job, job_id) is None:
+        raise HTTPException(404, "job not found")
+    return read_results(job_id)
+
+
+@router.post("/uploads", response_model=UploadOut)
+def upload_file(
+    kind: str,
+    file: UploadFile,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """A file a field engineer already has, e.g. a capture from hospital IT
+    (kind=pcap) for tshark's import mode. Returns the upload_id to pass in
+    the plugin's options."""
+    if is_locked(user.id):
+        raise HTTPException(423, "Session locked — unlock before uploading.")
+    try:
+        upload_id, size = uploads.save(file.file, kind)
+    except uploads.UploadError as e:
+        raise HTTPException(400, str(e))
+    # Never the client's file name: it can name a patient.
+    log_action(db, user.id, "upload", detail=f"upload={upload_id} kind={kind} bytes={size}")
+    return UploadOut(upload_id=upload_id, kind=kind, size_bytes=size)
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
