@@ -50,7 +50,7 @@ def connect(
 
 
 @router.get("/devices", response_model=list[DeviceOut])
-def list_devices(db: Session = Depends(get_db)):
+def list_devices(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return db.query(Device).all()
 
 
@@ -83,7 +83,7 @@ def start_job(
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
-def get_job(job_id: str, db: Session = Depends(get_db)):
+def get_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     job = db.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
@@ -91,7 +91,7 @@ def get_job(job_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/jobs/{job_id}/findings", response_model=list[SignalOut])
-def get_findings(job_id: str, db: Session = Depends(get_db)):
+def get_findings(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     signals = db.query(Signal).filter(Signal.job_id == job_id).all()
     out = []
     for s in signals:
