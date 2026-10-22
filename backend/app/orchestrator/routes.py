@@ -15,6 +15,7 @@ from app.db import get_db
 from app.models import Device, Job, Signal
 from app.orchestrator.jobs import create_job, run_job
 from app.schemas import ConnectRequest, DeviceOut, JobCreateRequest, JobOut, SignalOut
+from app.secrets_loader import redaction_scope
 
 router = APIRouter()
 
@@ -30,18 +31,22 @@ def connect(
     whatever fits your lab) against req.ip_address, and for 'live' mode,
     real discovery of the hub/viewer/server behind it. For 'pre_install'
     mode, this should instead stand this machine up as the test endpoint
-    Marco and Andrew described, not probe an installed system."""
-    touch_session(user.id)
-    log_action(db, user.id, "connect", detail=f"mode={req.mode} ip={req.ip_address}")
+    Marco and Andrew described, not probe an installed system.
 
-    if req.mode not in ("live", "pre_install"):
-        raise HTTPException(400, "mode must be 'live' or 'pre_install'")
+    The password is masked in logs only while this request runs, then
+    forgotten (SCRUM-72). Keep everything that uses it inside the with."""
+    with redaction_scope(req.password.get_secret_value(), "CONNECT_PASSWORD"):
+        touch_session(user.id)
+        log_action(db, user.id, "connect", detail=f"mode={req.mode} ip={req.ip_address}")
 
-    raise HTTPException(
-        501,
-        "TODO: implement real discovery. See app/orchestrator/routes.py::connect "
-        "and app/collectors/base.py.",
-    )
+        if req.mode not in ("live", "pre_install"):
+            raise HTTPException(400, "mode must be 'live' or 'pre_install'")
+
+        raise HTTPException(
+            501,
+            "TODO: implement real discovery. See app/orchestrator/routes.py::connect "
+            "and app/collectors/base.py.",
+        )
 
 
 @router.get("/devices", response_model=list[DeviceOut])

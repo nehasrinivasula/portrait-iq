@@ -56,13 +56,14 @@ For a secret called `NAME`, the loader checks:
 1. environment variable `NAME` (the value itself), else
 2. environment variable `NAME_FILE` (the path to a file containing the value).
 
-Setting both is an error. A trailing newline in the file is ignored. Secret files must not be readable by other users (`chmod 600`; `0440` is also accepted for Kubernetes mounts).
+Setting both is an error. A trailing newline in the file is ignored. Secret files must be owner-only (`chmod 600` or `0400`) and owned by you (or root). Group read (`0440`/`0640`) is accepted only when the file's group is the numeric ID in `SECRETS_FILE_GID`, which is meant for a Kubernetes Secret volume with `fsGroup` (see below).
 
 ## 3. Using it in code
 
 ```python
 from app.secrets_loader import (
-    load_secret, install_log_redaction, register_for_redaction, assert_no_secrets,
+    load_secret, install_log_redaction, register_for_redaction, redaction_scope,
+    assert_no_secrets,
 )
 
 install_log_redaction()                      # once, at startup, before any logging
@@ -76,6 +77,12 @@ payload = {"client_id": box_id.reveal(), "client_secret": box_secret.reveal()}
 # values you only learn at runtime (e.g. the access token Box returns) are NOT loaded
 # by load_secret, so register them yourself:
 register_for_redaction(access_token, "BOX_ACCESS_TOKEN")
+
+# a credential that only matters during one request (e.g. the password typed on
+# the Connect screen): masked while the block runs, then forgotten, so the
+# process does not keep every password ever entered.
+with redaction_scope(req.password.get_secret_value(), "CONNECT_PASSWORD"):
+    ...
 
 # in the export code (SCRUM-61), before and after building the zip:
 assert_no_secrets([staging_dir])
@@ -136,7 +143,7 @@ spec:
 ```
 
 Things to know:
-- If the container runs as a **non-root user**, `0400` makes the files unreadable to it. Set `securityContext.fsGroup` and use `defaultMode: 0440` instead. The loader accepts that.
+- If the container runs as a **non-root user**, `0400` makes the files unreadable to it. Set `securityContext.fsGroup`, use `defaultMode: 0440`, and set the env var `SECRETS_FILE_GID` to the same number as `fsGroup`. The loader then accepts group read for files in that group only.
 - Kubernetes Secrets are **base64-encoded, not encrypted**, unless encryption at rest is enabled. Limit who can read them with RBAC, and ask the cluster admin whether encryption at rest is on.
 
 ### ServiceAccount and RBAC (cluster access)
