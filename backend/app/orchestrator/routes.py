@@ -91,26 +91,30 @@ def start_job(
 
     # Configure every selected plugin before creating the job: configure()
     # has no side effects, so an unknown plugin or bad option is a 400 here
-    # instead of a half-started job.
+    # instead of a half-started job. These configured instances are the ones
+    # the job runs; they are not configured again.
     try:
-        get_registry().create_all(req.tools, limits, req.plugin_options)
+        plugins = get_registry().create_all(req.tools, limits, req.plugin_options)
     except PluginError as e:
         raise HTTPException(400, str(e))
 
     job = create_job(db, mode=req.mode, tools=req.tools, limits=limits)
-    # Option names only, never values: a future plugin option could hold a credential.
+    # Option names only, never values: a future plugin option could hold a
+    # credential. A plugin lists the values worth auditing (e.g. tshark's
+    # full-payload switch and its reason) in audit_fields().
     option_keys = {name: sorted(opts) for name, opts in req.plugin_options.items()}
+    audited = {p.name: fields for p in plugins if (fields := p.audit_fields())}
     log_action(
         db, user.id, "job_start",
-        detail=f"job={job.id} tools={req.tools} option_keys={option_keys}",
+        detail=f"job={job.id} tools={req.tools} option_keys={option_keys} audited={audited}",
     )
 
     # Synchronous for the skeleton — see orchestrator/jobs.py's docstring
     # for why this needs to become a background task before it's real.
     try:
-        run_job(db, job, target_ip, req.plugin_options)
+        run_job(db, job, target_ip, plugins=plugins)
     except Exception:
-        pass  # job.status is already "failed"; don't crash the request
+        pass  # job.status is already "failed" or "cleanup_failed"; don't crash the request
 
     return job
 

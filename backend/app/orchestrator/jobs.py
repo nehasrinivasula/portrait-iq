@@ -11,15 +11,19 @@ progress/notify requirements ("monitor progress in real time", "notify
 when complete or if any step fails").
 """
 import json
+import logging
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.analysis.engine import run_analysis
-from app.collectors.base import PluginError, ResourceLimits
+from app.audit import log_action
+from app.collectors.base import Collector, PluginError, ResourceLimits
 from app.collectors.registry import PluginRegistry, get_registry
 from app.models import Job
+
+log = logging.getLogger(__name__)
 
 STEPS = [
     "deploy_tools",
@@ -51,6 +55,7 @@ def run_job(
     target_ip: str,
     plugin_options: dict[str, dict[str, Any]] | None = None,
     registry: PluginRegistry | None = None,
+    plugins: list[Collector] | None = None,
 ) -> Job:
     """Walks the job through STEPS. Every built-in plugin's run() raises
     NotImplementedError right now; that's fine, it's a skeleton. The point
@@ -60,21 +65,26 @@ def run_job(
     Plugins come from the registry by name (SCRUM-38), so a new plugin
     needs no change here. All selected plugins are configured before any
     runs, so a bad option fails the job before anything is deployed.
+    Pass plugins (already configured, e.g. by start_job's validation) to
+    run exactly those instances instead of configuring them a second time.
 
     On failure: mark the job failed, but still attempt cleanup() on every
     plugin that was started. This is the "system in a known clean state"
-    requirement, and it must hold even on the unhappy path.
+    requirement, and it must hold even on the unhappy path. If any
+    cleanup() raises, the job ends as "cleanup_failed" whatever happened
+    before, because something may still be running on site.
     """
-    registry = registry or get_registry()
     job.status = "running"
     db.commit()
 
     limits = ResourceLimits(job.cpu_limit_pct, job.mem_limit_mb, job.max_output_mb)
     tools = json.loads(job.tools or "[]")
     started = []
+    cleanup_failed = False
 
     try:
-        plugins = registry.create_all(tools, limits, plugin_options)
+        if plugins is None:
+            plugins = (registry or get_registry()).create_all(tools, limits, plugin_options)
 
         for step in STEPS:
             job.current_step = step
@@ -94,8 +104,7 @@ def run_job(
                 pass  # TODO: same idea, different sources
 
             elif step == "cleanup":
-                while started:
-                    started.pop().cleanup()
+                cleanup_failed = _cleanup_all(db, job, started)
 
             elif step == "package":
                 run_analysis(db, job.id)  # writes Signal rows
@@ -103,34 +112,44 @@ def run_job(
                 # doc's "Analysis & Reporting" section: metadata.json, one
                 # standardized layout every time).
 
-        job.status = "done"
-        job.finished_at = datetime.utcnow()
-        db.commit()
+        _finish(db, job, "cleanup_failed" if cleanup_failed else "done")
 
     except (NotImplementedError, PluginError):
         # Expected right now: every built-in plugin is a stub, and a bad
         # option is a user error, not a crash. Still exercise the cleanup
         # path so that behavior is proven correct early.
-        _cleanup_all(started)
-        job.status = "failed"
-        job.finished_at = datetime.utcnow()
-        db.commit()
+        cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
+        _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
 
     except Exception:
-        _cleanup_all(started)
-        job.status = "failed"
-        job.finished_at = datetime.utcnow()
-        db.commit()
+        cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
+        _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
         raise
 
     return job
 
 
-def _cleanup_all(plugins: list) -> None:
-    """Best-effort cleanup in reverse start order. One plugin's cleanup bug
-    must not skip the others or mask the original failure."""
-    for plugin in reversed(plugins):
+def _finish(db: Session, job: Job, status: str) -> None:
+    job.status = status
+    job.finished_at = datetime.utcnow()
+    db.commit()
+
+
+def _cleanup_all(db: Session, job: Job, started: list[Collector]) -> bool:
+    """Best-effort cleanup in reverse start order, emptying started. One
+    plugin's cleanup bug must not skip the others or mask the original
+    failure, but it must not go unnoticed either: each failure is logged
+    and audited with the job and plugin name. Returns True if any failed."""
+    failed = False
+    while started:
+        plugin = started.pop()
         try:
             plugin.cleanup()
-        except Exception:
-            pass
+        except Exception as e:
+            failed = True
+            log.exception("job %s: cleanup of plugin %s failed", job.id, plugin.name)
+            log_action(
+                db, "system", "plugin_cleanup_failed",
+                detail=f"job={job.id} plugin={plugin.name} error={type(e).__name__}",
+            )
+    return failed

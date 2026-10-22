@@ -14,6 +14,8 @@ Lifecycle, enforced by orchestrator/jobs.py:
   2. run(target_ip)      deploy (if needed) and run the tool.
   3. cleanup()           tear down whatever run() created. Always called,
                          also after a failure in this or another plugin.
+                         If it raises, the job ends as "cleanup_failed" and
+                         the plugin is named in the log and the audit log.
 
 To add a plugin, write a Collector subclass in a new module in this package
 and add one line to PLUGINS in registry.py. Nothing else changes.
@@ -74,6 +76,12 @@ class Collector(ABC):
                 f"{self.name} takes no options; got {sorted(options)}"
             )
         self.options = {}
+
+    def audit_fields(self) -> dict[str, Any]:
+        """Configured choices to record in the job_start audit entry, e.g.
+        a privacy-relevant switch and the reason given for it. Only values
+        safe to store: never a credential. The default records nothing."""
+        return {}
 
     @abstractmethod
     def run(self, target_ip: str) -> CollectorResult:
