@@ -52,6 +52,10 @@ spec:
             # Secrets are files, never env values (backend/SECRETS.md).
             - name: SESSION_SIGNING_KEY_FILE
               value: /run/secrets/portrait-iq/SESSION_SIGNING_KEY
+            # The secret files are 0440 in the fsGroup; the loader accepts
+            # group read only for this group (SCRUM-72).
+            - name: SECRETS_FILE_GID
+              value: "10001"
           # The pod shares the MiniEdge with the Portrait software and must
           # not starve it. Raise only after watching real usage.
           resources:
