@@ -108,3 +108,28 @@ def test_job_scoped_ingest_does_not_touch_other_jobs(db, tmp_path):
     pipeline.ingest_file(path, db, job_id="job-1")
     pipeline.ingest_file(path, db, job_id="job-1")                    # replace within job-1 only
     assert count(db) == 6
+
+
+def test_ingest_error_is_a_value_error_like_unrecognised_format():
+    assert issubclass(pipeline.IngestError, ValueError)
+    assert issubclass(UnrecognizedLogFormat, ValueError)
+
+
+def test_same_name_without_a_label_replaces_by_design(db, tmp_path):
+    """Documents the default key: file basename + job. Pass source_label to avoid it."""
+    (tmp_path / "a").mkdir(); (tmp_path / "b").mkdir()
+    pipeline.ingest_file(make_csv(tmp_path / "a" / "export.csv", good=3), db)
+    pipeline.ingest_file(make_csv(tmp_path / "b" / "export.csv", good=2), db)
+    assert count(db) == 2
+
+
+def test_source_label_keeps_same_named_files_apart(db, tmp_path):
+    (tmp_path / "a").mkdir(); (tmp_path / "b").mkdir()
+    a = make_csv(tmp_path / "a" / "export.csv", good=3)
+    b = make_csv(tmp_path / "b" / "export.csv", good=2)
+    pipeline.ingest_file(a, db, source_label="local/aaa/export.csv")
+    pipeline.ingest_file(b, db, source_label="local/bbb/export.csv")
+    assert count(db) == 5
+    pipeline.ingest_file(a, db, source_label="local/aaa/export.csv")   # replaces only its own rows
+    assert count(db) == 5
+    assert set(db.scalars(select(EventRow.source_file))) == {"local/aaa/export.csv", "local/bbb/export.csv"}

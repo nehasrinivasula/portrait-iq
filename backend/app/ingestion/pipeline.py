@@ -36,8 +36,13 @@ DEFAULT_MAX_REJECT_RATE = 0.01  # fail a file if more than 1% of its rows can't 
 DEFAULT_BATCH_SIZE = 5000
 
 
-class IngestError(RuntimeError):
-    """A file was recognised but could not be ingested safely."""
+class IngestError(ValueError):
+    """A file was recognised but could not be ingested safely (too many
+    unconvertible rows, or no rows at all). A ValueError on purpose, like
+    UnrecognizedLogFormat, so callers can catch one family of "this file is
+    bad" errors. Callers that need to tell the two apart should catch
+    UnrecognizedLogFormat (no parser) before IngestError (parser found, file
+    unusable)."""
 
 
 @dataclass
@@ -58,11 +63,25 @@ def ingest_file(
     replace: bool = True,
     max_reject_rate: float = DEFAULT_MAX_REJECT_RATE,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    source_label: Optional[str] = None,
 ) -> IngestResult:
-    """Parse one file and store its events. Raises UnrecognizedLogFormat or
-    IngestError on failure (after rolling back); returns an IngestResult on
-    success."""
+    """Parse one file and store its events.
+
+    Returns an IngestResult (use `.events_written` for the count). Raises
+    UnrecognizedLogFormat or IngestError, both ValueErrors, after rolling
+    back, so nothing from a failed file is stored.
+
+    Idempotency key: re-ingesting replaces earlier rows with the same
+    (source_file, job_id). source_file defaults to the file's BASENAME, so
+    two different files called export.csv would overwrite each other, and
+    the same file ingested under a different job_id (or with and without a
+    job) is stored once per job. Callers that can see files with colliding
+    names (acquisition from Box, local folders, several devices) should pass
+    source_label, a stable unique id such as "<source>/<remote_id>/<name>",
+    which is used both as the key and as the stored source_file.
+    """
     path = Path(path)
+    label = source_label or path.name
     chosen = parser or detect_parser(path)
     if chosen is None:
         raise UnrecognizedLogFormat(f"{path.name}: no registered parser recognises this file")
@@ -71,7 +90,7 @@ def ingest_file(
     written = 0
     try:
         if replace:
-            stmt = delete(EventRow).where(EventRow.source_file == path.name)
+            stmt = delete(EventRow).where(EventRow.source_file == label)
             stmt = stmt.where(EventRow.job_id.is_(None) if job_id is None else EventRow.job_id == job_id)
             db.execute(stmt)
 
@@ -88,7 +107,7 @@ def ingest_file(
                     "severity": event.severity,
                     "process": event.process,
                     "message": event.message,
-                    "source_file": event.source_file,
+                    "source_file": label,
                     "source_line": event.source_line,
                 }
             )
@@ -114,7 +133,7 @@ def ingest_file(
         raise
 
     return IngestResult(
-        source_file=path.name, ok=True, events_written=written, parser=chosen.name, report=report
+        source_file=label, ok=True, events_written=written, parser=chosen.name, report=report
     )
 
 

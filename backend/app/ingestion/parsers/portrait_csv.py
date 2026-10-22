@@ -38,7 +38,9 @@ from typing import Iterator, Optional
 from app.ingestion.parsers.base import LogParser, ParseReport, UnrecognizedLogFormat, open_text
 from app.ingestion.schema import EventValidationError, NormalizedEvent, make_event, normalize_severity, parse_timestamp
 
-_PROC_SUFFIX = re.compile(r"\[.*$")  # "axone_logger[777:0]" -> "axone_logger"
+# "axone_logger[777:0]" (sample exports) and "axone-log-export:4521:main"
+# (log export API) both -> the bare process name.
+_PROC_SUFFIX = re.compile(r"\[.*$|:\d+:.*$")
 _PLACEHOLDER_NAMES = {"", "unsetFriendlyName"}
 
 REQUIRED_COLUMNS = ("timeStampAndOffset", "logLevel", "hostName", "eventCategory", "description")

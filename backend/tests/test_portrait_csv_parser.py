@@ -109,3 +109,10 @@ def test_wrong_format_raises_instead_of_returning_nothing(tmp_path):
     p.write_text("a,b\n1,2\n")
     with pytest.raises(UnrecognizedLogFormat):
         list(PortraitCsvParser().parse(p))
+
+
+def test_process_name_strips_bracket_and_colon_styles(tmp_path):
+    """Sample exports use name[pid:n]; the log export API guide shows name:pid:thread."""
+    p = write(tmp_path, row(proc="axone_logger[777:0]"), row(proc="axone-log-export:4521:main"), row(proc="plain"))
+    events, _ = run(p)
+    assert [e.process for e in events] == ["axone_logger", "axone-log-export", "plain"]
