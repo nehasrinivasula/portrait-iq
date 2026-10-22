@@ -64,8 +64,10 @@ app/
     jobs.py               Job state machine (queued -> running -> done/failed)
 
   collectors/
-    base.py               Collector interface: resource limits, run(), cleanup()
+    base.py               Plugin contract: configure(), run(), cleanup(), resource limits
+    registry.py            The list of plugins; the orchestrator looks them up by name
     netshoot.py, rti.py, tshark.py, hub_import.py    One file per tool. All stubs.
+                          To add a tool: one new file here + one line in PLUGINS in registry.py.
 
   sources/               Log acquisition (SCRUM-43): where raw log files come from
     base.py               LogSource interface every source implements

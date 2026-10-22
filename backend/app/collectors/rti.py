@@ -11,6 +11,8 @@ from app.collectors.base import Collector, CollectorResult
 
 class RtiCollector(Collector):
     name = "rti"
+    display_name = "UMF RTI"
+    description = "Captures DDS/RTPS message traffic between hub, viewer and server."
 
     def run(self, target_ip: str) -> CollectorResult:
         raise NotImplementedError(

@@ -19,6 +19,8 @@ from app.collectors.base import Collector, CollectorResult
 
 class HubImportCollector(Collector):
     name = "hub_import"
+    display_name = "Hub log import"
+    description = "Accepts a hub log a field engineer already pulled by hand."
 
     def run(self, target_ip: str) -> CollectorResult:
         raise NotImplementedError(

@@ -38,7 +38,7 @@ class Job(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     mode = Column(String, nullable=False, default="live")     # "live" | "pre_install"
-    status = Column(String, nullable=False, default="queued")  # queued|running|done|failed
+    status = Column(String, nullable=False, default="queued")  # queued|running|done|failed|cleanup_failed
     current_step = Column(String, nullable=True)
     cpu_limit_pct = Column(Integer, nullable=True)
     mem_limit_mb = Column(Integer, nullable=True)
