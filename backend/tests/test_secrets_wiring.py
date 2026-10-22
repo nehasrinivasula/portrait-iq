@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import main  # noqa: F401  (importing installs log redaction)
+from app import main  # importing installs log redaction
 from app.auth import User
 from app.db import Base
 from app.orchestrator import routes
@@ -55,3 +55,21 @@ def test_connect_passwords_are_forgotten_after_the_request(db):
     for i in range(50):
         _connect(db, password=f"{FAKE_PASSWORD}-{i}")
     assert _snapshot() == {}  # the registry does not grow with every login
+
+
+def test_validation_errors_do_not_echo_passwords(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.auth import get_current_user
+
+    monkeypatch.setitem(main.app.dependency_overrides, get_current_user,
+                        lambda: User(id="tester", name="Tester"))
+    client = TestClient(main.app)
+    for path, body in (
+        ("/api/connect", {"username": "tester", "password": FAKE_PASSWORD}),  # ip_address missing
+        ("/api/auth/login", {"password": FAKE_PASSWORD}),                     # username missing
+    ):
+        r = client.post(path, json=body)
+        assert r.status_code == 422
+        assert FAKE_PASSWORD not in r.text
+        assert r.json()["detail"][0]["loc"][-1] in ("ip_address", "username")  # still says what is wrong

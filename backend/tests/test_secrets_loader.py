@@ -240,7 +240,6 @@ def test_extra_fields_are_masked():
     sl.register_for_redaction(FAKE, "BOX_CLIENT_SECRET")
     logger, stream = make_logger("test.redaction.extra")  # created before install
     sl.install_log_redaction()
-    stream.truncate(0)
     for handler in logger.handlers:
         handler.setFormatter(logging.Formatter("%(message)s cred=%(credential)s ctx=%(ctx)s n=%(n)d"))
 
