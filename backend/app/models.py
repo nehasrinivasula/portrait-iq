@@ -57,9 +57,11 @@ class NormalizedEvent(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     job_id = Column(String, ForeignKey("jobs.id"), nullable=True)  # null for ad-hoc ingests
-    timestamp = Column(DateTime, nullable=False)
-    device_id = Column(String, nullable=True)         # hostName / friendlyName from source
+    timestamp = Column(DateTime, nullable=False, index=True)
+    device_id = Column(String, nullable=True, index=True)         # hostName / friendlyName from source
     source = Column(String, nullable=False)             # "portrait" | "compute" | "network"
+    source_file = Column(String, nullable=True, index=True)
+    source_line = Column(Integer, nullable=True)
     category = Column(String, nullable=True)              # e.g. "General", "PerfData"
     severity = Column(String, nullable=False)               # INFO | WARN | ERROR
     process = Column(String, nullable=True)
