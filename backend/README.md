@@ -9,6 +9,43 @@ Nothing here has been run against real lab hardware. Treat every `TODO` as a
 task, and treat anything that *does* run (the CSV parser, the rule thresholds)
 as provisional, built from the 35 sample log files, not a full spec.
 
+## SCRUM-32 — Login: frontend handoff
+
+This branch provides the backend contract for the Login UI. It is a **local
+demo** authentication flow only; it is not GE SSO and must not use GE or
+hospital credentials.
+
+1. Send `POST /api/auth/login` with JSON:
+
+   ```json
+   {"username": "your-demo-user", "password": "your-demo-password"}
+   ```
+
+   A successful response is `200` and contains:
+
+   ```json
+   {"access_token": "<signed-token>", "token_type": "bearer", "expires_in": 3600}
+   ```
+
+2. Store the token only for the active local-demo session and use it to check
+   whether the user is signed in: `GET /api/auth/me` with
+   `Authorization: Bearer <access_token>`. A `200` response returns the demo
+   user's `username` and `name`.
+
+3. Send the same `Authorization` header on every diagnostic request:
+   `/api/connect`, `/api/devices`, `/api/jobs`, job status, findings, and
+   package export. `GET /health` intentionally needs no token.
+
+Invalid login credentials return `401` with `Invalid username or password.`
+Missing tokens return `401` with `Authentication required.` Invalid or expired
+tokens return `401` with `Invalid or expired bearer token.` If the backend demo
+credentials have not been configured, login returns `503`.
+
+The implementation is in `app/auth.py`; route definitions are in `app/main.py`;
+the request and response shapes are in `app/schemas.py`. This dependency
+boundary is deliberate so a real identity provider can replace the local-demo
+implementation later without changing the frontend's protected-route pattern.
+
 ## Layout
 
 ```
@@ -19,7 +56,7 @@ app/
   models.py             ORM tables: Device, Job, NormalizedEvent, Signal,
                          AcquiredFileRecord, AuditLogEntry
   schemas.py             Pydantic request/response models
-  auth.py                 Stub auth + in-memory session lock (NOT real security yet)
+  auth.py                 Local-demo bearer auth + in-memory session activity tracking
   audit.py                 Audit log helper, used everywhere an action happens
 
   orchestrator/
@@ -83,11 +120,39 @@ tests/
 Use Python 3.12 (the pinned pandas has no prebuilt wheel for 3.13).
 
 ```bash
+cd backend
+cp .env.example .env
+# Edit .env: set DEMO_AUTH_USERNAME, DEMO_AUTH_PASSWORD, and AUTH_TOKEN_SECRET.
+# Generate a token secret with: python -c "import secrets; print(secrets.token_urlsafe(32))"
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 # API docs at http://localhost:8000/docs
 pytest tests/
 ```
+
+## Login setup
+
+This is a local demo implementation, not GE SSO. The one demo user's username,
+password, and token signing secret are read from `backend/.env` (which is
+gitignored). Do not use GE credentials or any real hospital account.
+
+Log in, keep the returned bearer token, and send it with each diagnostic API
+request:
+
+```bash
+curl -X POST http://localhost:8000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"your-demo-user","password":"your-demo-password"}'
+
+curl http://localhost:8000/api/auth/me \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
+`GET /health` is public. Every diagnostic route (`/api/connect`, `/api/devices`,
+`/api/jobs`, job status/findings, and package export) requires
+`Authorization: Bearer <access_token>`. Invalid credentials and missing or
+invalid tokens return safe `401` responses. Tokens expire after
+`AUTH_TOKEN_TTL_SECONDS` (one hour by default).
 
 ## Log sources (SCRUM-43)
 
@@ -176,7 +241,7 @@ uses for GE-provided files instead.
 
 ## Deliberately not built yet
 
-- Real auth (`auth.py` is a stub — anyone is "authenticated")
+- GE SSO / production identity-provider integration (the current auth is local-demo only)
 - Real device discovery/SSH/Kubernetes API calls (`collectors/base.py` TODOs)
 - The compute-platform log parser (`parsers/compute_csv.py` — need a sample)
 - Manual/documentation matching (`knowledge/lookup.py` always returns unconfirmed)

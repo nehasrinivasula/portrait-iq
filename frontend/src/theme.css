@@ -1,0 +1,78 @@
+/* Portrait IQ theme. Tokens come from the prototype; Compassion Purple is the brand color.
+   Font: Source Sans Pro (self-hosted), Calibri as the system fallback. */
+:root {
+  --bg: #f4f4f4;
+  --panel: #fff;
+  --text: #000;
+  --muted: #4d4d4d;
+  --line: #cfcfcf;
+  --primary: #6022a6;
+  --on-primary: #fff;
+  --ok: #19bb7c;
+  --warn: #f8d754;
+  --error: #f37f63;
+  --info: #45b2c5;
+  --ok-bg: #d1f1e5;
+  --warn-bg: #fdf3c4;
+  --error-bg: #fce0d8;
+  --font: "Source Sans Pro", Calibri, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 18px/1.5 var(--font);
+  letter-spacing: -0.01em; /* body tracking: Metrics -10 */
+}
+
+h1, h2, h3 {
+  font-weight: 600;
+  letter-spacing: -0.02em; /* headline tracking: Metrics -20 */
+  margin: 0 0 4px;
+}
+h1 { font-size: 22px; }
+h2 { font-size: 26px; }
+h3 { font-size: 19px; }
+
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+
+.muted { color: var(--muted); }
+
+.btn {
+  background: var(--primary);
+  color: var(--on-primary);
+  border: 1.5px solid var(--primary);
+  border-radius: 6px;
+  padding: 11px 20px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.ghost { background: transparent; color: var(--primary); }
+
+.field label { display: block; font-weight: 600; font-size: 16px; margin-bottom: 3px; }
+.field input {
+  width: 100%;
+  background: var(--bg);
+  border: 1.5px solid var(--line);
+  border-radius: 6px;
+  padding: 9px 12px;
+}
+.field input[aria-invalid="true"] { border-color: var(--error); border-width: 3px; }
+.field .error-text { font-size: 15px; font-weight: 600; margin-top: 4px; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 24px;
+}
+.app-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 14px 24px; background: var(--primary); color: #fff;
+}
+.app-header .btn.ghost { color: #fff; border-color: #fff; }
