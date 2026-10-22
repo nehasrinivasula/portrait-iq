@@ -145,7 +145,9 @@ Settings: `AXONE_BASE_URL`, `AXONE_TIMEOUT_SECONDS` (60),
 `AXONE_REQUEST_DELAY_SECONDS` (0.5), `AXONE_TIMEZONE` (UTC, the timezone the
 API's timestamps are in; confirmed on the lab system), `AXONE_DEFAULT_LOOKBACK_HOURS`
 (24), `AXONE_SETTLE_MINUTES` (15, wait after an hour ends before pulling it,
-for late-arriving logs). Running inside
+for late-arriving logs). The 15 minutes is an estimate, not a measured
+value: a device that was offline can upload its logs much later than that,
+and an hour already pulled is not pulled again. Running inside
 the cluster later only changes `AXONE_BASE_URL` to
 `http://axone-log-export-tcp.pm.svc.cluster.local:9200`.
 

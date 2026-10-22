@@ -26,7 +26,8 @@ from sqlalchemy.orm import Session
 
 from app.audit import log_action
 from app.config import settings
-from app.ingestion.pipeline import ingest_file
+from app.ingestion.parsers.base import UnrecognizedLogFormat
+from app.ingestion.pipeline import IngestError, ingest_file
 from app.models import AcquiredFileRecord
 from app.secrets_loader import redact
 from app.sources.base import ALLOWED_SUFFIXES, LogSource, RemoteFile, SourceError
@@ -204,18 +205,44 @@ def safe_extract(zip_path: Path, dest: Path, max_bytes: int, max_members: int | 
 
 # --- the run ------------------------------------------------------------------
 
-def _ingest(paths: list[Path], db: Session, job_id: str | None) -> tuple[str, int, str | None]:
-    """Ingest every CSV. Returns (status, events, note)."""
-    csvs = [p for p in paths if p.suffix.lower() == ".csv"]
-    if not csvs:
-        return "unrecognized", 0, "No CSV log files found to ingest."
-    events, unknown = 0, []
-    for p in csvs:
+# Files the ingestion registry may have a parser for: Portrait / log-export
+# CSVs and Kubernetes pod logs. Detection decides; others are "unrecognized".
+INGEST_SUFFIXES = {".csv", ".log", ".txt"}
+
+
+def _ingest(paths: list[Path], db: Session, job_id: str | None,
+            remote: RemoteFile, root: Path) -> tuple[str, int, str | None]:
+    """Ingest every log file. Returns (status, events, note).
+
+    Uses the common-log-format pipeline contract (SCRUM-46):
+      - source_label is unique per acquired file, so two different files
+        with the same name (two hubs, ZIP members in different folders)
+        never replace each other's events, while re-ingesting the SAME file
+        after a retry replaces its rows instead of duplicating them.
+      - allow_empty: an export window with no logs is a header-only CSV and
+        is a normal result, not an error.
+      - UnrecognizedLogFormat = no parser yet (retried next run);
+        IngestError = parser found but the file is unusable (failed).
+    A 0-byte file has no header for any parser to recognise, so it is
+    treated here as empty rather than unrecognized."""
+    files = [p for p in paths if p.suffix.lower() in INGEST_SUFFIXES]
+    if not files:
+        return "unrecognized", 0, "No log files found to ingest."
+    events, unknown, bad = 0, [], []
+    for p in files:
+        if p.stat().st_size == 0:
+            continue
+        rel = p.relative_to(root).as_posix() if p.is_relative_to(root) else p.name
+        label = f"{remote.source}/{remote.remote_id}/{rel}"
         try:
-            events += ingest_file(p, db, job_id=job_id)
-        except ValueError:
+            events += ingest_file(p, db, job_id=job_id, source_label=label, allow_empty=True).events_written
+        except UnrecognizedLogFormat:
             unknown.append(p.name)
-    if len(unknown) == len(csvs):
+        except IngestError as e:
+            bad.append(redact(str(e)))
+    if bad:
+        return "failed", events, "Could not ingest: " + "; ".join(bad)
+    if unknown and len(unknown) == len(files):
         return "unrecognized", 0, "No parser recognizes this log format yet."
     note = f"Not recognized: {', '.join(unknown)}" if unknown else None
     return "ingested", events, note
@@ -298,7 +325,7 @@ def acquire(
 
             outcome.status = "acquired"
             if ingest:
-                outcome.status, outcome.events, outcome.error = _ingest(staged, db, job_id)
+                outcome.status, outcome.events, outcome.error = _ingest(staged, db, job_id, remote, file_dir)
         except Exception as e:
             if not isinstance(e, SourceError):
                 log.exception("Acquiring %s from %s failed", remote.name, source.id)
