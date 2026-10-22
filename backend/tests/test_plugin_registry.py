@@ -228,6 +228,9 @@ def test_tshark_full_payload_needs_a_reason():
         t.configure({"full_payload_reason": "ticket 123"})
     with pytest.raises(PluginConfigError, match="must be text"):
         t.configure({"headers_only": False, "full_payload_reason": 42})
+    with pytest.raises(PluginConfigError, match="limited to 500"):
+        t.configure({"headers_only": False, "full_payload_reason": "x" * 501})
+    t.configure({"headers_only": False, "full_payload_reason": "x" * 500})  # the limit itself is fine
 
     t.configure({"headers_only": False, "full_payload_reason": " Hospital IT asked, ticket 123 "})
     assert t.audit_fields() == {
