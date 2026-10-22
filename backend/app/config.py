@@ -31,6 +31,38 @@ class Settings(BaseSettings):
     auth_token_secret: SecretStr | None = None
     auth_token_ttl_seconds: int = 3600
 
+    # --- Log acquisition (SCRUM-43) ---
+    # Where acquired files land before ingestion. Relative to where uvicorn
+    # runs (backend/). Gitignored: acquired logs can contain PHI/PII.
+    staging_dir: str = "./data/staging"
+    # Objective 1: logs from "a user-selected time range within the last 30 days".
+    acquire_max_days: int = 30
+    # A ZIP with more entries than this is refused (zip-bomb guard).
+    zip_max_members: int = 1000
+
+    # Box (optional). Not secrets, so they live here and in .env. The client
+    # ID / secret are secrets and come from secrets_loader (see SECRETS.md).
+    # Client Credentials Grant needs exactly one of enterprise_id / user_id.
+    box_folder_id: str | None = None
+    box_enterprise_id: str | None = None
+    box_user_id: str | None = None
+
+    # Axone log export API (preferred source). Only reachable inside the
+    # Kubernetes cluster: from a laptop use a port-forward + SSH tunnel and
+    # http://localhost:9200; from a pod use
+    # http://axone-log-export-tcp.<namespace>.svc.cluster.local:9200
+    axone_base_url: str | None = None
+    axone_timeout_seconds: int = 60
+    # Pause between calls so a long pull doesn't load the live system.
+    axone_request_delay_seconds: float = 0.5
+    # Timezone the API's start/end timestamps are in.
+    axone_timezone: str = "UTC"
+    # Default range when no start time is given: one API call per hour.
+    axone_default_lookback_hours: int = 24
+    # Wait this long after an hour ends before pulling it, so logs that
+    # devices upload a little late still land in that hour's pull.
+    axone_settle_minutes: int = 15
+
     class Config:
         env_file = ".env"
 
