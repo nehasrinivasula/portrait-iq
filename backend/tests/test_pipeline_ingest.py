@@ -133,3 +133,14 @@ def test_source_label_keeps_same_named_files_apart(db, tmp_path):
     pipeline.ingest_file(a, db, source_label="local/aaa/export.csv")   # replaces only its own rows
     assert count(db) == 5
     assert set(db.scalars(select(EventRow.source_file))) == {"local/aaa/export.csv", "local/bbb/export.csv"}
+
+
+def test_header_only_file_is_an_error_unless_empty_is_allowed(db, tmp_path):
+    """An hour with no logs exports as just the header; acquisition needs that to be a normal result."""
+    p = tmp_path / "empty_hour.csv"
+    p.write_text(HEADER + "\n")
+    with pytest.raises(pipeline.IngestError):
+        pipeline.ingest_file(p, db)
+    result = pipeline.ingest_file(p, db, allow_empty=True)
+    assert result.ok and result.events_written == 0
+    assert count(db) == 0

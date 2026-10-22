@@ -64,6 +64,7 @@ def ingest_file(
     max_reject_rate: float = DEFAULT_MAX_REJECT_RATE,
     batch_size: int = DEFAULT_BATCH_SIZE,
     source_label: Optional[str] = None,
+    allow_empty: bool = False,
 ) -> IngestResult:
     """Parse one file and store its events.
 
@@ -79,6 +80,11 @@ def ingest_file(
     names (acquisition from Box, local folders, several devices) should pass
     source_label, a stable unique id such as "<source>/<remote_id>/<name>",
     which is used both as the key and as the stored source_file.
+
+    allow_empty: a file with a valid header but no rows is an error by
+    default (almost always a mistake). Pass True for sources where an
+    empty result is normal, such as an hourly export window in which no
+    device logged anything: nothing is stored and events_written is 0.
     """
     path = Path(path)
     label = source_label or path.name
@@ -119,7 +125,7 @@ def ingest_file(
             db.execute(insert(EventRow), batch)
             written += len(batch)
 
-        if report.rows_read == 0:
+        if report.rows_read == 0 and not allow_empty:
             raise IngestError(f"{path.name}: contained no log rows")
         if report.reject_rate > max_reject_rate:
             raise IngestError(
