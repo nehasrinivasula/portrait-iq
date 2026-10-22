@@ -4,7 +4,7 @@ once the shape stabilizes."""
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 class LoginRequest(BaseModel):
@@ -116,9 +116,14 @@ class SourceStatusOut(BaseModel):
 
 
 class AcquireRequest(BaseModel):
-    # Both optional: default is the full allowed window (last 30 days).
-    since: Optional[datetime] = None
-    until: Optional[datetime] = None
+    # Both optional: default is the source's look-back (24 h for the log export
+    # API, otherwise the full 30 days).
+    since: Optional[datetime] = Field(None, description=(
+        "Start of the window, ISO 8601. A time without an offset is read as UTC. "
+        "Must be within the last 30 days."))
+    until: Optional[datetime] = Field(None, description=(
+        "End of the window, ISO 8601 (UTC if no offset). The log export API pulls "
+        "exactly [since, until), minus the last few minutes held back for late logs."))
     # Source-specific choices, e.g. {"path": "/Volumes/USB/logs"} for local import.
     options: dict[str, str] = {}
     job_id: Optional[str] = None
@@ -152,3 +157,4 @@ class AcquisitionOut(BaseModel):
     over_budget: int
     bytes_staged: int
     files: list[FileOutcomeOut]
+    notes: list[str] = []

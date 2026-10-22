@@ -3,16 +3,17 @@ Log source for GE's Axone log export API (see axone_client.py). This is the
 preferred way to get logs off a Portrait Mobile system: no website clicking,
 no manual download, no Keycloak login.
 
-How a pull works:
-  - The requested range is split into windows the API accepts: 1 hour for
-    all-device queries (always HH:00:00.000 to HH:59:59.999, because both
-    timestamps must be in the same hour), up to 7 days for one device.
-  - Only complete, settled windows are pulled. An hour is pulled once it has
-    ended plus AXONE_SETTLE_MINUTES (default 15), so at 15:10 the 14:00 hour
-    is left for later and at 15:20 it is pulled. Pulling earlier would record
-    the hour as done and miss logs devices upload a little late.
+How a pull works (SCRUM-44: exactly the window asked for, nothing outside it):
+  - The requested range is cut into windows the API accepts, keeping its
+    exact edges. All devices: cut at every hour boundary, because both
+    timestamps must be in the same hour, so 09:30 to 11:15 becomes
+    09:30-10:00, 10:00-11:00 and 11:00-11:15. One device: chunks of at most
+    7 days.
+  - The end is held back by AXONE_SETTLE_MINUTES (default 15): at 14:40 a
+    pull reaches 14:25 at most, leaving time for logs devices upload late.
   - Each window is one CSV request, saved as a file and handed to the normal
-    acquisition flow, so the manifest skips windows already pulled and
+    acquisition flow. The service skips time already pulled (by comparing
+    windows, so overlapping requests never fetch the same minutes twice) and
     retries windows that failed.
   - Requests go one at a time with a short pause, to keep load off the live
     system that is monitoring patients.
@@ -25,13 +26,18 @@ from typing import Callable
 
 from app.config import settings
 from app.sources.axone_client import MAX_DEVICE_RANGE, AxoneLogExportClient
-from app.sources.base import LogSource, RemoteFile, SourceError, SourceOptions, SourceStatus
-
-ONE_MS = timedelta(milliseconds=1)
+from app.sources.base import (
+    ONE_MS, LogSource, RemoteFile, SourceError, SourceOptions, SourceStatus, window_file,
+)
 
 
 def _floor_hour(dt: datetime) -> datetime:
     return dt.replace(minute=0, second=0, microsecond=0)
+
+
+def _to_ms(dt: datetime) -> datetime:
+    """The API works in milliseconds; drop anything finer."""
+    return dt.replace(microsecond=dt.microsecond // 1000 * 1000)
 
 
 def _scope(device_uuid: str | None, category: int | None) -> str:
@@ -63,6 +69,12 @@ class AxoneLogExportSource(LogSource):
     def default_lookback(self) -> timedelta:  # type: ignore[override]
         # 24 one-hour calls by default; the global 30 days would be 720.
         return timedelta(hours=settings.axone_default_lookback_hours)
+
+    def effective_until(self, until: datetime) -> datetime:
+        return min(until, self._clock() - timedelta(minutes=settings.axone_settle_minutes))
+
+    def hold_back_reason(self) -> str:
+        return f"the last {settings.axone_settle_minutes} minutes are held back for late-arriving logs"
 
     def is_configured(self) -> SourceStatus:
         if self._client_factory is None and not settings.axone_base_url:
@@ -115,25 +127,19 @@ class AxoneLogExportSource(LogSource):
     def list_available(self, since: datetime, until: datetime, options: dict[str, str]) -> list[RemoteFile]:
         device, category = self._parse_options(options or {})
         scope = _scope(device, category)
-        start = _floor_hour(since)
-        # Complete, settled windows only (see module docstring).
-        cutoff = self._clock() - timedelta(minutes=settings.axone_settle_minutes)
-        end = min(_floor_hour(until), _floor_hour(cutoff))
+        start = _to_ms(since)
+        end = _to_ms(self.effective_until(until))
 
-        step = MAX_DEVICE_RANGE if device else timedelta(hours=1)
         windows: list[RemoteFile] = []
         cursor = start
         while cursor < end:
-            window_end = min(cursor + step, end)
-            windows.append(RemoteFile(
-                source=self.id,
-                remote_id=f"{scope}|{cursor.isoformat()}",
-                name=f"axone_{scope}_{cursor.strftime('%Y-%m-%dT%H')}.csv",
-                scope=scope,
-                window_start=cursor,
-                window_end=window_end - ONE_MS,
-            ))
-            cursor = window_end
+            if device:
+                piece_end = min(cursor + MAX_DEVICE_RANGE, end)
+            else:
+                # Stop at the next hour boundary: start and end must share an hour.
+                piece_end = min(_floor_hour(cursor) + timedelta(hours=1), end)
+            windows.append(window_file(self.id, scope, cursor, piece_end))
+            cursor = piece_end
         return windows
 
     def fetch(self, remote: RemoteFile, dest_dir: Path) -> Path:

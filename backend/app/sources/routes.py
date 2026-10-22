@@ -26,7 +26,8 @@ from app.schemas import (
 from app.sources import registry
 from app.sources.base import ALLOWED_SUFFIXES, LogSource, SourceError
 from app.sources.service import (
-    WindowError, AcquisitionResult, acquire, is_already_acquired, resolve_window,
+    WindowError, AcquisitionResult, acquire, clamp_to_source, is_already_acquired, plan_new_windows,
+    resolve_window,
 )
 
 router = APIRouter()
@@ -59,6 +60,7 @@ def _to_out(result: AcquisitionResult) -> AcquisitionOut:
         bytes_staged=result.bytes_staged,
         files=[FileOutcomeOut(name=f.name, status=f.status, size=f.size, events=f.events, error=f.error)
                for f in result.files],
+        notes=result.notes,
     )
 
 
@@ -95,11 +97,14 @@ def preview_files(
     source = _source(source_id)
     try:
         since, until = resolve_window(since, until, default_lookback=source.default_lookback)
+        until, _ = clamp_to_source(source, since, until)
         remotes = source.list_available(since, until, {"path": path} if path else {})
     except (WindowError, SourceError) as e:
         raise HTTPException(400, str(e))
+    # Same planning acquire() uses, so the preview shows exactly what would be requested.
     return [RemoteFileOut(remote_id=r.remote_id, name=r.name, size=r.size, modified_at=r.modified_at,
-                          already_acquired=is_already_acquired(db, r)) for r in remotes]
+                          already_acquired=covered or is_already_acquired(db, r))
+            for r, covered in plan_new_windows(db, remotes)]
 
 
 def _run(db: Session, source: LogSource, user: User, req: AcquireRequest) -> AcquisitionOut:
