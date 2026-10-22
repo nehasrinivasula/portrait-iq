@@ -19,7 +19,7 @@ The module is deliberately not called `secrets.py`, which would shadow Python's 
 | `BOX_CLIENT_ID` | Box connection (SCRUM-43) | **Box auth type still to be confirmed** with the Box admin. Assumes a client ID + secret for now. |
 | `BOX_CLIENT_SECRET` | Box connection (SCRUM-43) | Same. |
 | `PLATFORM_DIAGS_USERNAME` / `PLATFORM_DIAGS_PASSWORD` | Log download from the Portrait Mobile platform (`/portrait/diags`) | **TBD. Only needed if that page asks for a login.** Open it in a browser to find out. |
-| `MINIEDGE_SSH_USER` / `MINIEDGE_SSH_KEY` (or `MINIEDGE_SSH_PASSWORD`) | Plugins that reach the MiniEdge over SSH to run `kubectl` (SCRUM-39) | **Only if the tool automates SSH.** Prefer a key file over a password. Per the lab notes, kubectl commands need `sudo su` first. If someone runs the commands by hand instead, this row is not needed. |
+| *(none: cluster access)* | Deploying plugins (SCRUM-39) | **The tool runs inside the cluster**, so it uses its own ServiceAccount and no kubeconfig is stored. It needs a least-privilege Role instead (section 4). The SSH login to the MiniEdge is for people, not the tool. |
 | `VIEWER_LOGIN_USERNAME` / `VIEWER_LOGIN_PASSWORD`, `HUB_LOGIN_USERNAME` / `HUB_LOGIN_PASSWORD` | Viewer / Hub sign-in | **Only if a plugin signs in programmatically.** TBD. |
 | `SESSION_SIGNING_KEY` | Session lock (SCRUM-34) | Generate: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` |
 
@@ -29,9 +29,11 @@ Add a row whenever a new credential is introduced.
 
 ### How the prototype runs
 
-For the prototype, the tool runs on a team member's **laptop**. The laptop connects through an unmanaged switch to the lab setup: the MiniEdge (runs the Kubernetes cluster), the hub host and the viewer. The tool is not deployed inside the cluster, so it does not get a Kubernetes ServiceAccount. Any access it needs to the lab (SSH to the MiniEdge, the platform diagnostics page, a Viewer or Hub sign-in) uses a login, and a login the tool uses is a secret. In-cluster deployment is a possible later step; see the "future" sections in section 4.
+The tool runs **inside the Kubernetes cluster on the MiniEdge**, next to the hub host and the viewer. Team members reach it from their **laptops**, which connect through an unmanaged switch over ethernet: a browser for the tool's UI, and SSH to the MiniEdge by hand when they need `kubectl`. So the laptop is only the client, and the tool's own secrets (Box, signing key) live in the cluster, not on laptops.
 
-Credentials the user types into the app (for example the IP address and login on the first screen) are treated as secrets too: keep them **in memory only**, call `register_for_redaction` on them, never write them to disk, logs or exports.
+Two things follow:
+- The tool reaches the cluster with its own ServiceAccount (section 4), not with anyone's SSH login or kubeconfig.
+- Credentials typed into the app (for example the IP address and login on the first screen) travel from the laptop to the tool. Keep them **in memory only**, call `register_for_redaction` on them, never write them to disk, logs or exports.
 
 ### Where logs come from: three modes
 
@@ -45,7 +47,7 @@ The tool must start and work with none of these credentials set, so load each on
 
 ### Lab logins: values are never stored here
 
-The lab logins (Viewer, Hub, MiniEdge, VM console) are shared test-bench logins. Their **values** never go in the repo, in this file or in Jira. Keep them in a team password manager. Each teammate supplies the ones the tool needs on their own laptop through an environment variable or a `NAME_FILE` file (section 4). The lab logins are for the test bench only and should not be reused for any real system.
+The lab logins (Viewer, Hub, MiniEdge, VM console) are shared test-bench logins that people use by hand. Their **values** never go in the repo, in this file or in Jira. Keep them in a team password manager. The tool does not need them unless a plugin signs in to the Viewer or Hub programmatically; if one does, add a row to the inventory and load it with `load_secret`. The lab logins are for the test bench only and should not be reused for any real system.
 
 ## 2. Naming and loading rule
 
@@ -54,13 +56,14 @@ For a secret called `NAME`, the loader checks:
 1. environment variable `NAME` (the value itself), else
 2. environment variable `NAME_FILE` (the path to a file containing the value).
 
-Setting both is an error. A trailing newline in the file is ignored. Secret files must not be readable by other users (`chmod 600`; `0440` is also accepted for Kubernetes mounts).
+Setting both is an error. A trailing newline in the file is ignored. Secret files must be owner-only (`chmod 600` or `0400`) and owned by you (or root). Group read (`0440`/`0640`) is accepted only when the file's group is the numeric ID in `SECRETS_FILE_GID`, which is meant for a Kubernetes Secret volume with `fsGroup` (see below).
 
 ## 3. Using it in code
 
 ```python
 from app.secrets_loader import (
-    load_secret, install_log_redaction, register_for_redaction, assert_no_secrets,
+    load_secret, install_log_redaction, register_for_redaction, redaction_scope,
+    assert_no_secrets,
 )
 
 install_log_redaction()                      # once, at startup, before any logging
@@ -75,6 +78,12 @@ payload = {"client_id": box_id.reveal(), "client_secret": box_secret.reveal()}
 # by load_secret, so register them yourself:
 register_for_redaction(access_token, "BOX_ACCESS_TOKEN")
 
+# a credential that only matters during one request (e.g. the password typed on
+# the Connect screen): masked while the block runs, then forgotten, so the
+# process does not keep every password ever entered.
+with redaction_scope(req.password.get_secret_value(), "CONNECT_PASSWORD"):
+    ...
+
 # in the export code (SCRUM-61), before and after building the zip:
 assert_no_secrets([staging_dir])
 assert_no_secrets([zip_path])
@@ -86,7 +95,7 @@ assert_no_secrets([zip_path])
 
 ### Local / dev only: one file per secret, outside the repo
 
-(The prototype runs on a laptop, so this is the real path for now.)
+(Use this when you run the tool on your own laptop while developing. When it runs in the cluster, use the Kubernetes path below.)
 
 ```bash
 mkdir -p ~/iomt-secrets && chmod 700 ~/iomt-secrets
@@ -100,7 +109,7 @@ export BOX_CLIENT_SECRET_FILE=~/iomt-secrets/BOX_CLIENT_SECRET
 
 Repeat for each secret. `secrets.example.env` lists the names with fake values.
 
-### Kubernetes (future: only if the tool is deployed inside the cluster)
+### Kubernetes (how the tool gets its secrets in the cluster)
 
 Create the Secret from files, so real values never go into a manifest in git:
 
@@ -134,10 +143,10 @@ spec:
 ```
 
 Things to know:
-- If the container runs as a **non-root user**, `0400` makes the files unreadable to it. Set `securityContext.fsGroup` and use `defaultMode: 0440` instead. The loader accepts that.
+- If the container runs as a **non-root user**, `0400` makes the files unreadable to it. Set `securityContext.fsGroup`, use `defaultMode: 0440`, and set the env var `SECRETS_FILE_GID` to the same number as `fsGroup`. The loader then accepts group read for files in that group only.
 - Kubernetes Secrets are **base64-encoded, not encrypted**, unless encryption at rest is enabled. Limit who can read them with RBAC, and ask the cluster admin whether encryption at rest is on.
 
-### ServiceAccount and RBAC (future: only if the tool is deployed inside the cluster)
+### ServiceAccount and RBAC (cluster access)
 
 Because the tool runs inside the cluster, it does not need a kubeconfig. Kubernetes gives the pod a token for its **ServiceAccount**, and the Kubernetes client library can use it directly (for the Python client, `config.load_incluster_config()`). That removes one secret, but the token is still a credential: whatever the Role allows, anyone who compromises the tool can do. So keep the Role small.
 
@@ -213,7 +222,7 @@ If a secret leaks: rotate first, investigate second.
 - Never pass a secret as a command-line argument to a tool or plugin (it shows in `ps`). Use an environment variable or a mounted file.
 - Never put a secret value in an exception message. Use the secret's name.
 - Never write secrets, tokens, or kubeconfigs into the logs or output the zip export collects.
-- Never pass an SSH password on a command line (for example `sshpass -p`). Prefer an SSH key loaded from a `_FILE` path, or pass the value through the SSH library directly.
+- Never pass a password on a command line (it shows in `ps`). Use an environment variable or a mounted file.
 - Credentials typed into the UI stay in memory only (see "How the prototype runs").
 - Do not pass the tool's own secrets (Box credentials, the signing key) into the diagnostic pods it launches. Set `automountServiceAccountToken: false` on those pods unless a plugin needs cluster API access.
 
@@ -229,11 +238,10 @@ If a secret leaks: rotate first, investigate second.
 - [ ] Confirm the Box auth type and update the inventory (see the questions list for the Box admin).
 - [ ] Confirm with compliance whether Kubernetes Secrets / a secrets file are acceptable storage.
 - [ ] Wire `assert_no_secrets` into the zip export when SCRUM-61 is built.
-- [x] Where the tool runs: for the prototype, **on a team laptop** connected to the lab network (unmanaged switch, MiniEdge, hub host, viewer). In-cluster deployment is a possible later step.
-- [ ] Decide how plugins reach the MiniEdge: SSH with a key (preferred) or password, and which account. Use a dedicated account where possible, not root.
-- [ ] Only if deployed in the cluster later: have the cluster admin review the Role in section 4 and name the namespace(s).
-- [ ] Only if Box mode is wanted: confirm the laptop can reach Box. The lab switch may have no internet, so the laptop may need a second connection.
-- [ ] Open `http://<PLATFORM_IP>/portrait/diags` and see whether the log download page asks for a login. If yes, which account, and can we get a separate service account for the tool? Also confirm the laptop can reach that address.
+- [x] Where the tool runs: **inside the cluster on the MiniEdge**. Team members connect from their laptops over ethernet through an unmanaged switch. No kubeconfig is stored; the tool uses a ServiceAccount.
+- [ ] Have the cluster admin review the Role in section 4 and name the namespace(s) the tool may create pods in.
+- [ ] Only if Box mode is wanted: confirm pods in the cluster can reach Box. The lab switch may have no internet connection, in which case Box mode will not work there.
+- [ ] Open `http://<PLATFORM_IP>/portrait/diags` and see whether the log download page asks for a login. If yes, which account, and can we get a separate service account for the tool? Also confirm a pod in the cluster can reach that address, because the tool runs there, not on the laptop.
 - [ ] Confirm which environment the final demo runs in (lab cluster with internet, or offline). If offline, Box mode cannot be used and Import mode is the main path.
 - [ ] Find out about other ways logs are obtained (shared drive, SFTP, direct device pull, manual upload). Add a row to the inventory for any source that needs a credential.
 - [ ] UMF RTI: not present on the test bench as far as we know. Ask whoever owns it whether it needs a login or certificates when run in the cluster. Add the files to the inventory if so.

@@ -18,10 +18,12 @@ def clean_state(monkeypatch):
     """Every test starts with no registered secrets and the original log record factory."""
     sl.clear_registered_secrets()
     previous_factory = logging.getLogRecordFactory()
-    for var in ("TEST_SECRET", "TEST_SECRET_FILE"):
+    previous_make_record = logging.Logger.makeRecord
+    for var in ("TEST_SECRET", "TEST_SECRET_FILE", sl.TRUSTED_GID_VAR):
         monkeypatch.delenv(var, raising=False)
     yield
     logging.setLogRecordFactory(previous_factory)
+    logging.Logger.makeRecord = previous_make_record
     sl.clear_registered_secrets()
 
 
@@ -80,8 +82,9 @@ def test_empty_file_is_rejected(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits only")
-@pytest.mark.parametrize("mode", [0o644, 0o666, 0o660, 0o604])
+@pytest.mark.parametrize("mode", [0o644, 0o666, 0o660, 0o604, 0o440, 0o640])
 def test_loose_file_permissions_are_rejected(monkeypatch, tmp_path, mode):
+    # Group read (0440/0640) counts as loose unless the group is trusted.
     monkeypatch.setenv("TEST_SECRET_FILE", str(write_secret_file(tmp_path, mode=mode)))
     with pytest.raises(sl.InsecureSecretFileError) as err:
         sl.load_secret("TEST_SECRET")
@@ -89,10 +92,43 @@ def test_loose_file_permissions_are_rejected(monkeypatch, tmp_path, mode):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits only")
-@pytest.mark.parametrize("mode", [0o400, 0o440, 0o600, 0o640])
+@pytest.mark.parametrize("mode", [0o400, 0o600])
 def test_safe_file_permissions_are_accepted(monkeypatch, tmp_path, mode):
     monkeypatch.setenv("TEST_SECRET_FILE", str(write_secret_file(tmp_path, mode=mode)))
     assert sl.load_secret("TEST_SECRET").reveal() == FAKE
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits only")
+@pytest.mark.parametrize("mode", [0o440, 0o640])
+def test_group_read_is_accepted_only_for_the_trusted_group(monkeypatch, tmp_path, mode):
+    path = write_secret_file(tmp_path, mode=mode)
+    monkeypatch.setenv("TEST_SECRET_FILE", str(path))
+    file_gid = path.stat().st_gid
+
+    monkeypatch.setenv(sl.TRUSTED_GID_VAR, str(file_gid))  # e.g. the pod's fsGroup
+    assert sl.load_secret("TEST_SECRET").reveal() == FAKE
+
+    monkeypatch.setenv(sl.TRUSTED_GID_VAR, str(file_gid + 4242))  # some unrelated group
+    with pytest.raises(sl.InsecureSecretFileError, match="readable by its group"):
+        sl.load_secret("TEST_SECRET")
+
+
+def test_trusted_group_must_be_numeric(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEST_SECRET_FILE", str(write_secret_file(tmp_path, mode=0o440)))
+    monkeypatch.setenv(sl.TRUSTED_GID_VAR, "secrets")
+    with pytest.raises(sl.SecretError, match="numeric"):
+        sl.load_secret("TEST_SECRET")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits only")
+def test_file_owned_by_another_user_is_rejected(monkeypatch, tmp_path):
+    path = write_secret_file(tmp_path)
+    monkeypatch.setenv("TEST_SECRET_FILE", str(path))
+    monkeypatch.setattr(sl.os, "geteuid", lambda: path.stat().st_uid + 4242)
+    if path.stat().st_uid == 0:
+        pytest.skip("root-owned files are always allowed")
+    with pytest.raises(sl.InsecureSecretFileError, match="owned by another user"):
+        sl.load_secret("TEST_SECRET")
 
 
 # --------------------------------------------------------------------------- #
@@ -129,6 +165,30 @@ def test_redact_masks_common_token_patterns():
     assert sl.redact("password reset requested") == "password reset requested"  # no false positive
     pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAK\n-----END RSA PRIVATE KEY-----"
     assert "MIIBOgIBAAJBAK" not in sl.redact(f"key: {pem} done")
+
+
+def test_redaction_scope_masks_only_while_open():
+    with sl.redaction_scope(FAKE, "CONNECT_PASSWORD"):
+        assert sl.redact(FAKE) == "***"
+        with sl.redaction_scope(FAKE, "CONNECT_PASSWORD"):  # a second request, same password
+            pass
+        assert sl.redact(FAKE) == "***"  # still open in the outer scope
+    assert sl.redact(f"pw {FAKE}") == f"pw {FAKE}"
+    assert sl._snapshot() == {}
+
+
+def test_redaction_scope_keeps_long_lived_secrets():
+    sl.register_for_redaction(FAKE, "BOX_CLIENT_SECRET")
+    with sl.redaction_scope(FAKE, "CONNECT_PASSWORD"):
+        pass
+    assert sl.redact(FAKE) == "***"
+
+
+def test_redaction_scope_closes_on_error():
+    with pytest.raises(RuntimeError):
+        with sl.redaction_scope(FAKE, "CONNECT_PASSWORD"):
+            raise RuntimeError("request failed")
+    assert sl._snapshot() == {}
 
 
 def test_very_short_values_are_not_registered():
@@ -176,12 +236,29 @@ def test_tracebacks_are_masked():
     assert FAKE not in output  # ... but the secret is gone
 
 
+def test_extra_fields_are_masked():
+    sl.register_for_redaction(FAKE, "BOX_CLIENT_SECRET")
+    logger, stream = make_logger("test.redaction.extra")  # created before install
+    sl.install_log_redaction()
+    stream.truncate(0)
+    for handler in logger.handlers:
+        handler.setFormatter(logging.Formatter("%(message)s cred=%(credential)s ctx=%(ctx)s n=%(n)d"))
+
+    logger.info("safe", extra={"credential": FAKE, "ctx": {"token": FAKE}, "n": 3})
+
+    output = stream.getvalue()
+    assert FAKE not in output
+    assert "cred=*** " in output and "n=3" in output
+
+
 def test_install_is_idempotent_and_covers_loggers_added_later():
     sl.register_for_redaction(FAKE, "X")
     sl.install_log_redaction()
     factory = logging.getLogRecordFactory()
+    make_record = logging.Logger.makeRecord
     sl.install_log_redaction()
     assert logging.getLogRecordFactory() is factory
+    assert logging.Logger.makeRecord is make_record
 
     logger, stream = make_logger("test.redaction.later")
     logger.warning("late %s", FAKE)

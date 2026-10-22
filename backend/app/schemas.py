@@ -4,9 +4,7 @@ once the shape stabilizes."""
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
-
-from app.secrets_loader import register_for_redaction
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 
 class ConnectRequest(BaseModel):
@@ -14,15 +12,10 @@ class ConnectRequest(BaseModel):
     ip_address: str
     username: str
     # Typed into the UI, kept in memory only, never saved (SCRUM-72).
-    # SecretStr hides it in repr/str; registering it masks it in logs and
-    # makes the export check catch it if it ever lands in a file.
+    # SecretStr hides it in repr/str. The connect route masks it in logs
+    # and the export check for as long as the request runs
+    # (secrets_loader.redaction_scope), then forgets it.
     password: SecretStr
-
-    @field_validator("password")
-    @classmethod
-    def _register_password(cls, v: SecretStr) -> SecretStr:
-        register_for_redaction(v.get_secret_value(), "CONNECT_PASSWORD")
-        return v
 
 
 class DeviceOut(BaseModel):

@@ -26,9 +26,10 @@ import stat
 import threading
 import traceback
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Iterable
+from typing import BinaryIO, Iterable, Iterator
 
 __all__ = [
     "Secret",
@@ -40,6 +41,7 @@ __all__ = [
     "Finding",
     "load_secret",
     "register_for_redaction",
+    "redaction_scope",
     "clear_registered_secrets",
     "redact",
     "install_log_redaction",
@@ -52,6 +54,10 @@ MASK = "***"
 # Values shorter than this are not registered for redaction. Masking a 1-3
 # character string would corrupt ordinary log text. Real credentials are far longer.
 MIN_REDACT_LENGTH = 6
+
+# Numeric group ID allowed to have read access to secret files: the pod's
+# fsGroup on Kubernetes. Unset means secret files must be owner-only.
+TRUSTED_GID_VAR = "SECRETS_FILE_GID"
 
 
 # --------------------------------------------------------------------------- #
@@ -83,15 +89,18 @@ class ExportGuardError(SecretError):
 # --------------------------------------------------------------------------- #
 
 _lock = threading.Lock()
-_registered: dict[str, str] = {}  # secret value -> secret name
+_registered: dict[str, str] = {}  # secret value -> secret name, kept for the process lifetime
+_scoped: dict[str, list] = {}  # secret value -> [secret name, number of open scopes]
 
 
 def register_for_redaction(value: str, name: str = "runtime") -> None:
     """Remember a secret value so it is masked in logs and caught by the export scan.
 
-    load_secret() does this automatically. Call this yourself for secrets you
-    only learn at runtime, e.g. the access token Box returns after you
-    authenticate - those never pass through load_secret().
+    For application secrets that live as long as the process. load_secret()
+    does this automatically. Call this yourself for secrets you only learn at
+    runtime, e.g. the access token Box returns after you authenticate - those
+    never pass through load_secret(). For a credential that only matters
+    during one request, use redaction_scope() instead.
     """
     if value is None or len(value) < MIN_REDACT_LENGTH:
         return
@@ -99,15 +108,44 @@ def register_for_redaction(value: str, name: str = "runtime") -> None:
         _registered[value] = name
 
 
+@contextmanager
+def redaction_scope(value: str, name: str = "runtime") -> Iterator[None]:
+    """Mask value in logs and the export scan only while the block runs.
+
+    For request-scoped credentials, e.g. a password typed into the Connect
+    screen: it is masked while the request is handled, then forgotten, so
+    the registry does not keep every password ever entered.
+    Scopes may nest or overlap (two requests with the same password).
+    """
+    if value is None or len(value) < MIN_REDACT_LENGTH:
+        yield
+        return
+    with _lock:
+        entry = _scoped.setdefault(value, [name, 0])
+        entry[1] += 1
+    try:
+        yield
+    finally:
+        with _lock:
+            entry = _scoped.get(value)
+            if entry is not None:  # absent only if clear_registered_secrets() ran meanwhile
+                entry[1] -= 1
+                if entry[1] <= 0:
+                    del _scoped[value]
+
+
 def clear_registered_secrets() -> None:
     """Forget all registered values (mainly for tests)."""
     with _lock:
         _registered.clear()
+        _scoped.clear()
 
 
 def _snapshot() -> dict[str, str]:
     with _lock:
-        return dict(_registered)
+        merged = {value: entry[0] for value, entry in _scoped.items()}
+        merged.update(_registered)
+        return merged
 
 
 # --------------------------------------------------------------------------- #
@@ -147,19 +185,45 @@ class Secret:
 # Loading
 # --------------------------------------------------------------------------- #
 
-def _check_file_permissions(path: Path, name: str) -> None:
-    """Reject files that other users could read, or that group members could change.
+def _trusted_gid() -> int | None:
+    raw = os.environ.get(TRUSTED_GID_VAR, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise SecretError(f"{TRUSTED_GID_VAR} must be a numeric group ID.") from None
 
-    Allowed: 0400, 0440, 0600, 0640 (0440 is what Kubernetes produces when fsGroup is set).
+
+def _check_file_permissions(path: Path, name: str) -> None:
+    """Reject secret files that anyone but their owner could read or change.
+
+    Allowed: 0400 and 0600, owned by this process's user or by root. Group
+    read (0440, 0640) is allowed only when the file's group is the one named
+    in SECRETS_FILE_GID: that is what Kubernetes produces for a Secret volume
+    when the pod sets fsGroup. On a shared host any other group could
+    include other people.
     Skipped on Windows, where POSIX mode bits are not meaningful.
     """
     if os.name == "nt":
         return
-    mode = path.stat().st_mode  # follows symlinks, which Kubernetes mounts use
-    if mode & stat.S_IRWXO or mode & stat.S_IWGRP:
+    st = path.stat()  # follows symlinks, which Kubernetes mounts use
+    mode = st.st_mode
+    if st.st_uid not in (os.geteuid(), 0):
+        raise InsecureSecretFileError(
+            f"File for secret {name} is owned by another user (uid {st.st_uid}). "
+            f"Use a file you own."
+        )
+    if mode & stat.S_IRWXO or mode & stat.S_IWGRP or mode & stat.S_IXGRP:
         raise InsecureSecretFileError(
             f"File for secret {name} has unsafe permissions ({stat.filemode(mode)}). "
             f"Run: chmod 600 <file>  (or set defaultMode: 0400 on the Kubernetes volume)."
+        )
+    if mode & stat.S_IRGRP and st.st_gid != _trusted_gid():
+        raise InsecureSecretFileError(
+            f"File for secret {name} is readable by its group (gid {st.st_gid}) "
+            f"({stat.filemode(mode)}). Run: chmod 600 <file>. On Kubernetes with "
+            f"fsGroup, set {TRUSTED_GID_VAR} to the fsGroup."
         )
 
 
@@ -239,13 +303,42 @@ def _format_exc(exc_info) -> str:
     return "".join(traceback.format_exception(*exc_info)).rstrip("\n")
 
 
+# Attributes every LogRecord has. Anything else on a record came from extra=.
+_STANDARD_RECORD_FIELDS = frozenset(
+    vars(logging.LogRecord("", logging.INFO, "", 0, "", None, None))
+) | {"message", "asctime"}
+
+
+def _redact_extra_fields(record: logging.LogRecord) -> None:
+    """Mask secrets in fields added with extra=, which a formatter or a
+    structured (e.g. JSON) handler may output. Strings are always redacted;
+    other values are replaced by their redacted text only when it differs,
+    so a number used with %(n)d keeps working."""
+    for key, value in list(vars(record).items()):
+        if key in _STANDARD_RECORD_FIELDS:
+            continue
+        if isinstance(value, str):
+            setattr(record, key, redact(value))
+            continue
+        try:
+            text = str(value)
+        except Exception:
+            setattr(record, key, "<log field suppressed: could not be formatted safely>")
+            continue
+        masked = redact(text)
+        if masked != text:
+            setattr(record, key, masked)
+
+
 def install_log_redaction() -> None:
     """Mask secrets in every log record created from now on.
 
     Works at record-creation time, so it covers every logger and every handler,
-    including ones added later. Messages, %-style arguments, tracebacks and
-    stack info are all redacted. Safe to call more than once.
+    including ones added later. Messages, %-style arguments, tracebacks, stack
+    info and fields passed with extra= are all redacted. Safe to call more
+    than once.
     """
+    _install_extra_redaction()
     current = logging.getLogRecordFactory()
     if getattr(current, "_redacting", False):
         return
@@ -266,6 +359,24 @@ def install_log_redaction() -> None:
 
     factory._redacting = True  # type: ignore[attr-defined]
     logging.setLogRecordFactory(factory)
+
+
+def _install_extra_redaction() -> None:
+    """extra= fields are copied onto the record by Logger.makeRecord after the
+    record factory has returned, so the factory never sees them. Wrap
+    makeRecord on the Logger class, which also covers loggers created before
+    this call."""
+    original = logging.Logger.makeRecord
+    if getattr(original, "_redacting", False):
+        return
+
+    def make_record(self, *args, **kwargs):
+        record = original(self, *args, **kwargs)
+        _redact_extra_fields(record)
+        return record
+
+    make_record._redacting = True  # type: ignore[attr-defined]
+    logging.Logger.makeRecord = make_record  # type: ignore[method-assign]
 
 
 # --------------------------------------------------------------------------- #
