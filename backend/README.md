@@ -205,6 +205,26 @@ UTC; the window must be within the last 30 days.
   pull of 09:30-10:30 only requests 10:00-10:30. Windows that failed are
   requested again. One call at a time, with a short pause between calls.
 
+Device selection (SCRUM-70): pull one, several or all devices in one run
+with `"device_uuids": [...]` on the acquire request (empty = all devices).
+Selected devices use the per-device endpoint, up to 7 days per request, and
+"already pulled" is tracked per device, so adding a device to a selection
+only fetches that device. At most 50 devices per pull.
+
+The API cannot list devices, so the tool keeps its own list
+(`known_devices` table):
+
+```
+GET  /api/sources/devices      devices to pick from: ID, latest name, host, first/last seen
+POST /api/sources/devices      {"device_uuid": "...", "name": "..."} add a device by hand
+```
+
+It fills itself from every Portrait-format CSV acquired (log export API,
+ZIP / folder import, Box): no extra calls to the live system, works offline.
+Devices are keyed on their ID and the newest friendly name wins (devices get
+renamed). A device that has never appeared in pulled logs can be added by
+hand; once real logs mention it, the logged name replaces the typed one.
+
 Reaching it from a laptop on the lab network (development only):
 
 ```bash

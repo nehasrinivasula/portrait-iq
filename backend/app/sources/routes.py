@@ -21,10 +21,12 @@ from app.config import settings
 from app.db import get_db
 from app.models import Job
 from app.schemas import (
-    AcquireRequest, AcquisitionOut, FileOutcomeOut, RemoteFileOut, SourceOut, SourceStatusOut,
+    AcquireRequest, AcquisitionOut, DeviceAddRequest, FileOutcomeOut, KnownDeviceOut, RemoteFileOut,
+    SourceOut, SourceStatusOut,
 )
 from app.sources import registry
 from app.sources.base import ALLOWED_SUFFIXES, LogSource, SourceError
+from app.sources.devices import add_manual, display_name, list_known
 from app.sources.service import (
     WindowError, AcquisitionResult, acquire, clamp_to_source, is_already_acquired, plan_new_windows,
     resolve_window,
@@ -64,6 +66,31 @@ def _to_out(result: AcquisitionResult) -> AcquisitionOut:
     )
 
 
+def _device_out(d) -> KnownDeviceOut:
+    return KnownDeviceOut(device_uuid=d.device_uuid, name=display_name(d), friendly_name=d.friendly_name,
+                          host_name=d.host_name, first_seen=d.first_seen, last_seen=d.last_seen,
+                          learned_from=d.learned_from)
+
+
+@router.get("/devices", response_model=list[KnownDeviceOut])
+def known_devices(db: Session = Depends(get_db), user: User = Depends(_active_user)):
+    """Devices to pick from for a log pull (SCRUM-70): every device seen in
+    acquired logs, plus devices added by hand."""
+    return [_device_out(d) for d in list_known(db)]
+
+
+@router.post("/devices", response_model=KnownDeviceOut)
+def add_device(req: DeviceAddRequest, db: Session = Depends(get_db), user: User = Depends(_active_user)):
+    """Add a device the tool hasn't seen in any logs yet, by its ID."""
+    try:
+        device, created = add_manual(db, req.device_uuid, req.name)
+    except SourceError as e:
+        raise HTTPException(400, str(e))
+    if created:
+        log_action(db, user.id, "device_add", detail=f"device={device.device_uuid}")
+    return _device_out(device)
+
+
 @router.get("", response_model=list[SourceOut])
 def list_sources(user: User = Depends(_active_user)):
     out = []
@@ -91,6 +118,7 @@ def preview_files(
     since: datetime | None = None,
     until: datetime | None = None,
     path: str | None = Query(None, description="Local import only: file or folder to read"),
+    device_uuids: str | None = Query(None, description="Log export API only: comma-separated device IDs"),
     db: Session = Depends(get_db),
     user: User = Depends(_active_user),
 ):
@@ -98,7 +126,8 @@ def preview_files(
     try:
         since, until = resolve_window(since, until, default_lookback=source.default_lookback)
         until, _ = clamp_to_source(source, since, until)
-        remotes = source.list_available(since, until, {"path": path} if path else {})
+        opts = {k: v for k, v in {"path": path, "device_uuids": device_uuids}.items() if v}
+        remotes = source.list_available(since, until, opts)
     except (WindowError, SourceError) as e:
         raise HTTPException(400, str(e))
     # Same planning acquire() uses, so the preview shows exactly what would be requested.
@@ -111,8 +140,11 @@ def _run(db: Session, source: LogSource, user: User, req: AcquireRequest) -> Acq
     if req.job_id and db.get(Job, req.job_id) is None:
         raise HTTPException(404, "job not found")
     try:
+        options = dict(req.options)
+        if req.device_uuids:
+            options["device_uuids"] = ",".join(req.device_uuids)
         result = acquire(db, source, actor=user.id, since=req.since, until=req.until,
-                         options=req.options, job_id=req.job_id, ingest=req.ingest)
+                         options=options, job_id=req.job_id, ingest=req.ingest)
     except WindowError as e:
         raise HTTPException(422, str(e))
     except SourceError as e:

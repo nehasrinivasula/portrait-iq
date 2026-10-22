@@ -31,6 +31,7 @@ from app.ingestion.pipeline import IngestError, ingest_file
 from app.models import AcquiredFileRecord
 from app.secrets_loader import redact
 from app.sources.base import ALLOWED_SUFFIXES, ONE_MS, LogSource, RemoteFile, SourceError, window_file
+from app.sources.devices import harvest_csv, record_devices
 from app.sources.local_import import sha256_of
 
 log = logging.getLogger(__name__)
@@ -320,6 +321,19 @@ def _ingest(paths: list[Path], db: Session, job_id: str | None,
     return "ingested", events, note
 
 
+def _learn_devices(db: Session, paths: list[Path], source_id: str) -> None:
+    """Add the devices in these files to the device registry (SCRUM-70).
+    Best effort: a problem here never fails the acquisition itself."""
+    for p in paths:
+        if p.suffix.lower() != ".csv":
+            continue
+        try:
+            record_devices(db, harvest_csv(p), learned_from=source_id)
+        except Exception:
+            db.rollback()
+            log.warning("Could not read devices from %s", p.name, exc_info=True)
+
+
 def _safe_message(e: Exception) -> str:
     if isinstance(e, SourceError):
         return redact(str(e))
@@ -397,6 +411,7 @@ def acquire(
             result.bytes_staged += size
 
             outcome.status = "acquired"
+            _learn_devices(db, staged, source.id)
             if ingest:
                 outcome.status, outcome.events, outcome.error = _ingest(staged, db, job_id, remote, file_dir)
         except Exception as e:
