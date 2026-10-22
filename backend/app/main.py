@@ -1,6 +1,8 @@
 import time
 
 from fastapi import Depends, FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.config import settings
@@ -26,6 +28,15 @@ async def _auth_error_handler(_: Request, exc: AuthError) -> JSONResponse:
         status_code=exc.status_code,
         headers=exc.headers,
     )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's default 422 repeats the submitted values ("input", and
+    sometimes "ctx"), which for login and connect include the password.
+    Keep where and why each field failed, never what was sent. SCRUM-72."""
+    errors = [{k: v for k, v in e.items() if k not in ("input", "ctx")} for e in exc.errors()]
+    return JSONResponse({"detail": jsonable_encoder(errors)}, status_code=422)
 
 
 @app.post("/api/auth/login", response_model=TokenResponse)
