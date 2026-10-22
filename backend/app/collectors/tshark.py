@@ -23,6 +23,7 @@ class TsharkCollector(Collector):
     description = "Runs a packet capture, or imports a .pcap someone else collected."
 
     MODES = ("run", "import")
+    MAX_REASON_LENGTH = 500   # a sentence or a ticket reference, not a document
 
     def __init__(self, limits):
         super().__init__(limits)
@@ -47,6 +48,10 @@ class TsharkCollector(Collector):
         if not isinstance(reason, str):
             raise PluginConfigError("tshark full_payload_reason must be text")
         reason = reason.strip()
+        if len(reason) > self.MAX_REASON_LENGTH:
+            raise PluginConfigError(
+                f"tshark full_payload_reason is limited to {self.MAX_REASON_LENGTH} characters"
+            )
         if not headers_only and not reason:
             raise PluginConfigError(
                 "tshark full payload capture can contain PHI/PII; "
