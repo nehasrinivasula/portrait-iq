@@ -1,0 +1,9 @@
+.sysinfo h3 { margin-bottom: 10px; }
+.sysinfo dl { margin: 14px 0 0; display: grid; gap: 8px; font-size: 15px; }
+.sysinfo dl div { display: grid; }
+.sysinfo dt { color: var(--muted); font-size: 14px; }
+.sysinfo dd { margin: 0; font-weight: 600; }
+.health { display: inline-flex; align-items: center; gap: 8px; }
+.health-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+.health.up .health-dot { background: var(--ok); }
+.health.down .health-dot { background: var(--error); }

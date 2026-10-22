@@ -9,6 +9,22 @@ from pydantic import BaseModel, SecretStr, field_validator
 from app.secrets_loader import register_for_redaction
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class CurrentUserOut(BaseModel):
+    username: str
+    name: str
+
+
 class ConnectRequest(BaseModel):
     mode: str = "live"          # "live" | "pre_install"
     ip_address: str
