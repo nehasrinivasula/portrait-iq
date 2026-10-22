@@ -17,7 +17,18 @@ def init_db() -> None:
     migrations before this touches a database anyone else depends on."""
     from app import models  # noqa: F401  (import so tables register on Base)
     Base.metadata.create_all(bind=engine)
+    _check_schema_is_current()
 
+def _check_schema_is_current() -> None:
+    """create_all never alters existing tables. Fail early and say what to do."""
+    from sqlalchemy import inspect
+    insp, stale = inspect(engine), []
+    for table in Base.metadata.sorted_tables:
+        have = {c["name"] for c in insp.get_columns(table.name)}
+        stale += [f"{table.name}.{c.name}" for c in table.columns if c.name not in have]
+    if stale:
+        raise RuntimeError("The database file is out of date (missing: " + ", ".join(stale) +
+                           "). It only holds development data: delete portrait_iq.db and restart.")
 
 def get_db():
     """FastAPI dependency: yields a session, always closes it."""
