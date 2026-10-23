@@ -13,8 +13,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN apt-get update \
+# tshark/editcap read and trim captures for the tshark plugin (SCRUM-39).
+# No setuid dumpcap: the backend never captures itself.
+RUN echo "wireshark-common wireshark-common/install-setuid boolean false" | debconf-set-selections \
+    && apt-get update \
     && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+       tshark \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv /opt/venv

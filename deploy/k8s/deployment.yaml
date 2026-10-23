@@ -35,6 +35,8 @@ spec:
       labels:
         app.kubernetes.io/name: portrait-iq
     spec:
+      # Lets the backend start and delete its tool pods (deploy/k8s/tool-rbac.yaml).
+      serviceAccountName: portrait-iq
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -56,6 +58,12 @@ spec:
             # group read only for this group (SCRUM-72).
             - name: SECRETS_FILE_GID
               value: "10001"
+            # The root filesystem is read-only: job output and uploads go
+            # on the data volume (SCRUM-39).
+            - name: JOB_OUTPUT_DIR
+              value: /data/jobs
+            - name: UPLOAD_DIR
+              value: /data/uploads
           # The pod shares the MiniEdge with the Portrait software and must
           # not starve it. Raise only after watching real usage.
           resources:

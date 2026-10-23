@@ -18,6 +18,8 @@ IMPORT_CMD           =
 
 # From "Log Export service namespace:".
 LOG_EXPORT_NAMESPACE =
+# Only if the service is not called axone-log-export-tcp on this bench.
+# LOG_EXPORT_SERVICE = axone-log-export-tcp
 
 # Our own namespace (created and removed by make deploy / undeploy).
 NAMESPACE            = portrait-iq

@@ -25,10 +25,11 @@ REMOTE_DIR    ?= /tmp/portrait-iq-deploy
 PLATFORM      ?=#   linux/amd64 or linux/arm64 (the node's CPU type)
 IMPORT_CMD    ?=#   e.g. k3s ctr images import -   (depends on the runtime)
 LOG_EXPORT_NAMESPACE ?=#   namespace of axone-log-export-tcp
+LOG_EXPORT_SERVICE ?= axone-log-export-tcp
 
 NAMESPACE     ?= portrait-iq
 NODE_PORT     ?= 30080
-LOG_EXPORT_URL ?= http://axone-log-export-tcp.$(LOG_EXPORT_NAMESPACE).svc.cluster.local:9200
+LOG_EXPORT_URL ?= http://$(LOG_EXPORT_SERVICE).$(LOG_EXPORT_NAMESPACE).svc.cluster.local:9200
 SECRETS_DIR   ?=#   folder OUTSIDE the repo, one file per secret (backend/SECRETS.md)
 API_CHECK_HOUR ?=#  optional, YYYY-MM-DDTHH; default is the last full hour on the node
 
@@ -46,7 +47,7 @@ require = $(if $(strip $($(1))),,$(error $(1) is not set. Add it to deploy/lab.m
 
 .DEFAULT_GOAL := help
 .PHONY: help setup test dev image image-save image-load secrets deploy pod-check \
-        status logs api-check undeploy clean render bundle
+        status logs api-check undeploy clean render bundle ship
 
 help:  ## List targets
 	@grep -hE '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -90,6 +91,12 @@ image-load:  ## Copy dist/images/*.tar.gz to the node and import them
 	$(SCP) $(BUILD_DIR)/images/*.tar.gz $(NODE):$(REMOTE_DIR)/images/
 	$(REMOTE) load-images
 
+# Sub-makes rather than prerequisites, so the order holds even under make -j.
+ship:  ## Build and save the image, then copy and import it on the node
+	@$(MAKE) --no-print-directory image-save
+	@$(MAKE) --no-print-directory image-load
+	@echo "Image $$(cat $(BUILD_DIR)/image.ref) is on the node. Run make deploy to use it."
+
 # --- Lab ------------------------------------------------------------------
 
 # render: fill in the manifests and write config.env locally (no SSH).
@@ -97,12 +104,12 @@ image-load:  ## Copy dist/images/*.tar.gz to the node and import them
 render:
 	@rm -rf $(BUNDLE_DIR) && mkdir -p $(BUNDLE_DIR)/k8s
 	@cp deploy/scripts/remote.sh $(BUNDLE_DIR)/
-	@printf "NAMESPACE='%s'\nIMPORT_CMD='%s'\nLOG_EXPORT_URL='%s'\nAPI_CHECK_HOUR='%s'\n" \
-		"$(NAMESPACE)" "$(IMPORT_CMD)" "$(LOG_EXPORT_URL)" "$(API_CHECK_HOUR)" > $(BUNDLE_DIR)/config.env
+	@printf "NAMESPACE='%s'\nIMPORT_CMD='%s'\nLOG_EXPORT_URL='%s'\nLOG_EXPORT_SERVICE='%s'\nAPI_CHECK_HOUR='%s'\n" \
+		"$(NAMESPACE)" "$(IMPORT_CMD)" "$(LOG_EXPORT_URL)" "$(LOG_EXPORT_SERVICE)" "$(API_CHECK_HOUR)" > $(BUNDLE_DIR)/config.env
 	@image=$$(cat $(BUILD_DIR)/image.ref 2>/dev/null || echo "$(IMAGE_NAME):unbuilt"); \
 	for f in deploy/k8s/*.yaml; do \
 		sed -e "s|__IMAGE__|$$image|" -e "s|__LOG_EXPORT_URL__|$(LOG_EXPORT_URL)|" \
-		    -e "s|__NODE_PORT__|$(NODE_PORT)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
+		    -e "s|__NODE_PORT__|$(NODE_PORT)|" -e "s|__NAMESPACE__|$(NAMESPACE)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
 	done
 
 bundle: render

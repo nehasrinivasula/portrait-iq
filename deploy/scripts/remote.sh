@@ -18,16 +18,22 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 LABEL="app.kubernetes.io/name=portrait-iq"
 MANAGED="app.kubernetes.io/managed-by"
-SERVICE="axone-log-export-tcp"
+SERVICE="${LOG_EXPORT_SERVICE:-axone-log-export-tcp}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 k() { kubectl -n "$NAMESPACE" "$@"; }
 
 api_check() {
     command -v curl >/dev/null || die "curl is not installed on this node"
-    ns=$(kubectl get svc -A --field-selector "metadata.name=$SERVICE" \
-        -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null || true)
-    [ -n "$ns" ] || die "no service named $SERVICE in any namespace"
+    command -v kubectl >/dev/null || die "kubectl is not on root's PATH under sudo -i (try REMOTE_SUDO=sudo in deploy/lab.mk)"
+    svcs=$(kubectl get svc -A --no-headers 2>&1) || die "kubectl failed: $svcs"
+    ns=$(printf '%s\n' "$svcs" | awk -v s="$SERVICE" '$2 == s {print $1; exit}')
+    if [ -z "$ns" ]; then
+        echo "No service named $SERVICE. Services that look related (namespace, name, type, ports):" >&2
+        printf '%s\n' "$svcs" | grep -iE 'log|axone|export' | awk '{print "  " $1, $2, $3, $6}' >&2 \
+            || echo "  none; all services: $(printf '%s\n' "$svcs" | awk '{print $1 "/" $2}' | tr '\n' ' ')" >&2
+        die "set LOG_EXPORT_SERVICE=<name> in deploy/lab.mk if one of these is it"
+    fi
 
     echo "== Log Export service namespace: $ns   (set LOG_EXPORT_NAMESPACE=$ns)"
     echo "== Node (CPU type -> PLATFORM, runtime -> IMPORT_CMD):"
