@@ -78,8 +78,13 @@ image:  ## Build the image for the MiniEdge's CPU type
 
 image-save: image  ## Save the image to dist/images/ for copying to the lab
 	@mkdir -p $(BUILD_DIR)/images && rm -f $(BUILD_DIR)/images/$(IMAGE_NAME)-*.tar.gz
-	docker save $(IMAGE_NAME):$(TAG) | gzip > $(BUILD_DIR)/images/$(IMAGE_NAME)-$(TAG).tar.gz
+	docker save --platform $(PLATFORM) -o $(BUILD_DIR)/images/$(IMAGE_NAME)-$(TAG).tar $(IMAGE_NAME):$(TAG)
+	gzip -f $(BUILD_DIR)/images/$(IMAGE_NAME)-$(TAG).tar
 	@ls -lh $(BUILD_DIR)/images/
+
+# docker save writes to a file, not a pipe, so a failed save stops make
+# instead of leaving an empty .tar.gz; --platform because a pulled image is
+# only present for one CPU type (saving all of them fails).
 
 # Tool pods for the plugins (SCRUM-39). Saved next to the backend image, so
 # the next image-load or ship copies them too. Only needed again when a tag
@@ -92,9 +97,11 @@ tool-images:  ## Pull/build the Netshoot and tshark tool images into dist/images
 	@test -d deploy/images/tshark || { echo "deploy/images/tshark not found: run this on a branch with SCRUM-39"; exit 1; }
 	@mkdir -p $(BUILD_DIR)/images
 	docker pull --platform $(PLATFORM) $(NETSHOOT_IMAGE)
-	docker save $(NETSHOOT_IMAGE) | gzip > $(BUILD_DIR)/images/tool-netshoot.tar.gz
+	docker save --platform $(PLATFORM) -o $(BUILD_DIR)/images/tool-netshoot.tar $(NETSHOOT_IMAGE)
+	gzip -f $(BUILD_DIR)/images/tool-netshoot.tar
 	docker buildx build --platform $(PLATFORM) -t $(TSHARK_IMAGE) --load deploy/images/tshark
-	docker save $(TSHARK_IMAGE) | gzip > $(BUILD_DIR)/images/tool-tshark.tar.gz
+	docker save --platform $(PLATFORM) -o $(BUILD_DIR)/images/tool-tshark.tar $(TSHARK_IMAGE)
+	gzip -f $(BUILD_DIR)/images/tool-tshark.tar
 	@ls -lh $(BUILD_DIR)/images/
 
 # Loads EVERY .tar.gz in dist/images/, so plugin images (SCRUM-39) only need
