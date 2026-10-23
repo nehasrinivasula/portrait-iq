@@ -47,7 +47,7 @@ require = $(if $(strip $($(1))),,$(error $(1) is not set. Add it to deploy/lab.m
 
 .DEFAULT_GOAL := help
 .PHONY: help setup test dev image image-save image-load secrets deploy pod-check \
-        status logs api-check undeploy clean render bundle ship
+        status logs api-check undeploy clean render bundle ship tool-images
 
 help:  ## List targets
 	@grep -hE '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -79,6 +79,22 @@ image:  ## Build the image for the MiniEdge's CPU type
 image-save: image  ## Save the image to dist/images/ for copying to the lab
 	@mkdir -p $(BUILD_DIR)/images && rm -f $(BUILD_DIR)/images/$(IMAGE_NAME)-*.tar.gz
 	docker save $(IMAGE_NAME):$(TAG) | gzip > $(BUILD_DIR)/images/$(IMAGE_NAME)-$(TAG).tar.gz
+	@ls -lh $(BUILD_DIR)/images/
+
+# Tool pods for the plugins (SCRUM-39). Saved next to the backend image, so
+# the next image-load or ship copies them too. Only needed again when a tag
+# changes; delete dist/images/tool-*.tar.gz afterwards to stop re-copying them.
+NETSHOOT_IMAGE ?= nicolaka/netshoot:v0.13
+TSHARK_IMAGE   ?= portrait-iq-tshark:0.1
+
+tool-images:  ## Pull/build the Netshoot and tshark tool images into dist/images/
+	$(call require,PLATFORM)
+	@test -d deploy/images/tshark || { echo "deploy/images/tshark not found: run this on a branch with SCRUM-39"; exit 1; }
+	@mkdir -p $(BUILD_DIR)/images
+	docker pull --platform $(PLATFORM) $(NETSHOOT_IMAGE)
+	docker save $(NETSHOOT_IMAGE) | gzip > $(BUILD_DIR)/images/tool-netshoot.tar.gz
+	docker buildx build --platform $(PLATFORM) -t $(TSHARK_IMAGE) --load deploy/images/tshark
+	docker save $(TSHARK_IMAGE) | gzip > $(BUILD_DIR)/images/tool-tshark.tar.gz
 	@ls -lh $(BUILD_DIR)/images/
 
 # Loads EVERY .tar.gz in dist/images/, so plugin images (SCRUM-39) only need
