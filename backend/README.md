@@ -263,6 +263,17 @@ against the target, and deletes the pod. Options: `ports`, `dns_names`,
 Both keep headers only (first 128 bytes per packet) unless `headers_only`
 is false with a `full_payload_reason`.
 
+**UMF RTI** (`{"tools": ["rti"]}`) starts a host-network pod from GE's
+rtitools image (`RTI_IMAGE`) and runs `rtiddsspy` on one DDS domain for
+`duration_s` (10 to 300, default 30), with the target as discovery peer.
+Options: `domain` (7 logging, 12 source pod, 13 view pod; default 12). It
+reports hosts, topics and types only, never sample contents. Refused unless
+`RTI_ENABLED=true`: the image must come from GE (it carries Connext Pro and
+the domain's security files) and the site must approve a listen-only
+participant. `RTI_QOS_FILE` / `RTI_QOS_PROFILE` pick the QoS profile with
+the domain's security settings. The spy output parser is based on RTI's
+docs and still needs checking against real output on the bench.
+
 Kubernetes access: in the cluster the backend uses its service account
 (`deploy/k8s/tool-rbac.yaml`: pods and pods/exec in its own namespace only).
 From a laptop it uses `KUBECONFIG_PATH` or `~/.kube/config`. Tool pods are

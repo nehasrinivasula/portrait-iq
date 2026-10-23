@@ -79,6 +79,17 @@ class Settings(BaseSettings):
     # customer's node. Off until the site (and our sponsor) approve it;
     # importing a capture someone else made works either way.
     tshark_live_capture_enabled: bool = False
+    # UMF RTI listens on GE's secured DDS domains with GE's rtitools image
+    # (Connext Pro + the domain's security files). Off until that image is
+    # on the bench and the mentors approve a listen-only participant. The
+    # image name is the chart's default; on the bench it is probably the
+    # 192.168.0.3:30003/spectro-images/... mirror path instead.
+    rti_enabled: bool = False
+    rti_image: str = "docker-axone-all/axone-umf-rtitools:branch-latest"
+    # QoS profile that carries the domain's security settings. The file is
+    # in /opt/axone-tools/qos/ in the image; empty uses the image's default.
+    rti_qos_file: str = ""
+    rti_qos_profile: str = "AxoneNetQoSLibrary::umfgeneral_qos"
     # Where tshark and editcap are on the machine running the backend, when
     # they are not on PATH (the Windows installer does not add them), e.g.
     # C:\Program Files\Wireshark
