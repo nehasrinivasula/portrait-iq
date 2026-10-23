@@ -187,12 +187,43 @@ To add a source: subclass `LogSource`, add a `register()` line in
 
 GE's Axone log export API (port 9200) is the preferred source: it returns the
 same CSV format as the "all device log" exports. It only answers from inside
-the Kubernetes cluster. The source splits a range into the windows the API
-accepts (1 hour for all devices, up to 7 days for one device), pulls only
-complete hours, makes one call at a time with a short pause, and records
-each window so it is never pulled twice. Optional `options`:
+the Kubernetes cluster. Optional `options`:
 `{"device_uuid": "...", "event_category": "3"}` (category is the API's
 integer code; the name mapping is not confirmed yet).
+
+Time-frame selection (SCRUM-44): a pull covers exactly `[since, until)` and
+nothing outside it. Times are ISO 8601; a time without an offset is read as
+UTC; the window must be within the last 30 days.
+
+- The window is cut into requests the API accepts while keeping its exact
+  edges. All devices: cut at every hour boundary (both timestamps must be in
+  the same hour), so 09:30 to 11:15 is 09:30-10:00, 10:00-11:00, 11:00-11:15.
+  One device: chunks of at most 7 days.
+- The end is held back by `AXONE_SETTLE_MINUTES` (default 15) for logs that
+  devices upload late; the response's `notes` says when that happened.
+- "Only new" compares time, not request ids: after pulling 09:00-10:00, a
+  pull of 09:30-10:30 only requests 10:00-10:30. Windows that failed are
+  requested again. One call at a time, with a short pause between calls.
+
+Device selection (SCRUM-70): pull one, several or all devices in one run
+with `"device_uuids": [...]` on the acquire request (empty = all devices).
+Selected devices use the per-device endpoint, up to 7 days per request, and
+"already pulled" is tracked per device, so adding a device to a selection
+only fetches that device. At most 50 devices per pull.
+
+The API cannot list devices, so the tool keeps its own list
+(`known_devices` table):
+
+```
+GET  /api/sources/devices      devices to pick from: ID, latest name, host, first/last seen
+POST /api/sources/devices      {"device_uuid": "...", "name": "..."} add a device by hand
+```
+
+It fills itself from every Portrait-format CSV acquired (log export API,
+ZIP / folder import, Box): no extra calls to the live system, works offline.
+Devices are keyed on their ID and the newest friendly name wins (devices get
+renamed). A device that has never appeared in pulled logs can be added by
+hand; once real logs mention it, the logged name replaces the typed one.
 
 Reaching it from a laptop on the lab network (development only):
 

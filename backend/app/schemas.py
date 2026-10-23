@@ -4,7 +4,7 @@ once the shape stabilizes."""
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 class LoginRequest(BaseModel):
@@ -116,9 +116,17 @@ class SourceStatusOut(BaseModel):
 
 
 class AcquireRequest(BaseModel):
-    # Both optional: default is the full allowed window (last 30 days).
-    since: Optional[datetime] = None
-    until: Optional[datetime] = None
+    # Both optional: default is the source's look-back (24 h for the log export
+    # API, otherwise the full 30 days).
+    since: Optional[datetime] = Field(None, description=(
+        "Start of the window, ISO 8601. A time without an offset is read as UTC. "
+        "Must be within the last 30 days."))
+    until: Optional[datetime] = Field(None, description=(
+        "End of the window, ISO 8601 (UTC if no offset). The log export API pulls "
+        "exactly [since, until), minus the last few minutes held back for late logs."))
+    # Log export API (SCRUM-70): devices to pull. Empty = all devices.
+    device_uuids: list[str] = Field(default_factory=list, description=(
+        "Device IDs to pull (see GET /api/sources/devices). Empty means all devices."))
     # Source-specific choices, e.g. {"path": "/Volumes/USB/logs"} for local import.
     options: dict[str, str] = {}
     job_id: Optional[str] = None
@@ -152,3 +160,19 @@ class AcquisitionOut(BaseModel):
     over_budget: int
     bytes_staged: int
     files: list[FileOutcomeOut]
+    notes: list[str] = []
+
+
+class KnownDeviceOut(BaseModel):
+    device_uuid: str
+    name: str                      # friendly name, else host name, else the ID
+    friendly_name: Optional[str]
+    host_name: Optional[str]
+    first_seen: Optional[datetime]
+    last_seen: Optional[datetime]
+    learned_from: str              # "axone" | "local" | "box" | "manual"
+
+
+class DeviceAddRequest(BaseModel):
+    device_uuid: str
+    name: Optional[str] = None
