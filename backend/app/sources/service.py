@@ -30,7 +30,7 @@ from app.ingestion.parsers.base import UnrecognizedLogFormat
 from app.ingestion.pipeline import IngestError, ingest_file
 from app.models import AcquiredFileRecord
 from app.secrets_loader import redact
-from app.sources.base import ALLOWED_SUFFIXES, LogSource, RemoteFile, SourceError
+from app.sources.base import ALLOWED_SUFFIXES, ONE_MS, LogSource, RemoteFile, SourceError, window_file
 from app.sources.local_import import sha256_of
 
 log = logging.getLogger(__name__)
@@ -74,6 +74,7 @@ class AcquisitionResult:
     until: datetime
     files: list[FileOutcome] = field(default_factory=list)
     bytes_staged: int = 0
+    notes: list[str] = field(default_factory=list)   # e.g. end moved back for late logs
 
     def count(self, *statuses: str) -> int:
         return sum(1 for f in self.files if f.status in statuses)
@@ -126,6 +127,77 @@ def _existing(db: Session, remote: RemoteFile) -> AcquiredFileRecord | None:
 def is_already_acquired(db: Session, remote: RemoteFile) -> bool:
     rec = _existing(db, remote)
     return rec is not None and rec.status in SKIP_STATUSES
+
+
+# --- time windows (SCRUM-44) ------------------------------------------------------
+
+def clamp_to_source(source: LogSource, since: datetime, until: datetime) -> tuple[datetime, list[str]]:
+    """Apply the source's hold-back for recent data. Returns the end to use and
+    a note for the user when it moved. Raises WindowError if nothing is left."""
+    end = source.effective_until(until)
+    if end >= until:
+        return until, []
+    reason = source.hold_back_reason() or "recent data is held back by this source"
+    if end <= since:
+        raise WindowError(f"Nothing to pull yet: {reason}.")
+    return end, [f"End moved back to {_utc(end):%Y-%m-%d %H:%M} UTC: {reason}."]
+
+
+def _covered(db: Session, remote: RemoteFile, start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
+    """Half-open intervals of [start, end) already pulled successfully for the
+    same source and scope (device / category)."""
+    q = db.query(AcquiredFileRecord.window_start, AcquiredFileRecord.window_end).filter(
+        AcquiredFileRecord.source == remote.source,
+        AcquiredFileRecord.scope == remote.scope,
+        AcquiredFileRecord.status.in_(DONE_STATUSES),
+        AcquiredFileRecord.window_start.is_not(None),
+        AcquiredFileRecord.window_end.is_not(None),
+        AcquiredFileRecord.window_start < end,
+        AcquiredFileRecord.window_end >= start,
+    )
+    return sorted((_utc(ws), _utc(we) + ONE_MS) for ws, we in q.all())
+
+
+def _gaps(start: datetime, end: datetime, covered: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
+    gaps, cursor = [], start
+    for c_start, c_end in covered:
+        if c_end <= cursor:
+            continue
+        if c_start >= end:
+            break
+        if c_start > cursor:
+            gaps.append((cursor, c_start))
+        cursor = max(cursor, c_end)
+        if cursor >= end:
+            break
+    if cursor < end:
+        gaps.append((cursor, end))
+    return gaps
+
+
+def plan_new_windows(db: Session, remotes: list[RemoteFile]) -> list[tuple[RemoteFile, bool]]:
+    """Decide what to request. Returns (remote, already_covered) in order.
+
+    Time-window remotes (the log export API) are compared by TIME, not by id:
+    a request for 09:30-10:30 after 09:00-10:00 was pulled becomes just
+    10:00-10:30, so overlapping pulls never fetch the same minutes twice.
+    Older hour-window manifest rows count as covered too. Failed windows are
+    not "done", so they are requested again. Remotes without a window (local
+    files, Box) pass through; acquire() checks them by id and checksum."""
+    planned: list[tuple[RemoteFile, bool]] = []
+    for r in remotes:
+        if r.window_start is None or r.window_end is None:
+            planned.append((r, False))
+            continue
+        start, end = _utc(r.window_start), _utc(r.window_end) + ONE_MS
+        gaps = _gaps(start, end, _covered(db, r, start, end))
+        if not gaps:
+            planned.append((r, True))
+        elif gaps == [(start, end)]:
+            planned.append((r, False))
+        else:
+            planned += [(window_file(r.source, r.scope or "", s, e), False) for s, e in gaps]
+    return planned
 
 
 def _content_seen(db: Session, source: str, sha256: str, exclude_remote_id: str) -> bool:
@@ -275,10 +347,11 @@ def acquire(
     status = source.is_configured()
     if not status.ok:
         raise SourceError(status.reason)
+    until, notes = clamp_to_source(source, since, until)
     max_bytes = max_bytes if max_bytes is not None else settings.default_max_output_mb * 1024 * 1024
     run_id = uuid.uuid4().hex[:12]
     run_dir = Path(staging_root or settings.staging_dir) / run_id / source.id
-    result = AcquisitionResult(run_id=run_id, source=source.id, since=since, until=until)
+    result = AcquisitionResult(run_id=run_id, source=source.id, since=since, until=until, notes=notes)
 
     try:
         remotes = source.list_available(since, until, options or {})
@@ -286,8 +359,8 @@ def acquire(
         _audit(db, actor, result, error=str(e))
         raise
 
-    for i, remote in enumerate(remotes):
-        if is_already_acquired(db, remote):
+    for i, (remote, covered) in enumerate(plan_new_windows(db, remotes)):
+        if covered or is_already_acquired(db, remote):
             result.files.append(FileOutcome(remote.name, remote.remote_id, "already_acquired", remote.size))
             continue
         remaining = max_bytes - result.bytes_staged
