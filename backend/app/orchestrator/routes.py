@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app import uploads
 from app.audit import log_action
-from app.auth import User, get_current_user, is_locked, touch_session
+from app.auth import User, get_active_user, get_current_user, is_locked, touch_session
 from app.collectors.base import Collector, PluginError, ResourceLimits
 from app.collectors.registry import get_registry
 from app.config import settings
@@ -152,13 +152,11 @@ def start_job(
     target_ip: str,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ):
     """Validates the selection, creates the job and returns it "queued".
     The job runs after the response is sent; poll GET /jobs/{id}. It keeps
     running if the UI session locks (S-2)."""
-    if is_locked(user.id):
-        raise HTTPException(423, "Session locked — unlock before starting a collection.")
 
     limits = ResourceLimits(
         cpu_pct=req.cpu_limit_pct or settings.default_cpu_limit_pct,
@@ -222,13 +220,11 @@ def upload_file(
     kind: str,
     file: UploadFile,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ):
     """A file a field engineer already has, e.g. a capture from hospital IT
     (kind=pcap) for tshark's import mode. Returns the upload_id to pass in
     the plugin's options."""
-    if is_locked(user.id):
-        raise HTTPException(423, "Session locked — unlock before uploading.")
     try:
         upload_id, size = uploads.save(file.file, kind)
     except uploads.UploadError as e:

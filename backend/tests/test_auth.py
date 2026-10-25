@@ -98,3 +98,34 @@ def test_expired_token_is_rejected(client: TestClient, demo_credentials, monkeyp
 
     assert response.status_code == 401
     assert response.json()["code"] == "token_invalid"
+
+
+# Idle lock (S-2): starting jobs and uploading count as activity -------------
+
+def test_jobs_and_uploads_keep_the_session_unlocked(client: TestClient, demo_credentials, monkeypatch):
+    from app import auth
+    clock = [1_000_000.0]
+    monkeypatch.setattr(auth.time, "time", lambda: clock[0])
+    headers = {"Authorization": f"Bearer {login(client, demo_credentials)}"}
+    idle = settings.session_idle_timeout_seconds
+
+    def upload():   # a refused file: still an action the lock guards
+        return client.post("/api/uploads?kind=pcap", headers=headers,
+                           files={"file": ("x.pcap", b"not a capture")}).status_code
+
+    def start_job():
+        return client.post("/api/jobs?target_ip=192.0.2.10", headers=headers,
+                           json={"tools": ["no-such-tool"]}).status_code
+
+    clock[0] += idle - 10
+    assert upload() == 400
+    clock[0] += idle - 10      # longer than the timeout since login, not since the upload
+    assert start_job() == 400
+
+    clock[0] += idle + 1       # really idle; polling a job does not count
+    assert client.get("/api/jobs/no-such-job", headers=headers).status_code == 404
+    assert upload() == 423
+    assert start_job() == 423
+
+    login(client, demo_credentials)   # logging in again unlocks
+    assert upload() == 400
