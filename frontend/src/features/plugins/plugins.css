@@ -16,19 +16,7 @@
 }
 .check[data-state="checked"] { background: var(--primary); border-color: var(--primary); }
 .plugin-options { margin: 14px 0 2px 42px; display: grid; gap: 14px; }
-.segmented { display: flex; flex-wrap: wrap; gap: 8px; }
-.seg {
-  min-height: 44px; padding: 8px 16px; border-radius: 6px; cursor: pointer;
-  background: var(--panel); border: 1.5px solid var(--line); font-weight: 600;
-}
-.seg[data-state="checked"] { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .picker .field input { min-height: 44px; }
-.hint { font-size: 15px; color: var(--muted); margin-top: 4px; }
-.alert { border-radius: 6px; padding: 12px 14px; margin-top: 12px; border-left: 6px solid var(--info); background: #e3f4f8; }
-.alert strong { display: block; }
-.alert.ok { border-color: var(--ok); background: var(--ok-bg); }
-.alert.warn { border-color: var(--warn); background: var(--warn-bg); }
-.alert.error { border-color: var(--error); background: var(--error-bg); }
 .job { display: grid; gap: 16px; max-width: 760px; }
 .results { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
 @media (prefers-reduced-motion: reduce) { .plugin-card { transition: none; } }

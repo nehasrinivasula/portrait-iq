@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
-import { ApiError } from "../../api";
-import { getJob, getResults, isFinished, type Job, type ToolResult } from "./api";
+import { isFinished } from "./api";
+import { useJobs } from "../jobs/JobsContext";
 
 const STEP_LABEL: Record<string, string> = {
   deploy_tools: "Starting diagnostics",
@@ -20,33 +19,9 @@ const HEADLINE: Record<string, [kind: "info" | "ok" | "error" | "warn", text: st
   interrupted: ["warn", "The run was interrupted"],
 };
 
-const POLL_MS = 2000;
-
-export default function JobPanel({ initial, onNewRun }: { initial: Job; onNewRun: () => void }) {
-  const [job, setJob] = useState(initial);
-  const [results, setResults] = useState<ToolResult[] | null>(null);
-  const [lost, setLost] = useState(false);
-
-  useEffect(() => {
-    if (isFinished(job.status)) return;
-    const t = window.setTimeout(async () => {
-      try {
-        setJob(await getJob(job.id));
-        setLost(false);
-      } catch (e) {
-        if (e instanceof ApiError && e.status === 401) return;
-        setLost(true); // keep polling; the run continues on the server
-        setJob((j) => ({ ...j }));
-      }
-    }, POLL_MS);
-    return () => window.clearTimeout(t);
-  }, [job]);
-
-  useEffect(() => {
-    if (!isFinished(job.status)) return;
-    getResults(job.id).then(setResults).catch(() => setResults([]));
-  }, [job.id, job.status]);
-
+export default function JobPanel() {
+  const { job, results, lost, clear } = useJobs();
+  if (!job) return null;
   const [kind, headline] = HEADLINE[job.status] ?? ["info", job.status];
   const step = job.current_step ? STEP_LABEL[job.current_step] ?? job.current_step : null;
 
@@ -76,7 +51,7 @@ export default function JobPanel({ initial, onNewRun }: { initial: Job; onNewRun
           ))}
         </ul>
       )}
-      {isFinished(job.status) && <button className="btn ghost" onClick={onNewRun}>Start another run</button>}
+      {isFinished(job.status) && <button className="btn ghost" onClick={clear}>Start another run</button>}
     </section>
   );
 }
