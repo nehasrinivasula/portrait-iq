@@ -1,20 +1,47 @@
 """
-The collector plugin interface. Every tool (Netshoot, RTI, tshark, hub log
-import, and whatever the "research and propose additional diagnostic tools"
-requirement adds later) implements this one contract, so the orchestrator
-never needs a special case per tool.
+The plugin contract (SCRUM-38). Every diagnostic tool (Netshoot, UMF RTI,
+tshark, hub log import, and whatever the "research and propose additional
+diagnostic tools" requirement adds later) implements this one interface, so
+the orchestrator never needs a special case per tool.
 
-Nothing here actually reaches a device yet — every concrete collector's
-run() is a stub. This is the first thing to make real against your lab's
-MiniEdge P360 / Virtual Hub Host, per "this week's feature #2".
+Lifecycle, enforced by orchestrator/jobs.py:
+
+  1. configure(options)  validate and store options. Must not touch the
+                         network or a device: the orchestrator configures
+                         every selected plugin before running any of them,
+                         so a bad option fails the job before anything is
+                         deployed.
+  2. run(target_ip)      deploy (if needed) and run the tool.
+  3. cleanup()           tear down whatever run() created. Always called,
+                         also after a failure in this or another plugin.
+                         If it raises, the job ends as "cleanup_failed" and
+                         the plugin is named in the log and the audit log.
+
+To add a plugin, write a Collector subclass in a new module in this package
+and add one line to PLUGINS in registry.py. Nothing else changes.
+
+Nothing here actually reaches a device yet: every built-in run() is a stub.
 """
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any, ClassVar
+
+NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
+
+
+class PluginError(Exception):
+    """A plugin failure with a message safe to show the field engineer:
+    it says what went wrong and never contains a secret value."""
+
+
+class PluginConfigError(PluginError):
+    """configure() was given options the plugin does not accept."""
 
 
 @dataclass
 class ResourceLimits:
-    """Ceilings, not targets — from the requirements doc's Reliability
+    """Ceilings, not targets, from the requirements doc's Reliability
     section (configurable CPU/memory/throttling/file-size limits)."""
     cpu_pct: int
     mem_mb: int
@@ -30,10 +57,31 @@ class CollectorResult:
 
 
 class Collector(ABC):
-    name: str = "unnamed"
+    # Unique registry key, lowercase letters/digits/underscores, e.g. "netshoot".
+    name: ClassVar[str] = ""
+    # Shown in the tool-selection UI (SCRUM-40).
+    display_name: ClassVar[str] = ""
+    description: ClassVar[str] = ""
 
     def __init__(self, limits: ResourceLimits):
         self.limits = limits
+        self.options: dict[str, Any] = {}
+
+    def configure(self, options: dict[str, Any]) -> None:
+        """Validate and store options; raise PluginConfigError on anything
+        unexpected. The default accepts no options, so a plugin that takes
+        none does not need to override this."""
+        if options:
+            raise PluginConfigError(
+                f"{self.name} takes no options; got {sorted(options)}"
+            )
+        self.options = {}
+
+    def audit_fields(self) -> dict[str, Any]:
+        """Configured choices to record in the job_start audit entry, e.g.
+        a privacy-relevant switch and the reason given for it. Only values
+        safe to store: never a credential. The default records nothing."""
+        return {}
 
     @abstractmethod
     def run(self, target_ip: str) -> CollectorResult:
@@ -44,8 +92,8 @@ class Collector(ABC):
 
     @abstractmethod
     def cleanup(self) -> None:
-        """Tear down anything run() created, unconditionally — this is what
+        """Tear down anything run() created, unconditionally. This is what
         makes the 'customer environment left in a known clean state'
-        requirement true even after a crash. Call this in a finally block,
-        never only on the happy path."""
+        requirement true even after a crash. Must be safe to call when
+        run() never started or failed halfway."""
         raise NotImplementedError

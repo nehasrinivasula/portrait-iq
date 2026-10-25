@@ -14,6 +14,7 @@
 # Packaged diagnostic zips can contain PHI/PII (per the requirements doc's
 # privacy section) and must never be committed, even from a lab run.
 /data/
+/backend/data/
 /captures/
 *.pcap
 *.pcapng
@@ -247,3 +248,18 @@ __marimo__/
 Thumbs.db
 # --- Lab deployment (SCRUM-86): per-person settings ---
 deploy/lab.mk
+
+
+# --- Secrets (SCRUM-72): real secret files must never be committed ---
+secrets/
+iomt-secrets/
+*.secret
+.env.*
+*.pem
+*.key
+*.p12
+kubeconfig
+*.kubeconfig
+# example files with fake values ARE safe to commit
+!.env.example
+!secrets.example.env

@@ -12,6 +12,8 @@ from app.collectors.base import Collector, CollectorResult
 
 class NetshootCollector(Collector):
     name = "netshoot"
+    display_name = "Netshoot"
+    description = "Network tests from inside the cluster: DNS, ports, routes."
 
     def run(self, target_ip: str) -> CollectorResult:
         raise NotImplementedError(

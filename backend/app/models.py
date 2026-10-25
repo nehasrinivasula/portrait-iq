@@ -1,12 +1,13 @@
 """
-ORM tables. Five tables, one per architecture-diagram box that needs to
-persist state: Device (connect), Job (orchestrator), NormalizedEvent
-(event store), Signal (analysis engine output), AuditLogEntry (cross-cutting).
+ORM tables. One per architecture-diagram box that needs to persist state:
+Device (connect), Job (orchestrator), NormalizedEvent (event store), Signal
+(analysis engine output), AcquiredFileRecord (log acquisition manifest),
+AuditLogEntry (cross-cutting).
 """
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from app.db import Base
@@ -37,7 +38,7 @@ class Job(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     mode = Column(String, nullable=False, default="live")     # "live" | "pre_install"
-    status = Column(String, nullable=False, default="queued")  # queued|running|done|failed
+    status = Column(String, nullable=False, default="queued")  # queued|running|done|failed|cleanup_failed
     current_step = Column(String, nullable=True)
     cpu_limit_pct = Column(Integer, nullable=True)
     mem_limit_mb = Column(Integer, nullable=True)
@@ -57,9 +58,11 @@ class NormalizedEvent(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     job_id = Column(String, ForeignKey("jobs.id"), nullable=True)  # null for ad-hoc ingests
-    timestamp = Column(DateTime, nullable=False)
-    device_id = Column(String, nullable=True)         # hostName / friendlyName from source
+    timestamp = Column(DateTime, nullable=False, index=True)
+    device_id = Column(String, nullable=True, index=True)         # hostName / friendlyName from source
     source = Column(String, nullable=False)             # "portrait" | "compute" | "network"
+    source_file = Column(String, nullable=True, index=True)
+    source_line = Column(Integer, nullable=True)
     category = Column(String, nullable=True)              # e.g. "General", "PerfData"
     severity = Column(String, nullable=False)               # INFO | WARN | ERROR
     process = Column(String, nullable=True)
@@ -86,6 +89,38 @@ class Signal(Base):
     actions_json = Column(Text, nullable=True)   # JSON list of suggested next steps
 
     job = relationship("Job", back_populates="signals")
+
+
+class AcquiredFileRecord(Base):
+    """Manifest of every file pulled from a log source (SCRUM-43). This is
+    what makes "only pull new, unprocessed files" true: before fetching, the
+    acquisition service skips anything already recorded here as a success.
+
+    Identity is (source, remote_id, remote_checksum), so a file that changed
+    at the source (new Box version, re-exported log) counts as new. A
+    'failed' row is retried on the next run instead of being skipped."""
+    __tablename__ = "acquired_files"
+    __table_args__ = (Index("ix_acquired_identity", "source", "remote_id", "remote_checksum"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String, nullable=False)            # LogSource.id: "local" | "box" | ...
+    remote_id = Column(String, nullable=False)          # Box file id, sha256 for local files, ...
+    remote_checksum = Column(String, nullable=True)       # checksum the source reported, if any
+    name = Column(String, nullable=False)
+    size = Column(Integer, nullable=True)
+    remote_modified_at = Column(DateTime, nullable=True)
+    # For export-style sources (Portrait diags): which service/device and
+    # time window this file covers, so the next pull can start where it ended.
+    scope = Column(String, nullable=True)
+    window_start = Column(DateTime, nullable=True)
+    window_end = Column(DateTime, nullable=True)
+    sha256 = Column(String, nullable=True)               # of the bytes we actually downloaded
+    local_path = Column(String, nullable=True)
+    status = Column(String, nullable=False)    # acquired | ingested | unrecognized | duplicate | failed
+    events = Column(Integer, nullable=True)     # rows ingested, when ingestion ran
+    error = Column(Text, nullable=True)          # user-facing reason, never contains secrets
+    job_id = Column(String, ForeignKey("jobs.id"), nullable=True)
+    acquired_at = Column(DateTime, default=datetime.utcnow)
 
 
 class AuditLogEntry(Base):
