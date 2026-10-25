@@ -16,6 +16,15 @@ PORTRAIT_CSV = """timeStampAndOffset,processCounter,concentrationCounter,logLeve
 """
 
 
+@pytest.fixture(autouse=True)
+def _job_files_in_tmp(tmp_path, monkeypatch):
+    """Job output and uploads go to a temp folder, never backend/data, and
+    no test touches a real cluster at startup."""
+    monkeypatch.setattr(settings, "job_output_dir", str(tmp_path / "jobs"))
+    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
+    monkeypatch.setattr(settings, "sweep_tool_pods_on_startup", False)
+
+
 @pytest.fixture
 def engine(tmp_path):
     eng = create_engine(f"sqlite:///{tmp_path / 'test.db'}", connect_args={"check_same_thread": False})
@@ -36,12 +45,3 @@ def staging(tmp_path, monkeypatch):
     path = tmp_path / "staging"
     monkeypatch.setattr(settings, "staging_dir", str(path))
     return path
-
-
-@pytest.fixture(autouse=True)
-def _job_files_in_tmp(tmp_path, monkeypatch):
-    """Job output and uploads go to a temp folder, never backend/data, and
-    no test touches a real cluster at startup."""
-    monkeypatch.setattr(settings, "job_output_dir", str(tmp_path / "jobs"))
-    monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
-    monkeypatch.setattr(settings, "sweep_tool_pods_on_startup", False)
