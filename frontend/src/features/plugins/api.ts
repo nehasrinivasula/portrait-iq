@@ -15,7 +15,7 @@ export interface PluginList {
 
 export type PluginOptions = Record<string, Record<string, unknown>>;
 
-export type JobStatus = "queued" | "running" | "done" | "failed" | "cleanup_failed" | "interrupted";
+export type JobStatus = "queued" | "running" | "done" | "partial" | "failed" | "cleanup_failed" | "interrupted";
 
 export interface Job {
   id: string;

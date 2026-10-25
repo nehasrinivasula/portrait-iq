@@ -14,6 +14,7 @@ const HEADLINE: Record<string, [kind: "info" | "ok" | "error" | "warn", text: st
   queued: ["info", "Waiting to start"],
   running: ["info", "Running"],
   done: ["ok", "Finished"],
+  partial: ["warn", "Finished, but some diagnostics failed"],
   failed: ["error", "The run failed"],
   cleanup_failed: ["error", "The run ended, but cleanup did not finish"],
   interrupted: ["warn", "The run was interrupted"],

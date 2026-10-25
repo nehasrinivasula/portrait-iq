@@ -73,6 +73,8 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     if (announced.current === job.id) return;
     announced.current = job.id;
     if (job.status === "done") notify({ kind: "ok", title: "Diagnostics finished", body: "Results are ready on the Run diagnostics page." });
+    else if (job.status === "partial")
+      notify({ kind: "warn", title: "Finished, but some diagnostics failed", body: "Open Run diagnostics to see which ones." });
     else if (job.status === "cleanup_failed")
       notify({ kind: "error", title: "Cleanup did not finish", body: "Something may still be running on the system. Check it before leaving the site." });
     else if (job.status === "interrupted") notify({ kind: "warn", title: "The run was interrupted", body: "Partial results are kept." });
