@@ -1,13 +1,19 @@
-import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import * as Checkbox from "@radix-ui/react-checkbox";
 import * as Label from "@radix-ui/react-label";
-import * as RadioGroup from "@radix-ui/react-radio-group";
 import { ApiError } from "../../api";
+import { acquireForJob, listSources, type AcquisitionResult } from "../logs/logsApi";
+import TimeFramePicker from "../logs/TimeFramePicker";
+import { defaultTimeFrame, resolveTimeFrame, toApi } from "../logs/timeframe";
 import { listPlugins, startJob, uploadPcap, type Job, type Plugin } from "./api";
-import {
-  RTI_DOMAINS, RTI_DURATION, TSHARK_DURATION, buildOptions, defaultChoices, validateChoices, validateTargetIp,
-} from "./options";
+import { RtiOptions, TsharkOptions } from "./ToolOptions";
+import { buildOptions, defaultChoices, validateChoices, validateTargetIp } from "./options";
 import "./plugins.css";
+
+// Not offered here: hub_import is only a demo path, and lives on the Logs page.
+const HIDDEN = new Set(["hub_import"]);
+// The log export API is the source a run pulls from.
+const LOG_SOURCE = "axone";
 
 const Check = () => (
   <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
@@ -15,27 +21,18 @@ const Check = () => (
   </svg>
 );
 
-/** Reads a message the field engineer can act on from a failed request. */
+/** A message the field engineer can act on from a failed request. */
 const messageFor = (err: unknown) =>
   err instanceof ApiError
     ? err.status === 0 ? "Can't reach the server. Check the connection and try again."
       : typeof err.message === "string" ? err.message : "The server rejected the request."
     : "Something went wrong. Try again.";
 
-function Field({ id, label, hint, error, children }: {
-  id: string; label: string; hint?: string; error?: string; children: React.ReactNode;
+export default function PluginPicker({ onStarted, locked }: {
+  onStarted: (job: Job, pullLogs?: () => Promise<AcquisitionResult>) => void;
+  /** A run is in progress: the form stays visible but can't start another. */
+  locked: boolean;
 }) {
-  return (
-    <div className="field">
-      <Label.Root htmlFor={id}>{label}</Label.Root>
-      {children}
-      {hint && !error && <div className="hint" id={`${id}-hint`}>{hint}</div>}
-      {error && <div className="error-text" id={`${id}-err`} role="alert">{error}</div>}
-    </div>
-  );
-}
-
-export default function PluginPicker({ onStarted }: { onStarted: (job: Job) => void }) {
   const uid = useId();
   const [plugins, setPlugins] = useState<Plugin[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -43,26 +40,44 @@ export default function PluginPicker({ onStarted }: { onStarted: (job: Job) => v
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [choices, setChoices] = useState(defaultChoices);
   const [targetIp, setTargetIp] = useState("");
+  const [logsOn, setLogsOn] = useState(true);
+  const [logsReason, setLogsReason] = useState<string | null>(null); // why logs can't be collected here
+  const [frame, setFrame] = useState(defaultTimeFrame);
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadName, setUploadName] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
+  const feedback = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     listPlugins()
-      .then((r) => { setPlugins(r.plugins); setSkipped(r.load_errors); })
+      .then((r) => { setPlugins(r.plugins.filter((p) => !HIDDEN.has(p.name))); setSkipped(r.load_errors); })
       .catch((e) => setLoadError(messageFor(e)));
+    listSources()
+      .then((s) => {
+        const src = s.find((x) => x.id === LOG_SOURCE);
+        if (!src?.configured) { setLogsReason(src?.reason || "The log export API isn't set up on this server."); setLogsOn(false); }
+      })
+      .catch(() => { setLogsReason("Couldn't check the log sources."); setLogsOn(false); });
   }, []);
+
+  // The start button is at the bottom of a long form: bring a failure into view.
+  useEffect(() => {
+    if (startError) feedback.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [startError]);
 
   const ipError = validateTargetIp(targetIp);
   const fieldErrors = useMemo(() => validateChoices(selected, choices), [selected, choices]);
-  const noneSelected = selected.size === 0;
-  const valid = !ipError && !noneSelected && Object.keys(fieldErrors).length === 0 && !uploading;
+  const window = useMemo(() => resolveTimeFrame(frame), [frame]);
+  const nothingToDo = selected.size === 0 && !logsOn;
+  const valid = !ipError && !nothingToDo && Object.keys(fieldErrors).length === 0 && !uploading && (!logsOn || window.ok);
 
   const toggle = (name: string, on: boolean) =>
     setSelected((s) => { const n = new Set(s); on ? n.add(name) : n.delete(name); return n; });
+  const allOn = !!plugins?.length && plugins.every((p) => selected.has(p.name));
+  const selectAll = () => setSelected(allOn ? new Set() : new Set(plugins?.map((p) => p.name)));
 
   async function onFile(file: File | undefined) {
     if (!file) return;
@@ -85,10 +100,12 @@ export default function PluginPicker({ onStarted }: { onStarted: (job: Job) => v
     e.preventDefault();
     setSubmitted(true);
     setStartError(null);
-    if (!valid) return;
+    if (!valid || locked) return;
     setBusy(true);
     try {
-      onStarted(await startJob(targetIp.trim(), [...selected], buildOptions(selected, choices)));
+      const job = await startJob(targetIp.trim(), [...selected], buildOptions(selected, choices));
+      const w = logsOn && window.ok ? toApi(window) : null;
+      onStarted(job, w ? () => acquireForJob(LOG_SOURCE, job.id, w.since, w.until) : undefined);
     } catch (err) {
       setStartError(messageFor(err));
     } finally {
@@ -96,65 +113,48 @@ export default function PluginPicker({ onStarted }: { onStarted: (job: Job) => v
     }
   }
 
-  const optionsFor = (name: string) => {
-    if (name === "tshark") {
-      const t = choices.tshark;
-      return (
-        <div className="plugin-options">
-          <RadioGroup.Root
-            className="segmented" aria-label="tshark mode" value={t.mode}
-            onValueChange={(v) => setChoices((c) => ({ ...c, tshark: { ...c.tshark, mode: v as "run" | "import" } }))}
-          >
-            <RadioGroup.Item value="run" id={`${uid}-t-run`} className="seg"><span>Capture live</span></RadioGroup.Item>
-            <RadioGroup.Item value="import" id={`${uid}-t-imp`} className="seg"><span>Import a capture file</span></RadioGroup.Item>
-          </RadioGroup.Root>
-          {t.mode === "run" ? (
-            <Field id={`${uid}-t-dur`} label="Capture length (seconds)"
-              hint={`${TSHARK_DURATION.min} to ${TSHARK_DURATION.max}. Packet headers only; no message contents are kept.`}
-              error={fieldErrors["tshark.duration"]}>
-              <input id={`${uid}-t-dur`} inputMode="numeric" value={t.durationS}
-                aria-invalid={!!fieldErrors["tshark.duration"]}
-                onChange={(e) => setChoices((c) => ({ ...c, tshark: { ...c.tshark, durationS: e.target.value } }))} />
-            </Field>
-          ) : (
-            <Field id={`${uid}-t-file`} label="Capture file (.pcap or .pcapng)"
-              hint={uploading ? "Uploading…" : uploadName ? `Uploaded: ${uploadName}` : "Up to 500 MB."}
-              error={uploadError ?? fieldErrors["tshark.upload"]}>
-              <input id={`${uid}-t-file`} type="file" accept=".pcap,.pcapng"
-                aria-invalid={!!(uploadError ?? fieldErrors["tshark.upload"])}
-                onChange={(e) => onFile(e.target.files?.[0])} />
-            </Field>
-          )}
-        </div>
-      );
-    }
-    if (name === "rti") {
-      return (
-        <div className="plugin-options">
-          <RadioGroup.Root className="segmented" aria-label="DDS domain" value={String(choices.rti.domain)}
-            onValueChange={(v) => setChoices((c) => ({ ...c, rti: { ...c.rti, domain: Number(v) } }))}>
-            {RTI_DOMAINS.map((d) => (
-              <RadioGroup.Item key={d} value={String(d)} className="seg"><span>Domain {d}</span></RadioGroup.Item>
-            ))}
-          </RadioGroup.Root>
-          <Field id={`${uid}-r-dur`} label="Listen time (seconds)"
-            hint={`${RTI_DURATION.min} to ${RTI_DURATION.max}. Reports which hosts and topics are active, never message contents.`}
-            error={fieldErrors["rti.duration"]}>
-            <input id={`${uid}-r-dur`} inputMode="numeric" value={choices.rti.durationS}
-              aria-invalid={!!fieldErrors["rti.duration"]}
-              onChange={(e) => setChoices((c) => ({ ...c, rti: { ...c.rti, durationS: e.target.value } }))} />
-          </Field>
-        </div>
-      );
-    }
-    return null;
-  };
+  const n = selected.size;
+  const label = busy ? "Starting…"
+    : n > 0 && logsOn ? `Run ${n} diagnostic${n === 1 ? "" : "s"} and collect logs`
+    : n > 0 ? `Run ${n} diagnostic${n === 1 ? "" : "s"}`
+    : logsOn ? "Collect logs"
+    : "Run diagnostics";
 
   return (
     <form className="picker" onSubmit={onSubmit} noValidate>
+      <section aria-labelledby={`${uid}-target`}>
+        <h2 id={`${uid}-target`}>Where to run it</h2>
+        <div className="field">
+          <Label.Root htmlFor={`${uid}-ip`}>Portrait Mobile server IP address</Label.Root>
+          <input id={`${uid}-ip`} inputMode="decimal" autoComplete="off" value={targetIp} aria-invalid={submitted && !!ipError}
+            aria-describedby={submitted && ipError ? `${uid}-ip-err` : `${uid}-ip-hint`}
+            onChange={(e) => setTargetIp(e.target.value)} />
+          {submitted && ipError ? <div className="error-text" id={`${uid}-ip-err`} role="alert">{ipError}</div>
+            : <div className="hint" id={`${uid}-ip-hint`}>For example 192.168.0.3.</div>}
+        </div>
+      </section>
+
+      <section aria-labelledby={`${uid}-logs`}>
+        <h2 id={`${uid}-logs`}>Logs to include</h2>
+        <div className="plugin-head">
+          <Checkbox.Root id={`${uid}-logs-on`} className="check" checked={logsOn} disabled={!!logsReason}
+            onCheckedChange={(v) => setLogsOn(v === true)}>
+            <Checkbox.Indicator><Check /></Checkbox.Indicator>
+          </Checkbox.Root>
+          <Label.Root htmlFor={`${uid}-logs-on`} className="plugin-label">
+            <span className="plugin-name">Collect system logs with this run</span>
+            <span className="muted">{logsReason ?? "Pulled from the log export API and added to the log table automatically."}</span>
+          </Label.Root>
+        </div>
+        {logsOn && <div style={{ marginLeft: 42, marginTop: 10 }}><TimeFramePicker value={frame} onChange={setFrame} legend="Time frame" /></div>}
+      </section>
+
       <section aria-labelledby={`${uid}-tools`}>
-        <h2 id={`${uid}-tools`}>Choose what to run</h2>
-        <p className="muted">Pick one or more diagnostics. Each one is removed from the system when it finishes.</p>
+        <div className="section-head">
+          <h2 id={`${uid}-tools`}>Choose what to run</h2>
+          {plugins && plugins.length > 0 && <button type="button" className="btn ghost" onClick={selectAll}>{allOn ? "Clear all" : "Select all"}</button>}
+        </div>
+        <p className="muted">Each diagnostic is removed from the system when it finishes.</p>
 
         {loadError && <div className="alert error" role="alert"><strong>Couldn't load the diagnostics</strong>{loadError}</div>}
         {!plugins && !loadError && <p className="muted" role="status">Loading diagnostics…</p>}
@@ -165,8 +165,7 @@ export default function PluginPicker({ onStarted }: { onStarted: (job: Job) => v
             return (
               <li key={p.name} className={`plugin-card${on ? " on" : ""}`}>
                 <div className="plugin-head">
-                  <Checkbox.Root id={`${uid}-${p.name}`} className="check" checked={on}
-                    onCheckedChange={(v) => toggle(p.name, v === true)}>
+                  <Checkbox.Root id={`${uid}-${p.name}`} className="check" checked={on} onCheckedChange={(v) => toggle(p.name, v === true)}>
                     <Checkbox.Indicator><Check /></Checkbox.Indicator>
                   </Checkbox.Root>
                   <Label.Root htmlFor={`${uid}-${p.name}`} className="plugin-label">
@@ -174,7 +173,11 @@ export default function PluginPicker({ onStarted }: { onStarted: (job: Job) => v
                     <span className="muted">{p.description}</span>
                   </Label.Root>
                 </div>
-                {on && optionsFor(p.name)}
+                {on && p.name === "tshark" && (
+                  <TsharkOptions uid={uid} choices={choices} onChoices={setChoices} errors={fieldErrors}
+                    upload={{ name: uploadName, busy: uploading, error: uploadError, onFile }} />
+                )}
+                {on && p.name === "rti" && <RtiOptions uid={uid} choices={choices} onChoices={setChoices} errors={fieldErrors} />}
               </li>
             );
           })}
@@ -183,23 +186,16 @@ export default function PluginPicker({ onStarted }: { onStarted: (job: Job) => v
         {Object.entries(skipped).map(([name, why]) => (
           <div key={name} className="alert warn" role="status"><strong>{name} is unavailable</strong>{why}</div>
         ))}
-        {submitted && noneSelected && <div className="error-text" role="alert">Choose at least one diagnostic.</div>}
+        {submitted && nothingToDo && <div className="error-text" role="alert">Choose at least one diagnostic, or include logs.</div>}
       </section>
 
-      <section aria-labelledby={`${uid}-target`}>
-        <h2 id={`${uid}-target`}>Where to run it</h2>
-        <Field id={`${uid}-ip`} label="Portrait Mobile server IP address" hint="For example 192.168.0.3."
-          error={submitted ? ipError ?? undefined : undefined}>
-          <input id={`${uid}-ip`} inputMode="decimal" autoComplete="off" value={targetIp}
-            aria-invalid={submitted && !!ipError}
-            onChange={(e) => setTargetIp(e.target.value)} />
-        </Field>
-      </section>
-
+      <div ref={feedback} />
+      {submitted && !valid && !nothingToDo && (
+        <div className="alert warn" role="alert"><strong>Some settings need attention</strong>Check the fields marked in red above.</div>
+      )}
       {startError && <div className="alert error" role="alert"><strong>Couldn't start the run</strong>{startError}</div>}
-      <button className="btn" type="submit" disabled={busy || uploading}>
-        {busy ? "Starting…" : `Run ${selected.size || ""} diagnostic${selected.size === 1 ? "" : "s"}`.replace("  ", " ")}
-      </button>
+      <button className="btn" type="submit" disabled={busy || uploading || locked}>{label}</button>
+      {locked && <p className="muted" role="status">A run is in progress. You can start another when it finishes.</p>}
     </form>
   );
 }

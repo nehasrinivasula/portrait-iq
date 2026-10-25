@@ -3,6 +3,7 @@ import { ApiError } from "../../api";
 import { useAuth } from "../../auth/AuthContext";
 import { useNotify } from "../../ui/Notifications";
 import { getJob, getResults, isFinished, type Job, type ToolResult } from "../plugins/api";
+import type { AcquisitionResult } from "../logs/logsApi";
 
 const POLL_MS = 2000;
 const KEY = "piq.job";
@@ -12,12 +13,20 @@ const store = {
   clear: () => { try { sessionStorage.removeItem(KEY); } catch { /* ignore */ } },
 };
 
+export type LogPull =
+  | { state: "running" }
+  | { state: "done"; newFiles: number; events: number }
+  | { state: "error"; message: string };
+
 interface JobsState {
+  /** The system-log pull started with the run, if any. */
+  logPull: LogPull | null;
   job: Job | null;
   results: ToolResult[] | null;
   /** True while polling is failing; the run itself is unaffected (S-2). */
   lost: boolean;
-  track: (job: Job) => void;
+  /** Watch a run; pullLogs, when given, starts the log pull for it right away. */
+  track: (job: Job, pullLogs?: () => Promise<AcquisitionResult>) => void;
   clear: () => void;
 }
 
@@ -36,12 +45,28 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   const [job, setJob] = useState<Job | null>(null);
   const [results, setResults] = useState<ToolResult[] | null>(null);
   const [lost, setLost] = useState(false);
+  const [logPull, setLogPull] = useState<LogPull | null>(null);
   const announced = useRef<string | null>(null);
 
-  const clear = useCallback(() => { store.clear(); setJob(null); setResults(null); setLost(false); }, []);
-  const track = useCallback((j: Job) => { store.set(j.id); setResults(null); setLost(false); announced.current = null; setJob(j); }, []);
+  const clear = useCallback(() => { store.clear(); setJob(null); setResults(null); setLost(false); setLogPull(null); }, []);
+  const track = useCallback((j: Job, pullLogs?: () => Promise<AcquisitionResult>) => {
+    store.set(j.id); setResults(null); setLost(false); announced.current = null; setJob(j); setLogPull(null);
+    if (!pullLogs) return;
+    setLogPull({ state: "running" });
+    pullLogs()
+      .then((r) => {
+        const events = r.files.reduce((n, f) => n + (f.events ?? 0), 0);
+        setLogPull({ state: "done", newFiles: r.new_files, events });
+        notify({ kind: r.failed ? "warn" : "ok", title: r.failed ? "Some logs couldn't be collected" : "Logs collected", body: `${events} events from ${r.new_files} new file${r.new_files === 1 ? "" : "s"}.` });
+      })
+      .catch((e) => {
+        const message = e instanceof ApiError && e.status !== 0 ? e.message : "Can't reach the server.";
+        setLogPull({ state: "error", message });
+        notify({ kind: "error", title: "Couldn't collect the logs", body: message });
+      });
+  }, [notify]);
 
-  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); } }, [user]);
+  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); setLogPull(null); } }, [user]);
 
   // A page reload must not lose a run that is still going: pick it back up.
   useEffect(() => {
@@ -81,5 +106,5 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     else notify({ kind: "error", title: "The run failed", body: "Open Run diagnostics for details." });
   }, [job, notify]);
 
-  return <Ctx.Provider value={{ job, results, lost, track, clear }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ job, results, lost, logPull, track, clear }}>{children}</Ctx.Provider>;
 }

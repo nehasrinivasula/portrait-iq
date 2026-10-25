@@ -20,3 +20,10 @@
 .job { display: grid; gap: 16px; max-width: 760px; }
 .results { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
 @media (prefers-reduced-motion: reduce) { .plugin-card { transition: none; } }
+.section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.inline-field { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-top: 8px; }
+.inline-field input { max-width: 160px; }
+.option-list { display: grid; gap: 8px; }
+.seg.option { text-align: left; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.seg.option .opt-hint { font-weight: 400; }
+.seg[data-state="checked"] .opt-hint { color: var(--on-primary); }

@@ -1,15 +1,12 @@
 import { apiFetch } from "../../api";
-import { mockSearchEvents } from "./mockLogs";
 
-// Shapes follow PR #10 (log-storage-unified-view): GET /api/events with a
-// cursor. That PR is not merged, so the mock adapter is on by default; set
-// VITE_LOGS_MOCK=false once /api/events exists. Check the field names then.
+// Log search (PR #10): GET /api/logs/events, /facets. Times are UTC ISO.
 
 export type Severity = "DEBUG" | "INFO" | "WARN" | "ERROR";
 
 export interface LogEvent {
   id: number;
-  timestamp: string; // ISO, UTC
+  timestamp: string;
   device_id: string | null;
   source: string;
   category: string | null;
@@ -27,19 +24,81 @@ export interface LogPage {
   total: number | null; // first page only
 }
 
-export interface EventQuery {
-  cursor?: string | null;
-  limit?: number;
-  job_id?: string;
+export interface FacetValue { value: string | null; count: number }
+export interface Facets {
+  total: number;
+  first_timestamp: string | null;
+  last_timestamp: string | null;
+  sources: FacetValue[];
+  severities: FacetValue[];
+  categories: FacetValue[];
+  devices: FacetValue[];
+  distinct_devices: number;
 }
 
-export const USE_MOCK = import.meta.env.VITE_LOGS_MOCK !== "false";
+/** Column the field-value filter applies to. */
+export type FieldColumn = "device" | "category" | "process";
 
-export function searchEvents(q: EventQuery = {}): Promise<LogPage> {
-  if (USE_MOCK) return mockSearchEvents(q);
+export interface LogFilter {
+  since: string | null;
+  until: string | null;
+  sources: string[];
+  severities: Severity[];
+  column: FieldColumn;
+  value: string;
+  q: string;
+  jobId: string | null;
+}
+
+export const emptyFilter = (): LogFilter => ({
+  since: null, until: null, sources: [], severities: [], column: "device", value: "", q: "", jobId: null,
+});
+
+/** Query string for the filters. Empty values are left out. */
+export function filterParams(f: LogFilter): URLSearchParams {
   const p = new URLSearchParams();
-  p.set("limit", String(q.limit ?? 100));
-  if (q.cursor) p.set("cursor", q.cursor);
-  if (q.job_id) p.set("job_id", q.job_id);
-  return apiFetch<LogPage>(`/api/events?${p}`);
+  if (f.since) p.set("since", f.since);
+  if (f.until) p.set("until", f.until);
+  f.sources.forEach((s) => p.append("source", s));
+  f.severities.forEach((s) => p.append("severity", s));
+  const v = f.value.trim();
+  if (v) p.set(f.column === "process" ? "process" : f.column, v);
+  if (f.q.trim()) p.set("q", f.q.trim());
+  if (f.jobId) p.set("job_id", f.jobId);
+  return p;
 }
+
+export function searchEvents(f: LogFilter, cursor: string | null, limit = 100): Promise<LogPage> {
+  const p = filterParams(f);
+  p.set("limit", String(limit));
+  if (cursor) p.set("cursor", cursor);
+  return apiFetch<LogPage>(`/api/logs/events?${p}`);
+}
+
+export const getFacets = (f: LogFilter) => apiFetch<Facets>(`/api/logs/facets?${filterParams(f)}`);
+
+export interface AcquisitionResult {
+  run_id: string;
+  source: string;
+  new_files: number;
+  already_acquired: number;
+  failed: number;
+  over_budget: number;
+  files: { name: string; status: string; events?: number | null; error?: string | null }[];
+}
+
+export function importLogFiles(files: File[]) {
+  const body = new FormData();
+  files.forEach((f) => body.append("files", f));
+  return apiFetch<AcquisitionResult>("/api/sources/local/upload", { method: "POST", body });
+}
+
+export interface Source { id: string; display_name: string; configured: boolean; reason: string }
+export const listSources = () => apiFetch<Source[]>("/api/sources");
+
+/** Pull a window from a source and ingest it under a job, so the logs belong to that run. */
+export const acquireForJob = (sourceId: string, jobId: string, since: string, until: string) =>
+  apiFetch<AcquisitionResult>(`/api/sources/${sourceId}/acquire`, {
+    method: "POST",
+    body: JSON.stringify({ since, until, job_id: jobId, ingest: true }),
+  });

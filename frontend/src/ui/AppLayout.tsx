@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
 const links = [
@@ -9,6 +9,7 @@ const links = [
 
 export default function AppLayout() {
   const { user, logout } = useAuth();
+  const { pathname } = useLocation();
   return (
     <>
       <header className="app-header">
@@ -20,7 +21,7 @@ export default function AppLayout() {
           {user?.name} <button className="btn ghost" onClick={() => logout()}>Sign out</button>
         </span>
       </header>
-      <main className="page"><Outlet /></main>
+      <main className={`page${pathname.startsWith("/logs") ? " wide" : ""}`}><Outlet /></main>
     </>
   );
 }

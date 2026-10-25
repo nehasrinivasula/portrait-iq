@@ -11,7 +11,7 @@ export const PRESETS = [
   { id: "7d", label: "Last 7 days", ms: 7 * 24 * H },
 ] as const;
 
-export type PresetId = (typeof PRESETS)[number]["id"] | "custom";
+export type PresetId = (typeof PRESETS)[number]["id"] | "custom" | "any";
 
 export interface TimeFrameChoice {
   preset: PresetId;
@@ -26,7 +26,10 @@ export type Resolved =
   | { ok: true; since: Date; until: Date }
   | { ok: false; errors: { since?: string; until?: string } };
 
-export function resolveTimeFrame(c: TimeFrameChoice, now: Date = new Date()): Resolved {
+/** limitDays: how far back a window may start. Pulling logs is capped by the
+ * backend (30 days); filtering logs already stored has no cap (null). */
+export function resolveTimeFrame(c: TimeFrameChoice, now: Date = new Date(), limitDays: number | null = MAX_DAYS): Resolved {
+  if (c.preset === "any") return { ok: true, since: new Date(0), until: now };
   if (c.preset !== "custom") {
     const ms = PRESETS.find((p) => p.id === c.preset)!.ms;
     return { ok: true, since: new Date(now.getTime() - ms), until: now };
@@ -34,10 +37,10 @@ export function resolveTimeFrame(c: TimeFrameChoice, now: Date = new Date()): Re
   const errors: { since?: string; until?: string } = {};
   const since = c.customSince ? new Date(c.customSince) : null;
   const until = c.customUntil ? new Date(c.customUntil) : null;
-  const earliest = new Date(now.getTime() - MAX_DAYS * 24 * H);
+  const earliest = limitDays === null ? new Date(0) : new Date(now.getTime() - limitDays * 24 * H);
 
   if (!since || isNaN(since.getTime())) errors.since = "Choose a start date and time.";
-  else if (since < earliest) errors.since = `The start can't be more than ${MAX_DAYS} days ago.`;
+  else if (since < earliest) errors.since = `The start can't be more than ${limitDays} days ago.`;
   else if (since > now) errors.since = "The start can't be in the future.";
 
   if (!until || isNaN(until.getTime())) errors.until = "Choose an end date and time.";
@@ -59,4 +62,13 @@ export const toApi = (r: Extract<Resolved, { ok: true }>) => ({
 export function toLocalInput(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** For filtering stored logs: no bounds at all when the choice is "any". */
+export function filterRange(c: TimeFrameChoice, now: Date = new Date()):
+  | { ok: true; since: string | null; until: string | null }
+  | { ok: false; errors: { since?: string; until?: string } } {
+  if (c.preset === "any") return { ok: true, since: null, until: null };
+  const r = resolveTimeFrame(c, now, null);
+  return r.ok ? { ok: true, ...toApi(r) } : r;
 }

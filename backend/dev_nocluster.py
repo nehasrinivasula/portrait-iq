@@ -4,6 +4,7 @@
 
 What is real and what is faked:
   - Real: login, sources, local upload and ingestion, the job state machine,
+    the log search API (an empty dev database gets 420 made-up events),
     tshark "import" mode (needs tshark/editcap on PATH or WIRESHARK_BIN_DIR).
   - Faked: the tool-pod runner. Netshoot "runs" its checks against a stand-in
     that answers instantly, with traceroute failing so the warning path shows.
@@ -73,8 +74,43 @@ class FakePodRunner:
 
 k8s.get_pod_runner = lambda: FakePodRunner()
 
+def _seed_sample_events() -> None:
+    """Synthetic events, only into an empty dev database, so the log page has
+    something to filter. Made-up text, never real log content."""
+    from datetime import datetime, timedelta
+
+    from app.db import SessionLocal, init_db
+    from app.models import NormalizedEvent
+
+    init_db()
+    with SessionLocal() as db:
+        if db.query(NormalizedEvent).first() is not None:
+            return
+        levels = ["INFO", "INFO", "INFO", "DEBUG", "WARN", "ERROR"]
+        devices = ["viewer-01", "hub-01", "server-01"]
+        processes = ["vitals-svc", "alarm-svc", "gateway", "kubelet"]
+        messages = [
+            "Heartbeat received from device", "Configuration reloaded",
+            "Connection to gateway timed out after 30s", "Alarm limits updated for bed assignment",
+            "Retrying upload of waveform batch (attempt 2)", "Certificate expires in 12 days",
+        ]
+        now = datetime.utcnow().replace(microsecond=0)
+        db.add_all(
+            NormalizedEvent(
+                timestamp=now - timedelta(seconds=97 * i), device_id=devices[i % 3],
+                source="kubernetes" if i % 5 == 0 else "portrait", source_file="dev-sample.csv", source_line=i + 1,
+                category="PerfData" if i % 3 == 0 else "General", severity=levels[(i * 7) % 6],
+                process=processes[i % 4], message=f"{messages[(i * 3) % 6]} (#{i + 1})",
+            )
+            for i in range(420)
+        )
+        db.commit()
+
+
 if __name__ == "__main__":
     from app.main import app
+
+    _seed_sample_events()
 
     print(f"\nPortrait IQ backend, NO CLUSTER (fake tool pods). Data in {_data}")
     if _own_login:
