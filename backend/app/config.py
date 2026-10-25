@@ -2,8 +2,12 @@
 Central settings. Everything here is a placeholder default for local/lab use —
 override via a .env file before this touches anything resembling production.
 """
+import os
+
 from pydantic_settings import BaseSettings
 from pydantic import SecretStr
+
+from app.secrets_loader import AmbiguousSecretError, load_secret
 
 
 class Settings(BaseSettings):
@@ -107,4 +111,26 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 
+# Login settings that may also come from NAME_FILE, so a Kubernetes Secret
+# volume can supply them (backend/SECRETS.md). Plain NAME / .env still work.
+LOGIN_SECRET_NAMES = ("DEMO_AUTH_USERNAME", "DEMO_AUTH_PASSWORD", "AUTH_TOKEN_SECRET")
+
+
+def load_login_secret_files(s: Settings) -> None:
+    for name in LOGIN_SECRET_NAMES:
+        path = os.environ.get(f"{name}_FILE")
+        if not path:
+            continue
+        # The pod starts before `make secrets` has run: a missing file leaves
+        # login unconfigured (503 on protected routes), not a crash loop.
+        if not os.path.exists(path):
+            continue
+        field = name.lower()
+        if getattr(s, field) is not None:   # also catches a value from .env
+            raise AmbiguousSecretError(f"Both {name} and {name}_FILE are set. Set only one.")
+        value = load_secret(name).reveal()
+        setattr(s, field, value if field == "demo_auth_username" else SecretStr(value))
+
+
 settings = Settings()
+load_login_secret_files(settings)

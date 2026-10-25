@@ -21,6 +21,8 @@ The module is deliberately not called `secrets.py`, which would shadow Python's 
 | `PLATFORM_DIAGS_USERNAME` / `PLATFORM_DIAGS_PASSWORD` | Log download from the Portrait Mobile platform (`/portrait/diags`) | **TBD. Only needed if that page asks for a login.** Open it in a browser to find out. |
 | *(none: cluster access)* | Deploying plugins (SCRUM-39) | **The tool runs inside the cluster**, so it uses its own ServiceAccount and no kubeconfig is stored. It needs a least-privilege Role instead (section 4). The SSH login to the MiniEdge is for people, not the tool. |
 | `VIEWER_LOGIN_USERNAME` / `VIEWER_LOGIN_PASSWORD`, `HUB_LOGIN_USERNAME` / `HUB_LOGIN_PASSWORD` | Viewer / Hub sign-in | **Only if a plugin signs in programmatically.** TBD. |
+| `DEMO_AUTH_USERNAME` / `DEMO_AUTH_PASSWORD` | Demo login (SCRUM-32) | Team test login for the lab, not a real person's password. In the pod: files from `make secrets` (deploy/README.md). |
+| `AUTH_TOKEN_SECRET` | Signs login tokens (SCRUM-32) | Generate: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `SESSION_SIGNING_KEY` | Session lock (SCRUM-34) | Generate: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` |
 
 Not in this list: **user passwords.** The Login story (SCRUM-32) should store a salted hash, never the password.
