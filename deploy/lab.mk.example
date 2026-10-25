@@ -27,8 +27,10 @@ NODE_PORT            = 30080
 
 # tshark live capture: a host-network pod that sees ALL traffic on the node.
 # Only on a bench whose owners approved it; always pass a capture_filter for
-# the traffic you need (e.g. "udp portrange 7400-7500" for RTI), so logins
-# and other plain-HTTP traffic are not captured. Default: false.
+# the traffic you need, so logins
+# and other plain-HTTP traffic are not captured. RTI uses 7400 + 250 x domain:
+# "udp portrange 9150-9399 or udp portrange 10400-10899" covers GE domains
+# 7, 12 and 13. Default: false.
 # TSHARK_LIVE_CAPTURE  = true
 
 # Absolute path to a folder outside the repo, e.g. $(HOME)/portrait-iq-secrets
