@@ -117,6 +117,8 @@ tests/
 
 ## Running it
 
+Use Python 3.10 through 3.13. The source uses Python 3.10 union type syntax,
+and the currently pinned Pydantic release does not support Python 3.14.
 Use Python 3.12 (the pinned pandas has no prebuilt wheel for 3.13).
 
 ```bash
@@ -130,6 +132,27 @@ uvicorn app.main:app --reload
 pytest tests/
 ```
 
+## Connectivity preflight
+
+Before starting diagnostics, the backend can run bounded TCP checks against a
+target host. The endpoint returns HTTP 200 even when the target is unreachable;
+inspect the overall status and each port result for the observed reason.
+
+```bash
+curl -X POST http://localhost:8000/api/connectivity-check \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <token>' \
+  -d '{"target":"192.168.0.3","ports":[22,443,6443],"timeout_seconds":3}'
+```
+
+A timeout is reported as potentially filtered or unresponsive. TCP alone cannot
+prove that a remote firewall blocked the port. Requests are limited to 16 unique
+ports and a maximum 10-second timeout per port.
+DNS resolution uses the same configured timeout. TCP checks use a shared pool
+of at most eight workers across all requests, so an otherwise idle request for
+16 ports takes at most two TCP rounds (plus DNS): about 30 seconds at the
+maximum timeout. Under concurrent load, a request may also wait for shared
+worker capacity.
 ## Login setup
 
 This is a local demo implementation, not GE SSO. The one demo user's username,
