@@ -37,7 +37,7 @@ export default function LoginPage() {
   const [reason, setReason] = useState<Reason | null>(null);
   const [capsOn, setCapsOn] = useState(false);
 
-  if (user) return <Navigate to="/prerequisites" replace />;
+  if (user) return <Navigate to="/collect" replace />;
 
   const missing = {
     username: !username.trim() && "Enter your username.",
@@ -52,7 +52,7 @@ export default function LoginPage() {
     setReason(null);
     try {
       await login(username.trim(), password);
-      navigate("/prerequisites", { replace: true });
+      navigate("/collect", { replace: true });
     } catch (err) {
       setReason(reasonFor(err));
     } finally {
