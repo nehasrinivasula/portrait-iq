@@ -1,0 +1,5 @@
+.log-filters-page { max-width: 920px; margin: 0 auto; padding: 28px 16px; }
+.page-eyebrow { color: var(--primary); font-size: 16px; font-weight: 600; margin: 0 0 2px; }
+.page-intro { margin: 0 0 20px; max-width: 700px; }
+.filter-preview { border-left: 4px solid var(--info); margin-top: 16px; padding: 14px 16px; }
+.filter-preview p { margin: 2px 0 0; }
