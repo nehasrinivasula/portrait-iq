@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.db import init_db
+from app.logs import router as logs_router
 from app.auth import AuthError, User, authenticate_demo_user, create_access_token, get_current_user, touch_session
 from app.orchestrator.routes import router as orchestrator_router
 from app.schemas import CurrentUserOut, LoginRequest, TokenResponse
@@ -18,6 +19,7 @@ install_log_redaction()
 
 app = FastAPI(title=settings.app_name)
 app.include_router(orchestrator_router, prefix="/api")
+app.include_router(logs_router, prefix="/api")
 app.include_router(sources_router, prefix="/api/sources")
 
 
