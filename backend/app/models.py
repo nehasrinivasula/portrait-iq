@@ -2,7 +2,7 @@
 ORM tables. One per architecture-diagram box that needs to persist state:
 Device (connect), Job (orchestrator), NormalizedEvent (event store), Signal
 (analysis engine output), AcquiredFileRecord (log acquisition manifest),
-AuditLogEntry (cross-cutting).
+IngestedFile (receipt of what ingestion stored per file), AuditLogEntry (cross-cutting).
 """
 import uuid
 from datetime import datetime
@@ -69,6 +69,35 @@ class NormalizedEvent(Base):
     message = Column(Text, nullable=False)
 
     job = relationship("Job", back_populates="events")
+
+    # Search is by time, usually inside one collection or one device. These
+    # keep those queries fast at hundreds of thousands of rows. (job_id,
+    # timestamp, id) matches the paging order of the unified view exactly.
+    __table_args__ = (
+        Index("ix_events_job_ts", "job_id", "timestamp", "id"),
+        Index("ix_events_device_ts", "device_id", "timestamp"),
+    )
+
+
+class IngestedFile(Base):
+    """One row per file the pipeline stored, written in the same transaction
+    as that file's events. It is the receipt the unified view checks against:
+    rows read, events stored, rows rejected. Without it, "every entry is
+    visible" could not be told apart from "every entry we happened to keep".
+    Keyed like the events: (source_file, job_id)."""
+    __tablename__ = "ingested_files"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_file = Column(String, nullable=False, index=True)
+    job_id = Column(String, ForeignKey("jobs.id"), nullable=True, index=True)
+    parser = Column(String, nullable=True)
+    rows_read = Column(Integer, nullable=False, default=0)
+    events_written = Column(Integer, nullable=False, default=0)
+    rows_rejected = Column(Integer, nullable=False, default=0)
+    reject_reasons = Column(Text, nullable=True)     # JSON {reason: count}; short constants, never row text
+    first_timestamp = Column(DateTime, nullable=True)
+    last_timestamp = Column(DateTime, nullable=True)
+    ingested_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Signal(Base):
