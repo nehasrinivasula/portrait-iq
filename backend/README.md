@@ -61,13 +61,18 @@ app/
 
   orchestrator/
     routes.py            HTTP endpoints: connect, discover, jobs, findings, package
-    jobs.py               Job state machine (queued -> running -> done/failed)
+    jobs.py               Job state machine (queued -> running -> done/failed), run in
+                          the background after POST /jobs; results.json per job
 
   collectors/
     base.py               Plugin contract: configure(), run(), cleanup(), resource limits
     registry.py            The list of plugins; the orchestrator looks them up by name
-    netshoot.py, rti.py, tshark.py, hub_import.py    One file per tool. All stubs.
+    k8s.py                 Starts, execs into and deletes tool pods in our namespace
+    netshoot.py, tshark.py    Working (SCRUM-39), see "Tool plugins" below
+    rti.py, hub_import.py     Stubs
                           To add a tool: one new file here + one line in PLUGINS in registry.py.
+
+  uploads.py             Files a field engineer hands in (POST /api/uploads), e.g. a .pcap
 
   sources/               Log acquisition (SCRUM-43): where raw log files come from
     base.py               LogSource interface every source implements
@@ -252,6 +257,59 @@ PHI/PII collection point: acquired files are raw logs and may contain
 patient or staff data. They stay in the gitignored staging folder and are
 never written to the audit log.
 
+## Tool plugins (SCRUM-39)
+
+Start a job with `POST /api/jobs?target_ip=...`. It returns at once with
+status `queued`; poll `GET /api/jobs/{id}`, then read each plugin's summary,
+warnings and files from `GET /api/jobs/{id}/results`. Files land in
+`JOB_OUTPUT_DIR/<job id>/<plugin>/` (default `./data/jobs`, gitignored).
+
+**Netshoot** (`{"tools": ["netshoot"]}`) starts one pod from
+`NETSHOOT_IMAGE` in `TOOLS_NAMESPACE` (default `portrait-iq`), runs
+interface, route and DNS checks plus ping, traceroute and TCP port checks
+against the target, and deletes the pod. Options: `ports`, `dns_names`,
+`extra_targets`. A failed check is a warning, not a failed job.
+
+**tshark** has two modes:
+
+- `import`: upload the capture first with
+  `POST /api/uploads?kind=pcap` (multipart field `file`), then pass
+  `{"tshark": {"mode": "import", "upload_id": "..."}}`. Runs `editcap` and
+  `tshark -r` where the backend runs, so install Wireshark's command-line
+  tools there (Ubuntu `apt install tshark`, macOS `brew install wireshark`,
+  Windows: the Wireshark installer, then set `WIRESHARK_BIN_DIR`).
+- `run`: a live capture from a host-network pod (`TSHARK_IMAGE`, built from
+  `deploy/images/tshark`). Refused unless `TSHARK_LIVE_CAPTURE_ENABLED=true`,
+  because the pod gets raw-socket rights on the customer's node. Options:
+  `duration_s` (5 to 900), `interface`, `capture_filter`.
+
+Both keep headers only (first 128 bytes per packet) unless `headers_only`
+is false with a `full_payload_reason`.
+
+**UMF RTI** (`{"tools": ["rti"]}`) starts a host-network pod from GE's
+rtitools image (`RTI_IMAGE`) and runs `rtiddsspy` on one DDS domain for
+`duration_s` (10 to 300, default 30), with the target as discovery peer.
+Options: `domain` (7 logging, 12 source pod, 13 view pod; default 12). It
+reports hosts, topics and types only, never sample contents. Refused unless
+`RTI_ENABLED=true`: the image must come from GE (it carries Connext Pro and
+the domain's security files) and the site must approve a listen-only
+participant. `RTI_QOS_FILE` / `RTI_QOS_PROFILE` pick the QoS profile with
+the domain's security settings. The spy output parser is based on RTI's
+docs and still needs checking against real output on the bench.
+
+Kubernetes access: in the cluster the backend uses its service account
+(`deploy/k8s/tool-rbac.yaml`: pods and pods/exec in its own namespace only).
+From a laptop it uses `KUBECONFIG_PATH` or `~/.kube/config`. Tool pods are
+labelled `portrait-iq/role=tool`, stop themselves at a deadline, and any
+left over from a crash are deleted when the backend starts. The lab is
+offline, so import `NETSHOOT_IMAGE` and `TSHARK_IMAGE` into the node's
+containerd the same way as the backend image.
+
+PHI/PII collection point: captures (`capture.pcapng`) and uploads can hold
+patient data even with headers only. They stay in the gitignored data
+folders and are never logged; the audit log records upload ids, not file
+names.
+
 ## Data & privacy
 
 Never commit real log exports, GE service manuals, branding assets, or
@@ -265,7 +323,8 @@ uses for GE-provided files instead.
 ## Deliberately not built yet
 
 - GE SSO / production identity-provider integration (the current auth is local-demo only)
-- Real device discovery/SSH/Kubernetes API calls (`collectors/base.py` TODOs)
+- Real device discovery/SSH (Kubernetes access exists only for tool pods, `collectors/k8s.py`)
+- The UMF RTI and hub import plugins
 - The compute-platform log parser (`parsers/compute_csv.py` — need a sample)
 - Manual/documentation matching (`knowledge/lookup.py` always returns unconfirmed)
 - Analytics endpoints (`analytics/service.py` has no route pointing to it)

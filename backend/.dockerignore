@@ -1,0 +1,17 @@
+# Keep the image small and free of anything secret or local.
+**/__pycache__
+**/*.pyc
+.venv
+venv
+tests
+*.db
+.env
+.env.*
+!.env.example
+secrets
+*.secret
+*.pem
+*.key
+*.p12
+*kubeconfig
+data

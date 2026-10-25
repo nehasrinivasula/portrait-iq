@@ -4,15 +4,17 @@ test_new_plugin_needs_only_a_register_line: a brand-new plugin class is
 registered and then configured, run and cleaned up by the orchestrator with
 no edit to any existing plugin, the orchestrator or the API.
 """
+import io
 import json
+from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import models  # noqa: F401  (registers tables on Base)
+from app import models, uploads  # noqa: F401  (models registers tables on Base)
 from app.auth import User
 from app.collectors.base import (
     Collector,
@@ -21,10 +23,12 @@ from app.collectors.base import (
     ResourceLimits,
 )
 from app.collectors.registry import PluginRegistry, UnknownPluginError, get_registry
+from app.collectors import tshark as tshark_module
 from app.collectors.tshark import TsharkCollector
+from app.config import settings
 from app.db import Base
 from app.orchestrator import routes
-from app.orchestrator.jobs import create_job, run_job
+from app.orchestrator.jobs import create_job, read_results, run_job
 from app.schemas import JobCreateRequest
 
 LIMITS = ResourceLimits(cpu_pct=50, mem_mb=512, max_output_mb=100)
@@ -106,8 +110,25 @@ def local_registry():
     return reg
 
 
+@pytest.fixture
+def live_capture(monkeypatch):
+    monkeypatch.setattr(settings, "tshark_live_capture_enabled", True)
+
+
 def _job(db, tools):
     return create_job(db, mode="live", tools=tools, limits=LIMITS)
+
+
+def _start(db, req, user=User(id="tester", name="Tester")):
+    """start_job, then the background task it queued, on the test's session."""
+    tasks = BackgroundTasks()
+    job = routes.start_job(req, target_ip="192.0.2.10", background_tasks=tasks, db=db, user=user)
+    assert job.status == "queued"   # returned before the job ran
+    for task in tasks.tasks:
+        assert task.func is routes._run_in_background
+        routes.run_existing_job(db, *task.args)
+    db.refresh(job)
+    return job
 
 
 # Registry contents ------------------------------------------------------
@@ -202,24 +223,26 @@ def test_unknown_plugin_lists_the_available_ones(local_registry):
 # configure() --------------------------------------------------------------
 
 def test_default_configure_rejects_options():
-    plugin = get_registry().get("netshoot")(LIMITS)
+    plugin = get_registry().get("hub_import")(LIMITS)
     plugin.configure({})
     with pytest.raises(PluginConfigError, match="takes no options"):
         plugin.configure({"verbose": True})
 
 
-def test_tshark_configure():
+def test_tshark_configure(live_capture):
     t = TsharkCollector(LIMITS)
     t.configure({})
     assert (t.mode, t.headers_only) == ("run", True)
-    t.configure({"mode": "import", "headers_only": False, "full_payload_reason": "ticket 123"})
+    upload_id, _ = uploads.save(io.BytesIO(b"\x0a\x0d\x0d\x0a" + b"\0" * 28), "pcap")
+    t.configure({"mode": "import", "upload_id": upload_id,
+                 "headers_only": False, "full_payload_reason": "ticket 123"})
     assert (t.mode, t.headers_only) == ("import", False)
-    for bad in ({"mode": "sniff"}, {"headers_only": "yes"}, {"interface": "eth0"}):
+    for bad in ({"mode": "sniff"}, {"headers_only": "yes"}, {"verbose": True}):
         with pytest.raises(PluginConfigError):
             t.configure(bad)
 
 
-def test_tshark_full_payload_needs_a_reason():
+def test_tshark_full_payload_needs_a_reason(live_capture):
     t = TsharkCollector(LIMITS)
     for missing in ({"headers_only": False}, {"headers_only": False, "full_payload_reason": "  "}):
         with pytest.raises(PluginConfigError, match="full_payload_reason"):
@@ -235,9 +258,10 @@ def test_tshark_full_payload_needs_a_reason():
     t.configure({"headers_only": False, "full_payload_reason": " Hospital IT asked, ticket 123 "})
     assert t.audit_fields() == {
         "mode": "run", "headers_only": False, "full_payload_reason": "Hospital IT asked, ticket 123",
+        "duration_s": 60, "interface": "any",
     }
     t.configure({})
-    assert t.audit_fields() == {"mode": "run", "headers_only": True}
+    assert t.audit_fields() == {"mode": "run", "headers_only": True, "duration_s": 60, "interface": "any"}
 
 
 def test_create_all_rejects_duplicates_and_stray_options(local_registry):
@@ -321,29 +345,36 @@ def test_start_job_rejects_bad_selection_with_400(db):
     for req in (
         JobCreateRequest(tools=["nope"]),
         JobCreateRequest(tools=["tshark"], plugin_options={"tshark": {"mode": "sniff"}}),
+        JobCreateRequest(tools=["tshark"], plugin_options={"tshark": {"mode": "import"}}),
+        JobCreateRequest(tools=["tshark"]),   # live capture is off by default
     ):
         with pytest.raises(HTTPException) as exc:
-            routes.start_job(req, target_ip="192.0.2.10", db=db, user=user)
+            routes.start_job(req, target_ip="192.0.2.10", background_tasks=BackgroundTasks(),
+                             db=db, user=user)
         assert exc.value.status_code == 400
     assert db.query(models.Job).count() == 0  # rejected before a job was created
 
 
-def test_start_job_passes_options_through(db):
-    user = User(id="tester", name="Tester")
-    req = JobCreateRequest(tools=["tshark"], plugin_options={"tshark": {"mode": "import"}})
-    job = routes.start_job(req, target_ip="192.0.2.10", db=db, user=user)
-    # tshark's run() and cleanup() are still stubs, so the job ends with
-    # cleanup_failed, but it got past configure.
-    assert job.status == "cleanup_failed"
+def test_start_job_passes_options_through(db, monkeypatch):
+    calls = []
+    monkeypatch.setattr(tshark_module, "_wireshark_tool",
+                        lambda name, args, timeout_s: calls.append([name, *args]) or "eth frames:7 bytes:700")
+    upload_id, _ = uploads.save(io.BytesIO(b"\xd4\xc3\xb2\xa1" + b"\0" * 20), "pcap")
+    req = JobCreateRequest(tools=["tshark"], plugin_options={"tshark": {"mode": "import", "upload_id": upload_id}})
+    job = _start(db, req)
+    assert job.status == "done"
     assert json.loads(job.tools) == ["tshark"]
+    assert calls[0][:4] == ["editcap", "-F", "pcapng", "-s"]
+    assert read_results(job.id)[0]["summary"] == "7 packets imported, headers only"
 
 
-def test_start_job_audits_full_payload_and_reason(db):
+def test_start_job_audits_full_payload_and_reason(db, live_capture):
     user = User(id="tester", name="Tester")
     req = JobCreateRequest(tools=["tshark"], plugin_options={
         "tshark": {"headers_only": False, "full_payload_reason": "ticket 123"},
     })
-    job = routes.start_job(req, target_ip="192.0.2.10", db=db, user=user)
+    job = routes.start_job(req, target_ip="192.0.2.10", background_tasks=BackgroundTasks(),
+                           db=db, user=user)
     detail = db.query(models.AuditLogEntry).filter_by(action="job_start").one().detail
     assert f"job={job.id}" in detail
     assert "'headers_only': False" in detail and "'full_payload_reason': 'ticket 123'" in detail
@@ -351,7 +382,35 @@ def test_start_job_audits_full_payload_and_reason(db):
 
 def test_start_job_runs_the_instances_it_validated(db, local_registry, monkeypatch):
     monkeypatch.setattr(routes, "get_registry", lambda: local_registry)
-    user = User(id="tester", name="Tester")
-    job = routes.start_job(JobCreateRequest(tools=["flaky"]), target_ip="192.0.2.10", db=db, user=user)
+    job = _start(db, JobCreateRequest(tools=["flaky"]))
     assert job.status == "done"
     assert Flaky.configured == 1
+
+
+def test_results_are_kept_for_plugins_that_finished(db, local_registry):
+    with pytest.raises(RuntimeError):
+        run_job(db, _job(db, ["recorder", "exploding"]), "192.0.2.10", registry=local_registry)
+    job = db.query(models.Job).one()
+    results = read_results(job.id)
+    assert [r["tool"] for r in results] == ["recorder", "exploding"]
+    assert results[0]["warnings"] == [] and "error" not in results[0]
+    assert results[1] == {"tool": "exploding", "error": "RuntimeError"}   # type only, not the text
+
+
+def test_plugins_get_their_own_job_folder(db, local_registry):
+    job = run_job(db, _job(db, ["recorder", "second"]), "192.0.2.10", registry=local_registry)
+    assert job.status == "done"
+    for name in ("recorder", "second"):
+        assert (Path(settings.job_output_dir) / job.id / name).is_dir()
+
+
+def test_startup_marks_interrupted_jobs(db):
+    from app.orchestrator.jobs import recover_interrupted_jobs
+    running = _job(db, ["recorder"])
+    running.status = "running"
+    finished = _job(db, ["recorder"])
+    finished.status = "done"
+    db.commit()
+    recover_interrupted_jobs(db)
+    assert (running.status, finished.status) == ("interrupted", "done")
+    assert db.query(models.AuditLogEntry).filter_by(action="job_interrupted").count() == 1

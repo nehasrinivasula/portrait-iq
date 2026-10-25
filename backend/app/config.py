@@ -2,8 +2,12 @@
 Central settings. Everything here is a placeholder default for local/lab use —
 override via a .env file before this touches anything resembling production.
 """
+import os
+
 from pydantic_settings import BaseSettings
 from pydantic import SecretStr
+
+from app.secrets_loader import AmbiguousSecretError, load_secret
 
 
 class Settings(BaseSettings):
@@ -63,8 +67,70 @@ class Settings(BaseSettings):
     # devices upload a little late still land in that hour's pull.
     axone_settle_minutes: int = 15
 
+    # --- Diagnostic tool plugins (SCRUM-39) ---
+    # Tool pods go in our own namespace, never in Portrait's (pm) or GE's
+    # (compute). In a pod the backend uses its service account; from a laptop
+    # it uses this kubeconfig (or ~/.kube/config when unset).
+    tools_namespace: str = "portrait-iq"
+    kubeconfig_path: str | None = None
+    # The lab has no internet: images are imported into containerd by hand,
+    # so IfNotPresent never pulls there. Pin exact tags.
+    tool_image_pull_policy: str = "IfNotPresent"
+    tool_pod_start_timeout_seconds: int = 120
+    netshoot_image: str = "nicolaka/netshoot:v0.13"
+    tshark_image: str = "portrait-iq-tshark:0.1"   # built from deploy/images/tshark
+    # Live capture needs a host-network pod with raw-socket rights on the
+    # customer's node. Off until the site (and our sponsor) approve it;
+    # importing a capture someone else made works either way.
+    tshark_live_capture_enabled: bool = False
+    # UMF RTI listens on GE's secured DDS domains with GE's rtitools image
+    # (Connext Pro + the domain's security files). Off until that image is
+    # on the bench and the mentors approve a listen-only participant. The
+    # image name is the chart's default; on the bench it is probably the
+    # 192.168.0.3:30003/spectro-images/... mirror path instead.
+    rti_enabled: bool = False
+    rti_image: str = "docker-axone-all/axone-umf-rtitools:branch-latest"
+    # QoS profile that carries the domain's security settings. The file is
+    # in /opt/axone-tools/qos/ in the image; empty uses the image's default.
+    rti_qos_file: str = ""
+    rti_qos_profile: str = "AxoneNetQoSLibrary::umfgeneral_qos"
+    # Where tshark and editcap are on the machine running the backend, when
+    # they are not on PATH (the Windows installer does not add them), e.g.
+    # C:\Program Files\Wireshark
+    wireshark_bin_dir: str | None = None
+    # Delete tool pods left over from a crash when the backend starts.
+    sweep_tool_pods_on_startup: bool = True
+    # Raw output of each job, one folder per job and plugin. Gitignored:
+    # captures can contain PHI/PII.
+    job_output_dir: str = "./data/jobs"
+    # Files a field engineer hands in (e.g. a hospital's .pcap).
+    upload_dir: str = "./data/uploads"
+    upload_max_mb: int = 500
+
     class Config:
         env_file = ".env"
 
 
+# Login settings that may also come from NAME_FILE, so a Kubernetes Secret
+# volume can supply them (backend/SECRETS.md). Plain NAME / .env still work.
+LOGIN_SECRET_NAMES = ("DEMO_AUTH_USERNAME", "DEMO_AUTH_PASSWORD", "AUTH_TOKEN_SECRET")
+
+
+def load_login_secret_files(s: Settings) -> None:
+    for name in LOGIN_SECRET_NAMES:
+        path = os.environ.get(f"{name}_FILE")
+        if not path:
+            continue
+        # The pod starts before `make secrets` has run: a missing file leaves
+        # login unconfigured (503 on protected routes), not a crash loop.
+        if not os.path.exists(path):
+            continue
+        field = name.lower()
+        if getattr(s, field) is not None:   # also catches a value from .env
+            raise AmbiguousSecretError(f"Both {name} and {name}_FILE are set. Set only one.")
+        value = load_secret(name).reveal()
+        setattr(s, field, value if field == "demo_auth_username" else SecretStr(value))
+
+
 settings = Settings()
+load_login_secret_files(settings)

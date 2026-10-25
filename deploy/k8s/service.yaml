@@ -1,0 +1,17 @@
+# Exposes the tool to the lab network: open http://<MiniEdge IP>:__NODE_PORT__
+# from a laptop on the lab switch. Applied by `make deploy`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: portrait-iq
+  labels:
+    app.kubernetes.io/name: portrait-iq
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: portrait-iq
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: __NODE_PORT__
