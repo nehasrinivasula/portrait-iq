@@ -23,7 +23,7 @@
 .app-header :focus-visible { outline-color: #fff; }
 .page { padding: 28px 24px 48px; max-width: 1100px; margin: 0 auto; }
 .page > h1 { font-size: 26px; margin-bottom: 4px; }
-.card-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); margin-top: 20px; }
+.card-grid { display: grid; gap: 16px; grid-template-columns: 1fr; max-width: 720px; margin-top: 20px; }
 .action-card {
   display: grid; gap: 6px; text-decoration: none; color: inherit; background: var(--panel);
   border: 1.5px solid var(--line); border-radius: 8px; padding: 22px; min-height: 120px;
@@ -80,3 +80,5 @@
 .source-list { display: grid; gap: 8px; margin: 10px 0 0; }
 
 .log-table td:nth-child(3) { white-space: nowrap; }
+
+.app-header > span { display: inline-flex; align-items: center; gap: 18px; }

@@ -51,7 +51,7 @@ export default function JobPanel() {
           ))}
         </ul>
       )}
-      {isFinished(job.status) && <button className="btn ghost" onClick={clear}>Start another run</button>}
+      {isFinished(job.status) && <button className="btn ghost" onClick={clear}>Clear</button>}
     </section>
   );
 }
