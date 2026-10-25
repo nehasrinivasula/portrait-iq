@@ -52,8 +52,14 @@ spec:
             - name: LOG_EXPORT_URL
               value: "__LOG_EXPORT_URL__"
             # Secrets are files, never env values (backend/SECRETS.md).
-            - name: SESSION_SIGNING_KEY_FILE
-              value: /run/secrets/portrait-iq/SESSION_SIGNING_KEY
+            # Login (SCRUM-32). Until `make secrets` creates these files,
+            # login stays unconfigured and protected routes return 503.
+            - name: DEMO_AUTH_USERNAME_FILE
+              value: /run/secrets/portrait-iq/DEMO_AUTH_USERNAME
+            - name: DEMO_AUTH_PASSWORD_FILE
+              value: /run/secrets/portrait-iq/DEMO_AUTH_PASSWORD
+            - name: AUTH_TOKEN_SECRET_FILE
+              value: /run/secrets/portrait-iq/AUTH_TOKEN_SECRET
             # The secret files are 0440 in the fsGroup; the loader accepts
             # group read only for this group (SCRUM-72).
             - name: SECRETS_FILE_GID

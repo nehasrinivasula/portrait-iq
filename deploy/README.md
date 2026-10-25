@@ -67,12 +67,19 @@ The lab switch has no DHCP, so give your ethernet adapter a fixed address:
 ## Install
 
 ```
-make image-save     # build for the node's CPU type, save to dist/images/ (needs Wi-Fi)
-make image-load     # copy to the node, import into the container runtime
-make deploy         # namespace (if new), volume, pod, NodePort service
-make secrets        # optional: Secret from SECRETS_DIR, outside the repo
+make tool-images    # once: Netshoot and tshark tool images for the plugins (needs Wi-Fi)
+make ship           # build the backend image, copy every image to the node, import them
+make deploy         # namespace (if new), volume, pod, NodePort service, tool-pod RBAC
+make secrets        # login files from SECRETS_DIR (outside the repo), restarts the pod
 make pod-check      # from inside the pod: does the Log Export API answer?
 ```
+
+`SECRETS_DIR` (set in `deploy/lab.mk`) is a folder outside the repo with one
+`chmod 600` file per value, named exactly `DEMO_AUTH_USERNAME`,
+`DEMO_AUTH_PASSWORD` and `AUTH_TOKEN_SECRET`. Make the token secret with
+`python3 -c "import secrets; print(secrets.token_urlsafe(48))"`. Until
+`make secrets` has run, the app starts but every route except `/health` and
+`/api/plugins` returns 503 (login not configured).
 
 Then open `http://192.168.0.3:30080/docs` from a laptop on the lab switch.
 `make status` and `make logs` show what the pod is doing. On an Apple-silicon
