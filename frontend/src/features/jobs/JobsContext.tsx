@@ -5,6 +5,12 @@ import { useNotify } from "../../ui/Notifications";
 import { getJob, getResults, isFinished, type Job, type ToolResult } from "../plugins/api";
 
 const POLL_MS = 2000;
+const KEY = "piq.job";
+const store = {
+  get: () => { try { return sessionStorage.getItem(KEY); } catch { return null; } },
+  set: (id: string) => { try { sessionStorage.setItem(KEY, id); } catch { /* private mode: lose the run on reload */ } },
+  clear: () => { try { sessionStorage.removeItem(KEY); } catch { /* ignore */ } },
+};
 
 interface JobsState {
   job: Job | null;
@@ -32,10 +38,19 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   const [lost, setLost] = useState(false);
   const announced = useRef<string | null>(null);
 
-  const clear = useCallback(() => { setJob(null); setResults(null); setLost(false); }, []);
-  const track = useCallback((j: Job) => { setResults(null); setLost(false); announced.current = null; setJob(j); }, []);
+  const clear = useCallback(() => { store.clear(); setJob(null); setResults(null); setLost(false); }, []);
+  const track = useCallback((j: Job) => { store.set(j.id); setResults(null); setLost(false); announced.current = null; setJob(j); }, []);
 
-  useEffect(() => { if (!user) clear(); }, [user, clear]);
+  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); } }, [user]);
+
+  // A page reload must not lose a run that is still going: pick it back up.
+  useEffect(() => {
+    const id = user ? store.get() : null;
+    if (!id) return;
+    getJob(id)
+      .then((j) => { if (isFinished(j.status)) announced.current = j.id; setJob(j); })
+      .catch(() => store.clear());
+  }, [user]);
 
   useEffect(() => {
     if (!job || isFinished(job.status)) return;
