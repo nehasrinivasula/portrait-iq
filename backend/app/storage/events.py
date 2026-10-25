@@ -200,7 +200,7 @@ class CollectionSummary:
     status: Optional[str]
     mode: Optional[str]
     events_stored: int
-    events_expected: int             # what ingestion recorded as stored
+    events_expected: int             # stored at ingest, minus any removed on purpose since
     rows_read: int
     rows_rejected: int
     first_timestamp: Optional[datetime]
@@ -231,27 +231,30 @@ def collection_summary(db: Session, job_id: str) -> Optional[CollectionSummary]:
     # What ingestion recorded per file. A file ingested twice without
     # replacement has two receipts; add them up so they match the store.
     receipts = IngestedFile.job_id.is_(None) if job_id == UNASSIGNED else IngestedFile.job_id == job_id
-    merged: dict[str, dict] = defaultdict(lambda: {"parser": None, "read": 0, "written": 0, "rejected": 0})
+    merged: dict[str, dict] = defaultdict(
+        lambda: {"parser": None, "read": 0, "written": 0, "rejected": 0, "removed": 0}
+    )
     for r in db.scalars(select(IngestedFile).where(receipts).order_by(IngestedFile.id)):
         m = merged[r.source_file]
         m["parser"] = r.parser
         m["read"] += r.rows_read
         m["written"] += r.events_written
         m["rejected"] += r.rows_rejected
+        m["removed"] += r.events_removed or 0
     files = [
-        FileLedger(name, m["parser"], m["read"], m["written"], m["rejected"], in_store.get(name, 0))
+        FileLedger(name, m["parser"], m["read"], m["written"], m["rejected"], in_store.get(name, 0), m["removed"])
         for name, m in sorted(merged.items())
     ]
     untracked = sum(n for name, n in in_store.items() if name not in merged)
 
-    manifest = []
-    if job is not None:
-        manifest = [
-            ManifestEntry(r.name, r.status, r.error)
-            for r in db.scalars(
-                select(AcquiredFileRecord).where(AcquiredFileRecord.job_id == job_id).order_by(AcquiredFileRecord.id)
-            )
-        ]
+    # Files that were acquired but never made it in. For "unassigned" these are
+    # the records with no job, which is every pull made through /api/sources
+    # without a job_id.
+    manifest_scope = AcquiredFileRecord.job_id.is_(None) if job_id == UNASSIGNED else AcquiredFileRecord.job_id == job_id
+    manifest = [
+        ManifestEntry(r.name, r.status, r.error)
+        for r in db.scalars(select(AcquiredFileRecord).where(manifest_scope).order_by(AcquiredFileRecord.id))
+    ]
 
     issues = assess(
         job_status=job.status if job else None, files=files, manifest=manifest, events_without_record=untracked
@@ -269,7 +272,7 @@ def collection_summary(db: Session, job_id: str) -> Optional[CollectionSummary]:
         status=job.status if job else None,
         mode=job.mode if job else None,
         events_stored=total,
-        events_expected=sum(f.events_expected for f in files),
+        events_expected=sum(f.events_now_expected for f in files),
         rows_read=sum(f.rows_read for f in files),
         rows_rejected=sum(f.rows_rejected for f in files),
         first_timestamp=first,

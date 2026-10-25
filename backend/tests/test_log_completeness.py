@@ -2,8 +2,8 @@
 from app.storage.completeness import FileLedger, Issue, ManifestEntry, assess, is_complete
 
 
-def ledger(name="a.csv", read=10, expected=10, rejected=0, in_store=10, parser="portrait_csv"):
-    return FileLedger(name, parser, read, expected, rejected, in_store)
+def ledger(name="a.csv", read=10, expected=10, rejected=0, in_store=10, parser="portrait_csv", removed=0):
+    return FileLedger(name, parser, read, expected, rejected, in_store, removed)
 
 
 def run(**kw):
@@ -88,3 +88,15 @@ def test_every_problem_is_reported_not_just_the_first():
     issues = run(job_status="running", files=[ledger(expected=10, in_store=9)],
                  manifest=[ManifestEntry("x.csv", "failed")], events_without_record=2)
     assert kinds(issues) == ["collection_running", "file_not_stored", "store_mismatch", "untracked_events"]
+
+
+def test_events_removed_on_purpose_are_a_note_not_data_loss():
+    issues = run(files=[ledger(expected=10, in_store=7, removed=3)])
+    (issue,) = issues
+    assert issue.kind == "events_removed" and issue.severity == "info" and "3" in issue.message
+    assert is_complete(issues)
+
+
+def test_a_removal_does_not_hide_a_further_loss():
+    issues = run(files=[ledger(expected=10, in_store=6, removed=3)])
+    assert kinds(issues) == ["events_removed", "store_mismatch"] and not is_complete(issues)

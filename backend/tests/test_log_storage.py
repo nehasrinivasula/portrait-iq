@@ -19,6 +19,7 @@ from app.models import AcquiredFileRecord, IngestedFile, Job
 from app.models import NormalizedEvent as EventRow
 from app.storage import events as store
 from app.storage.filters import UNASSIGNED, FilterError, build_filter
+from app.storage.removal import remove_events
 
 T0 = datetime(2024, 6, 2, 10, 0, 0)
 HEADER = (
@@ -364,3 +365,110 @@ def test_indexes_are_added_to_a_database_created_before_they_existed(monkeypatch
 
     names = {i["name"] for i in inspect(engine).get_indexes("normalized_events")}
     assert {"ix_events_job_ts", "ix_events_device_ts"} <= names
+
+
+def test_device_id_is_covered_by_the_composite_index_only():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    columns = [tuple(i["column_names"]) for i in inspect(engine).get_indexes("normalized_events")]
+    assert ("device_id", "timestamp") in columns and ("device_id",) not in columns
+
+
+# --- logs that belong to no collection -----------------------------------------
+
+def test_a_failed_file_makes_unassigned_logs_incomplete(db, tmp_path):
+    pipeline.ingest_file(make_csv(tmp_path / "a.csv", good=5), db)             # no job, like every /api/sources pull today
+    assert store.collection_summary(db, UNASSIGNED).complete
+
+    db.add(AcquiredFileRecord(source="local", remote_id="r1", name="broken.csv", status="failed",
+                              error="1 of 2 rows could not be converted", job_id=None))
+    db.commit()
+
+    summary = store.collection_summary(db, UNASSIGNED)
+    assert not summary.complete
+    assert [(i.kind, i.file) for i in summary.issues if i.severity == "problem"] == [("file_not_stored", "broken.csv")]
+
+
+def test_a_failed_file_of_one_collection_does_not_leak_into_unassigned(db, tmp_path):
+    make_job(db)
+    pipeline.ingest_file(make_csv(tmp_path / "a.csv", good=5), db)
+    db.add(AcquiredFileRecord(source="local", remote_id="r1", name="broken.csv", status="failed", job_id="job-1"))
+    db.commit()
+    assert store.collection_summary(db, UNASSIGNED).complete
+
+
+# --- removing events on purpose ------------------------------------------------
+
+def event_ids(db, source_file, n):
+    return list(db.scalars(select(EventRow.id).where(EventRow.source_file == source_file).order_by(EventRow.id).limit(n)))
+
+
+def test_removing_events_keeps_the_collection_complete_and_says_so(db, tmp_path):
+    make_job(db)
+    ingest_two_files(db, tmp_path, rows=(60, 45))
+
+    assert remove_events(db, event_ids(db, "a.csv", 3)) == 3
+
+    summary = store.collection_summary(db, "job-1")
+    assert summary.complete
+    assert (summary.events_expected, summary.events_stored, summary.rows_read) == (102, 102, 105)
+    (note,) = summary.issues
+    assert (note.kind, note.severity, note.file) == ("events_removed", "info", "a.csv")
+    a = next(f for f in summary.files if f.source_file == "a.csv")
+    assert (a.events_removed, a.events_in_store) == (3, 57)
+
+
+def test_remove_events_ignores_unknown_and_repeated_ids(db, tmp_path):
+    make_job(db)
+    ingest_two_files(db, tmp_path)
+    first = event_ids(db, "a.csv", 1)[0]
+    assert remove_events(db, [first, first, 10**9]) == 1
+    assert remove_events(db, [first]) == 0                         # already gone
+    assert store.collection_summary(db, "job-1").complete
+
+
+def test_remove_events_updates_every_affected_file(db, tmp_path):
+    make_job(db)
+    ingest_two_files(db, tmp_path)
+    assert remove_events(db, event_ids(db, "a.csv", 2) + event_ids(db, "b.csv", 4)) == 6
+    removed = {f.source_file: f.events_removed for f in store.collection_summary(db, "job-1").files}
+    assert removed == {"a.csv": 2, "b.csv": 4}
+
+
+def test_loss_after_a_removal_is_still_caught(db, tmp_path):
+    make_job(db)
+    ingest_two_files(db, tmp_path)
+    remove_events(db, event_ids(db, "a.csv", 3))
+    db.execute(delete(EventRow).where(EventRow.id == event_ids(db, "a.csv", 1)[0]))     # not through remove_events
+    db.commit()
+    summary = store.collection_summary(db, "job-1")
+    assert not summary.complete
+    assert "store_mismatch" in [i.kind for i in summary.issues]
+
+
+def test_remove_events_in_bulk_and_without_receipts(db):
+    db.add_all([
+        EventRow(timestamp=T0 + timedelta(seconds=i), source="portrait", severity="INFO", message="m",
+                 source_file="legacy.csv", job_id=None)
+        for i in range(1200)                                          # more than one chunk
+    ])
+    db.commit()
+    ids = list(db.scalars(select(EventRow.id)))
+    assert remove_events(db, ids) == 1200
+    assert db.scalar(select(func.count()).select_from(EventRow)) == 0
+
+
+def test_a_removal_that_fails_deletes_nothing(db, tmp_path, monkeypatch):
+    make_job(db)
+    ingest_two_files(db, tmp_path)
+    ids = event_ids(db, "a.csv", 3)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(db, "commit", boom)
+    with pytest.raises(RuntimeError):
+        remove_events(db, ids)
+    monkeypatch.undo()
+    assert len(event_ids(db, "a.csv", 1000)) == 60
+    assert store.collection_summary(db, "job-1").complete

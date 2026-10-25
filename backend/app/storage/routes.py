@@ -158,8 +158,8 @@ def get_collection(job_id: str, db: Session = Depends(get_db), user: User = Depe
         by_source=_facet_values(s.by_source), by_severity=_facet_values(s.by_severity),
         files=[
             FileSummaryOut(source_file=f.source_file, parser=f.parser, rows_read=f.rows_read,
-                           rows_rejected=f.rows_rejected, events_expected=f.events_expected,
-                           events_in_store=f.events_in_store)
+                           rows_rejected=f.rows_rejected, events_expected=f.events_now_expected,
+                           events_in_store=f.events_in_store, events_removed=f.events_removed)
             for f in s.files
         ],
         issues=[IssueOut(kind=i.kind, severity=i.severity, message=i.message, file=i.file) for i in s.issues],

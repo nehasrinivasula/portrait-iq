@@ -95,6 +95,7 @@ app/
     filters.py            Search filters, time rules, paging cursors (no database)
     completeness.py        "Is every entry there?" verdict (no database)
     events.py               Queries: search, facets, collections, completeness summary
+    removal.py               remove_events(): the only way to delete stored events
     routes.py                /api/logs endpoints
     schemas.py                Response models for those endpoints
 
@@ -313,9 +314,30 @@ devices. "Every entry is there" is checked, not assumed:
   from the store (`store_mismatch`), files that failed, were unrecognised, hit
   the size limit or were never ingested (`file_not_stored`), events with no
   receipt (`untracked_events`), a collection that is still running or failed,
-  or one with no logs at all.
+  or one with no logs at all. For `unassigned` (logs ingested without a job,
+  which is every pull through `/api/sources` today) the acquisition records
+  that have no job are checked too, so one failed file in such a pull makes it
+  incomplete.
+- Events removed on purpose (see below) show as an `info` note,
+  `events_removed`, not as a problem.
 - The first page of `/events` has `total`: it equals `events_stored` in the
   report when no filters are used.
+
+**Rejected rows: open decision.** Ingest accepts a file if up to 1% of its rows
+cannot be converted, and those rows are not stored. Today a rejected row is a
+`problem`, so `complete` is `false` and the issue names the file and the count.
+That matches the story's "none left out", but it means one bad row marks a
+collection incomplete for good. Whether rejected rows should instead be
+reported with counts without flipping `complete` is a product-owner decision
+that has not been made. Until it is, the stricter behaviour stays; changing it
+is one line in `storage/completeness.py`.
+
+**Removing events on purpose.** Never delete rows from `normalized_events`
+directly: the receipts would say events were lost. Call
+`storage.removal.remove_events(db, event_ids)` instead. It deletes the events
+and records the count on each file's receipt (`events_removed`), in one
+transaction, and returns how many were deleted. SCRUM-70's duplicate removal
+(a device pull followed by an all-devices pull) should use it.
 
 A freshly cloned database has no receipts for logs ingested before this
 feature, so those show as `untracked_events`. They are development data:
@@ -344,7 +366,8 @@ Limits to know about:
   uploaded an hour).
 - New tables and indexes: `init_db` creates the `ingested_files` table and the
   two new indexes on an existing database, so nothing needs deleting just for
-  that.
+  that. The standalone `device_id` index is gone because `(device_id, timestamp)`
+  covers it; a database created earlier keeps the old one, which is harmless.
 
 ## Tool plugins (SCRUM-39)
 

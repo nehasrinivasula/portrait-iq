@@ -65,8 +65,9 @@ class FileSummaryOut(BaseModel):
     parser: Optional[str]
     rows_read: int
     rows_rejected: int
-    events_expected: int
+    events_expected: int             # stored at ingest, minus any removed on purpose since
     events_in_store: int
+    events_removed: int = 0
 
 
 class CollectionSummaryOut(BaseModel):

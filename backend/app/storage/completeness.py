@@ -36,6 +36,11 @@ class FileLedger:
     events_expected: int       # events written at ingest time
     rows_rejected: int
     events_in_store: int       # events currently in the store for this file
+    events_removed: int = 0    # deliberately deleted since (see storage.removal)
+
+    @property
+    def events_now_expected(self) -> int:
+        return self.events_expected - self.events_removed
 
 
 @dataclass
@@ -73,10 +78,15 @@ def assess(
         issues.append(Issue("no_logs", PROBLEM, "No logs were stored for this collection."))
 
     for f in files:
-        if f.events_in_store != f.events_expected:
+        if f.events_in_store != f.events_now_expected:
             issues.append(Issue(
                 "store_mismatch", PROBLEM,
-                f"{f.events_expected} events were stored at ingest but {f.events_in_store} are in the store now.",
+                f"{f.events_now_expected} events should be in the store but {f.events_in_store} are.",
+                f.source_file))
+        if f.events_removed:
+            issues.append(Issue(
+                "events_removed", INFO,
+                f"{f.events_removed} events were removed on purpose after ingest (duplicates).",
                 f.source_file))
         if f.rows_rejected:
             issues.append(Issue(

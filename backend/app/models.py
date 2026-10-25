@@ -59,7 +59,7 @@ class NormalizedEvent(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     job_id = Column(String, ForeignKey("jobs.id"), nullable=True)  # null for ad-hoc ingests
     timestamp = Column(DateTime, nullable=False, index=True)
-    device_id = Column(String, nullable=True, index=True)         # hostName / friendlyName from source
+    device_id = Column(String, nullable=True)                     # hostName / friendlyName from source
     source = Column(String, nullable=False)             # "portrait" | "compute" | "network"
     source_file = Column(String, nullable=True, index=True)
     source_line = Column(Integer, nullable=True)
@@ -75,6 +75,7 @@ class NormalizedEvent(Base):
     # timestamp, id) matches the paging order of the unified view exactly.
     __table_args__ = (
         Index("ix_events_job_ts", "job_id", "timestamp", "id"),
+        # Also serves plain device_id lookups, so device_id has no index of its own.
         Index("ix_events_device_ts", "device_id", "timestamp"),
     )
 
@@ -94,6 +95,10 @@ class IngestedFile(Base):
     rows_read = Column(Integer, nullable=False, default=0)
     events_written = Column(Integer, nullable=False, default=0)
     rows_rejected = Column(Integer, nullable=False, default=0)
+    # Events deliberately deleted after ingest (e.g. duplicates), via
+    # storage.removal.remove_events. Keeps rows_read == events_written +
+    # rows_rejected true forever; events now expected = written - removed.
+    events_removed = Column(Integer, nullable=False, default=0)
     reject_reasons = Column(Text, nullable=True)     # JSON {reason: count}; short constants, never row text
     first_timestamp = Column(DateTime, nullable=True)
     last_timestamp = Column(DateTime, nullable=True)
