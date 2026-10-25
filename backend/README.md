@@ -196,8 +196,8 @@ nothing outside it. Times are ISO 8601; a time without an offset is read as
 UTC; the window must be within the last 30 days.
 
 - The window is cut into requests the API accepts while keeping its exact
-  edges. All devices: cut at every hour boundary (both timestamps must be in
-  the same hour), so 09:30 to 11:15 is 09:30-10:00, 10:00-11:00, 11:00-11:15.
+  edges. All devices: cut at every hour boundary of the API's clock
+  (`AXONE_TIMEZONE`; both timestamps must be in the same hour there), so 09:30 to 11:15 is 09:30-10:00, 10:00-11:00, 11:00-11:15.
   One device: chunks of at most 7 days.
 - The end is held back by `AXONE_SETTLE_MINUTES` (default 15) for logs that
   devices upload late; the response's `notes` says when that happened.
