@@ -20,9 +20,23 @@ from pathlib import Path
 # Must be set before app.config is imported.
 _data = Path(os.environ.get("DEV_DATA_DIR", Path(tempfile.gettempdir()) / "portrait-iq-dev"))
 _data.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("DEMO_AUTH_USERNAME", "demo")
-os.environ.setdefault("DEMO_AUTH_PASSWORD", "demo-password")
-os.environ.setdefault("AUTH_TOKEN_SECRET", secrets.token_urlsafe(48))
+
+
+def _in_dotenv(name: str) -> bool:
+    """True if backend/.env sets name. A process env var outranks .env, so
+    setting a default here would silently override the engineer's own login."""
+    env = Path(__file__).with_name(".env")
+    return env.exists() and any(
+        line.split("=", 1)[0].strip() == name for line in env.read_text().splitlines() if "=" in line
+    )
+
+
+_own_login = _in_dotenv("DEMO_AUTH_USERNAME") and _in_dotenv("DEMO_AUTH_PASSWORD")
+if not _own_login:
+    os.environ.setdefault("DEMO_AUTH_USERNAME", "demo")
+    os.environ.setdefault("DEMO_AUTH_PASSWORD", "demo-password")
+if not _in_dotenv("AUTH_TOKEN_SECRET"):
+    os.environ.setdefault("AUTH_TOKEN_SECRET", secrets.token_urlsafe(48))
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{_data / 'dev.db'}")
 os.environ.setdefault("JOB_OUTPUT_DIR", str(_data / "jobs"))
 os.environ.setdefault("UPLOAD_DIR", str(_data / "uploads"))
@@ -63,5 +77,8 @@ if __name__ == "__main__":
     from app.main import app
 
     print(f"\nPortrait IQ backend, NO CLUSTER (fake tool pods). Data in {_data}")
-    print(f"Sign in with  {os.environ['DEMO_AUTH_USERNAME']} / {os.environ['DEMO_AUTH_PASSWORD']}\n")
+    if _own_login:
+        print("Sign in with the DEMO_AUTH_USERNAME / DEMO_AUTH_PASSWORD from backend/.env\n")
+    else:
+        print(f"No login in backend/.env; sign in with {os.environ['DEMO_AUTH_USERNAME']} / {os.environ['DEMO_AUTH_PASSWORD']}\n")
     uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")), access_log=False)
