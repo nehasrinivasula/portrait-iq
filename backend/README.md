@@ -241,6 +241,38 @@ UTC; the window must be within the last 30 days.
   pull of 09:30-10:30 only requests 10:00-10:30. Windows that failed are
   requested again. One call at a time, with a short pause between calls.
 
+Device selection (SCRUM-70): pull one, several or all devices in one run
+with `"device_uuids": [...]` on the acquire request (empty = all devices).
+Selected devices use the per-device endpoint, up to 7 days per request, and
+"already pulled" is tracked per device, so adding a device to a selection
+only fetches that device. At most 50 devices per pull.
+
+Each log line is stored once, whatever order pulls happen in: a device pull
+skips time an all-devices pull already covered, and when an all-devices
+window is ingested, rows earlier single-device pulls stored for that time are
+replaced (the response's `notes` says so). The same holds for an event
+category inside a broader pull. Known limit: a device-only pull and a
+category-only pull overlap without either containing the other, so lines in
+both (that device AND that category) can be stored twice; the API's category
+codes have no confirmed name mapping yet, so they can't be matched to rows.
+
+The API cannot list devices, so the tool keeps its own list
+(`known_devices` table):
+
+```
+GET  /api/sources/devices      devices to pick from: ID, latest name, host, first/last seen
+POST /api/sources/devices      {"device_uuid": "...", "name": "..."} add a device by hand
+```
+
+It fills itself from every Portrait-format CSV acquired (log export API,
+ZIP / folder import, Box): no extra calls to the live system, works offline.
+Devices are keyed on their ID and the newest friendly name wins (devices get
+renamed). A device that has never appeared in pulled logs can be added by
+hand; once real logs mention it, the logged name replaces the typed one.
+Adding a device that is new is written to the audit log (`device_add`);
+adding one already in the list changes nothing and is not logged. Only files
+that were acquired or ingested successfully add devices to the list.
+
 Reaching it from a laptop on the lab network (development only):
 
 ```bash

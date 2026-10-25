@@ -30,6 +30,11 @@ from app.sources.axone_client import MAX_DEVICE_RANGE, AxoneLogExportClient
 from app.sources.base import (
     ONE_MS, LogSource, RemoteFile, SourceError, SourceOptions, SourceStatus, window_file,
 )
+from app.sources.devices import validate_device_id
+
+# A pull for many devices is many requests (one per device per 7 days); cap
+# it so one click can't hammer the live system. "All devices" has no cap.
+MAX_DEVICES_PER_PULL = 50
 
 
 def _floor_hour(dt: datetime) -> datetime:
@@ -54,14 +59,19 @@ def _to_ms(dt: datetime) -> datetime:
     return dt.replace(microsecond=dt.microsecond // 1000 * 1000)
 
 
+ALL_DEVICES = "alldevices"
+
+
 def _scope(device_uuid: str | None, category: int | None) -> str:
+    # ":" separates device and category because device IDs can contain "-"
+    # (an ID like "hub-cat5" made "-cat" ambiguous) but never ":".
     if device_uuid and category is not None:
-        return f"dev{device_uuid}-cat{category}"
+        return f"dev{device_uuid}:cat{category}"
     if device_uuid:
         return f"dev{device_uuid}"
     if category is not None:
         return f"cat{category}"
-    return "alldevices"
+    return ALL_DEVICES
 
 
 class AxoneLogExportSource(LogSource):
@@ -124,38 +134,55 @@ class AxoneLogExportSource(LogSource):
         return SourceStatus(ok=True, reason=f"Connected to the log export API at {client.base_url}.")
 
     def options(self) -> SourceOptions:
-        # Free-form; empty means all devices / all categories.
-        return SourceOptions(fields={"device_uuid": [], "event_category": []})
+        # Free-form; empty means all devices / all categories. device_uuids is
+        # a comma-separated list (the acquire request's device_uuids field).
+        return SourceOptions(fields={"device_uuids": [], "event_category": []})
 
     @staticmethod
-    def _parse_options(options: dict[str, str]) -> tuple[str | None, int | None]:
-        device = (options.get("device_uuid") or "").strip() or None
+    def _parse_options(options: dict[str, str]) -> tuple[list[str], int | None]:
+        """Devices (empty list = all devices) and event category."""
+        raw_devices = ",".join(filter(None, [options.get("device_uuids"), options.get("device_uuid")]))
+        devices: list[str] = []
+        for part in raw_devices.split(","):
+            if part.strip():
+                device = validate_device_id(part)
+                if device not in devices:
+                    devices.append(device)
+        if len(devices) > MAX_DEVICES_PER_PULL:
+            raise SourceError(
+                f"{len(devices)} devices selected; pull at most {MAX_DEVICES_PER_PULL} at a time, "
+                "or choose all devices."
+            )
         raw = (options.get("event_category") or "").strip()
         if not raw:
-            return device, None
+            return devices, None
         try:
-            return device, int(raw)
+            return devices, int(raw)
         except ValueError:
             raise SourceError("Event category must be a number (the API uses integer codes).") from None
 
     def list_available(self, since: datetime, until: datetime, options: dict[str, str]) -> list[RemoteFile]:
-        device, category = self._parse_options(options or {})
-        scope = _scope(device, category)
+        devices, category = self._parse_options(options or {})
         start = _to_ms(since)
         end = _to_ms(self.effective_until(until))
 
+        # All devices: one set of hour windows. Selected devices (SCRUM-70):
+        # one set of up-to-7-day windows per device, each with its own scope,
+        # so "already pulled" is tracked per device.
         tz = ZoneInfo(settings.axone_timezone)
         windows: list[RemoteFile] = []
-        cursor = start
-        while cursor < end:
-            if device:
-                piece_end = min(cursor + MAX_DEVICE_RANGE, end)
-            else:
-                # Stop at the next hour boundary of the API's clock: start and
-                # end must share an hour there.
-                piece_end = min(_next_api_hour(cursor, tz), end)
-            windows.append(window_file(self.id, scope, cursor, piece_end))
-            cursor = piece_end
+        for device in devices or [None]:
+            scope = _scope(device, category)
+            cursor = start
+            while cursor < end:
+                if device:
+                    piece_end = min(cursor + MAX_DEVICE_RANGE, end)
+                else:
+                    # Stop at the next hour boundary of the API's clock: start and
+                    # end must share an hour there.
+                    piece_end = min(_next_api_hour(cursor, tz), end)
+                windows.append(window_file(self.id, scope, cursor, piece_end))
+                cursor = piece_end
         return windows
 
     def fetch(self, remote: RemoteFile, dest_dir: Path) -> Path:
@@ -183,9 +210,20 @@ class AxoneLogExportSource(LogSource):
 
     @staticmethod
     def _scope_parts(scope: str) -> tuple[str | None, int | None]:
-        if scope == "alldevices":
+        if scope == ALL_DEVICES:
             return None, None
         if scope.startswith("cat"):
             return None, int(scope[3:])
-        device, _, cat = scope[3:].partition("-cat")
-        return device, (int(cat) if cat else None)
+        device, sep, cat = scope[3:].partition(":cat")
+        return device, (int(cat) if sep else None)
+
+    def covering_scopes(self, scope: str | None) -> list[str | None]:
+        """All devices covers everything; a category covers that category for
+        any device; a device covers all of that device's categories."""
+        device, category = self._scope_parts(scope or ALL_DEVICES)
+        scopes: list[str | None] = [scope]
+        if device and category is not None:
+            scopes += [_scope(device, None), _scope(None, category)]
+        if device or category is not None:
+            scopes.append(ALL_DEVICES)
+        return scopes
