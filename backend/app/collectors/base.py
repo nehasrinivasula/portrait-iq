@@ -11,7 +11,9 @@ Lifecycle, enforced by orchestrator/jobs.py:
                          every selected plugin before running any of them,
                          so a bad option fails the job before anything is
                          deployed.
-  2. run(target_ip)      deploy (if needed) and run the tool.
+  2. run(target_ip)      deploy (if needed) and run the tool. Before this,
+                         the orchestrator calls bind_job() with the job id
+                         and the folder run() writes its files to.
   3. cleanup()           tear down whatever run() created. Always called,
                          also after a failure in this or another plugin.
                          If it raises, the job ends as "cleanup_failed" and
@@ -20,11 +22,12 @@ Lifecycle, enforced by orchestrator/jobs.py:
 To add a plugin, write a Collector subclass in a new module in this package
 and add one line to PLUGINS in registry.py. Nothing else changes.
 
-Nothing here actually reaches a device yet: every built-in run() is a stub.
+Plugins that deploy a pod do it through collectors/k8s.py (SCRUM-39).
 """
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, ClassVar
 
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
@@ -66,6 +69,19 @@ class Collector(ABC):
     def __init__(self, limits: ResourceLimits):
         self.limits = limits
         self.options: dict[str, Any] = {}
+        self.job_id: str | None = None
+        self.output_dir: Path | None = None
+
+    def bind_job(self, job_id: str, output_dir: Path) -> None:
+        """Called by the orchestrator before run(): the job this run is part
+        of (tool pods are labelled with it) and the folder for its files."""
+        self.job_id = job_id
+        self.output_dir = output_dir
+
+    def require_output_dir(self) -> Path:
+        if self.output_dir is None:
+            raise PluginError(f"{self.name} was run without a job folder (bind_job not called)")
+        return self.output_dir
 
     def configure(self, options: dict[str, Any]) -> None:
         """Validate and store options; raise PluginConfigError on anything

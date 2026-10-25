@@ -9,3 +9,4 @@ pytest==8.3.3
 tzdata==2024.2       # timezone database for zoneinfo on Windows (AXONE_TIMEZONE)
 httpx==0.28.1        # Axone log export API client; also required by FastAPI/Starlette's TestClient
 box-sdk-gen==1.17.0  # optional Box log source (SCRUM-43)
+kubernetes==34.1.0   # tool pods for netshoot and tshark run mode (SCRUM-39)
