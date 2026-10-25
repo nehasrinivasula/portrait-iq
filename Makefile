@@ -24,6 +24,8 @@ REMOTE_DIR    ?= /tmp/portrait-iq-deploy
 # Unknown until `make api-check` has run on the lab; no guesses here.
 PLATFORM      ?=#   linux/amd64 or linux/arm64 (the node's CPU type)
 IMPORT_CMD    ?=#   e.g. k3s ctr images import -   (depends on the runtime)
+TAG_CMD       ?= k3s ctr images tag --force
+IMAGE_ALIAS_PREFIX ?=#  second name for imported images, when the cluster rewrites image names
 LOG_EXPORT_NAMESPACE ?=#   namespace of axone-log-export-tcp
 LOG_EXPORT_SERVICE ?= axone-log-export-tcp
 
@@ -128,8 +130,8 @@ ship:  ## Build and save the image, then copy and import it on the node
 render:
 	@rm -rf $(BUNDLE_DIR) && mkdir -p $(BUNDLE_DIR)/k8s
 	@cp deploy/scripts/remote.sh $(BUNDLE_DIR)/
-	@printf "NAMESPACE='%s'\nIMPORT_CMD='%s'\nLOG_EXPORT_URL='%s'\nLOG_EXPORT_SERVICE='%s'\nAPI_CHECK_HOUR='%s'\n" \
-		"$(NAMESPACE)" "$(IMPORT_CMD)" "$(LOG_EXPORT_URL)" "$(LOG_EXPORT_SERVICE)" "$(API_CHECK_HOUR)" > $(BUNDLE_DIR)/config.env
+	@printf "NAMESPACE='%s'\nIMPORT_CMD='%s'\nTAG_CMD='%s'\nIMAGE_ALIAS_PREFIX='%s'\nLOG_EXPORT_URL='%s'\nLOG_EXPORT_SERVICE='%s'\nAPI_CHECK_HOUR='%s'\n" \
+		"$(NAMESPACE)" "$(IMPORT_CMD)" "$(TAG_CMD)" "$(IMAGE_ALIAS_PREFIX)" "$(LOG_EXPORT_URL)" "$(LOG_EXPORT_SERVICE)" "$(API_CHECK_HOUR)" > $(BUNDLE_DIR)/config.env
 	@image=$$(cat $(BUILD_DIR)/image.ref 2>/dev/null || echo "$(IMAGE_NAME):unbuilt"); \
 	for f in deploy/k8s/*.yaml; do \
 		sed -e "s|__IMAGE__|$$image|" -e "s|__LOG_EXPORT_URL__|$(LOG_EXPORT_URL)|" \

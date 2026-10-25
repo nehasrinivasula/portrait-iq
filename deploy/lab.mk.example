@@ -16,6 +16,11 @@ PLATFORM             =
 #   docker:                   docker load
 IMPORT_CMD           =
 
+# Palette benches rewrite pod image names to their registry, and pods never
+# pull, so imported images also need that name (otherwise ErrImageNeverPull).
+# Check with: kubectl -n portrait-iq get pod -o jsonpath='{..image}'
+# IMAGE_ALIAS_PREFIX   = us-artifactory.apps.ge-healthcare.net/docker-axone-all
+
 # From "Log Export service namespace:".
 LOG_EXPORT_NAMESPACE =
 # Only if the service is not called axone-log-export-tcp on this bench.

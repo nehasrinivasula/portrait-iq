@@ -14,7 +14,7 @@
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-. "$HERE/config.env"   # NAMESPACE, IMPORT_CMD, LOG_EXPORT_URL, API_CHECK_HOUR
+. "$HERE/config.env"   # NAMESPACE, IMPORT_CMD, TAG_CMD, IMAGE_ALIAS_PREFIX, LOG_EXPORT_URL, API_CHECK_HOUR
 
 LABEL="app.kubernetes.io/name=portrait-iq"
 MANAGED="app.kubernetes.io/managed-by"
@@ -90,10 +90,24 @@ load_images() {
         [ -e "$f" ] || continue
         found=1
         echo "== importing $(basename "$f")"
-        gunzip -c "$f" | sh -c "$IMPORT_CMD"
+        out=$(gunzip -c "$f" | sh -c "$IMPORT_CMD") || die "importing $(basename "$f") failed: $out"
+        printf '%s\n' "$out"
+        alias_images "$out"
     done
     [ $found = 1 ] || die "no images in $HERE/images"
     rm -rf "$HERE/images"
+}
+
+# A Palette webhook on the bench rewrites pod image names to its registry
+# (docker.io/library/portrait-iq:TAG -> PREFIX/library/portrait-iq:TAG). Pods
+# never pull, so give each imported image that second name too.
+alias_images() {
+    [ -n "${IMAGE_ALIAS_PREFIX:-}" ] || return 0
+    printf '%s\n' "$1" | grep -oE 'docker\.io/[^ (@]+:[^ (@]+' | sort -u | while read -r ref; do
+        alias="$IMAGE_ALIAS_PREFIX/${ref#docker.io/}"
+        sh -c "$TAG_CMD \"$ref\" \"$alias\"" >/dev/null || die "could not tag $ref as $alias"
+        echo "== also named $alias"
+    done
 }
 
 secrets() {
