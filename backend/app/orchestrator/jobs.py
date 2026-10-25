@@ -80,7 +80,7 @@ def run_job(
     tools = json.loads(job.tools or "[]")
     started = []
     results: list[dict[str, Any]] = []
-    running: Collector | None = None
+    failed_tools = 0
     cleanup_failed = False
 
     try:
@@ -97,9 +97,21 @@ def run_job(
                     out_dir.mkdir(parents=True, exist_ok=True)
                     plugin.bind_job(job.id, out_dir)
                     started.append(plugin)   # before run(), so a half-done run is cleaned up
-                    running = plugin
-                    _record(job.id, results, plugin.run(target_ip))
-                    running = None
+                    # One tool failing must not stop the others (R-2: keep
+                    # partial results). Its error is recorded and the next
+                    # tool runs; cleanup below still covers every started one.
+                    try:
+                        _record(job.id, results, plugin.run(target_ip))
+                    except (NotImplementedError, PluginError) as e:
+                        # A stub, a bad option or a tool that could not run:
+                        # the message is safe to show.
+                        failed_tools += 1
+                        _record(job.id, results, {"tool": plugin.name, "error": str(e) or type(e).__name__})
+                    except Exception as e:  # noqa: BLE001
+                        # Type only: an unexpected error's text may hold anything.
+                        failed_tools += 1
+                        log.exception("job %s: plugin %s crashed", job.id, plugin.name)
+                        _record(job.id, results, {"tool": plugin.name, "error": type(e).__name__})
 
             elif step == "collect_server_logs":
                 # TODO: point ingestion.pipeline.ingest_directory() at wherever
@@ -118,19 +130,23 @@ def run_job(
                 # doc's "Analysis & Reporting" section: metadata.json, one
                 # standardized layout every time).
 
-        _finish(db, job, "cleanup_failed" if cleanup_failed else "done")
+        if cleanup_failed:
+            status = "cleanup_failed"
+        elif plugins and failed_tools == len(plugins):
+            status = "failed"
+        elif failed_tools:
+            status = "partial"   # some tools ran, some did not: results.json says which
+        else:
+            status = "done"
+        _finish(db, job, status)
 
-    except (NotImplementedError, PluginError) as e:
-        # A plugin that is still a stub, a bad option or a tool that could
-        # not run: a known failure with a message safe to show, not a crash.
-        if running is not None:
-            _record(job.id, results, {"tool": running.name, "error": str(e) or type(e).__name__})
+    except (NotImplementedError, PluginError):
+        # A bad option or an unknown plugin, found before anything ran: a
+        # known failure with a message safe to show, not a crash.
         cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
         _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
 
-    except Exception as e:
-        if running is not None:   # type only: an unexpected error's text may hold anything
-            _record(job.id, results, {"tool": running.name, "error": type(e).__name__})
+    except Exception:
         cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
         _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
         raise

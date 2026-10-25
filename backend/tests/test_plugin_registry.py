@@ -20,6 +20,7 @@ from app.collectors.base import (
     Collector,
     CollectorResult,
     PluginConfigError,
+    PluginError,
     ResourceLimits,
 )
 from app.collectors.registry import PluginRegistry, UnknownPluginError, get_registry
@@ -292,12 +293,34 @@ def test_happy_path_order(db, local_registry):
     ]
 
 
-def test_failure_still_cleans_up_every_started_plugin(db, local_registry):
-    with pytest.raises(RuntimeError):
-        run_job(db, _job(db, ["recorder", "exploding", "second"]), "192.0.2.10",
-                registry=local_registry)
-    assert "second.run" not in CALLS
-    assert CALLS[-2:] == ["exploding.cleanup", "recorder.cleanup"]
+def test_one_tool_crashing_does_not_stop_the_others(db, local_registry):
+    job = run_job(db, _job(db, ["recorder", "exploding", "second"]), "192.0.2.10",
+                  registry=local_registry)
+    assert job.status == "partial"
+    assert "second.run" in CALLS                      # ran after the crash
+    assert CALLS[-3:] == ["second.cleanup", "exploding.cleanup", "recorder.cleanup"]
+
+
+def test_known_tool_failure_continues_and_is_shown_to_the_user(db, local_registry):
+    class Refusing(Recorder):
+        name = "refusing"
+
+        def run(self, target_ip):
+            raise PluginError("cluster unreachable")
+
+    local_registry.register(Refusing)
+    job = run_job(db, _job(db, ["refusing", "second"]), "192.0.2.10", registry=local_registry)
+    assert job.status == "partial"
+    results = read_results(job.id)
+    assert results[0] == {"tool": "refusing", "error": "cluster unreachable"}   # safe message kept
+    assert results[1]["tool"] == "second" and "error" not in results[1]
+
+
+def test_job_fails_only_when_every_tool_failed(db, local_registry):
+    job = run_job(db, _job(db, ["exploding"]), "192.0.2.10", registry=local_registry)
+    assert job.status == "failed"
+    assert read_results(job.id) == [{"tool": "exploding", "error": "RuntimeError"}]
+    assert CALLS[-1] == "exploding.cleanup"
 
 
 def test_failed_cleanup_is_recorded_and_the_rest_still_run(db, local_registry, caplog):
@@ -311,11 +334,10 @@ def test_failed_cleanup_is_recorded_and_the_rest_still_run(db, local_registry, c
 
 
 def test_failed_cleanup_after_a_failed_run_is_still_reported(db, local_registry):
-    with pytest.raises(RuntimeError, match="tool crashed"):  # the original error, not the cleanup one
-        run_job(db, _job(db, ["recorder", "leaky", "exploding"]), "192.0.2.10",
-                registry=local_registry)
+    run_job(db, _job(db, ["recorder", "leaky", "exploding"]), "192.0.2.10",
+            registry=local_registry)
     job = db.query(models.Job).one()
-    assert job.status == "cleanup_failed"
+    assert job.status == "cleanup_failed"   # outranks the tool's own failure
     assert CALLS[-3:] == ["exploding.cleanup", "leaky.cleanup", "recorder.cleanup"]
 
 
@@ -388,8 +410,7 @@ def test_start_job_runs_the_instances_it_validated(db, local_registry, monkeypat
 
 
 def test_results_are_kept_for_plugins_that_finished(db, local_registry):
-    with pytest.raises(RuntimeError):
-        run_job(db, _job(db, ["recorder", "exploding"]), "192.0.2.10", registry=local_registry)
+    run_job(db, _job(db, ["recorder", "exploding"]), "192.0.2.10", registry=local_registry)
     job = db.query(models.Job).one()
     results = read_results(job.id)
     assert [r["tool"] for r in results] == ["recorder", "exploding"]
