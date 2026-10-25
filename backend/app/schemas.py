@@ -2,6 +2,9 @@
 sync with models.py by hand for now; consider generating one from the other
 once the shape stabilizes."""
 from datetime import datetime
+from typing import Annotated, Literal, Optional
+
+from pydantic import BaseModel, Field, field_validator
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, SecretStr
@@ -46,6 +49,57 @@ class DeviceOut(BaseModel):
         from_attributes = True
 
 
+TcpPort = Annotated[int, Field(ge=1, le=65535)]
+
+
+class ConnectivityCheckRequest(BaseModel):
+    """A bounded TCP preflight check performed before diagnostics start."""
+
+    target: str = Field(min_length=1, max_length=253)
+    ports: list[TcpPort] = Field(min_length=1, max_length=16)
+    timeout_seconds: float = Field(default=3.0, ge=0.1, le=10.0)
+
+    @field_validator("target")
+    @classmethod
+    def normalize_target(cls, value: str) -> str:
+        target = value.strip()
+        if not target or any(character.isspace() for character in target):
+            raise ValueError("target must be an IP address or hostname without whitespace")
+        return target
+
+    @field_validator("ports")
+    @classmethod
+    def reject_duplicate_ports(cls, value: list[int]) -> list[int]:
+        if len(value) != len(set(value)):
+            raise ValueError("ports must not contain duplicates")
+        return value
+
+
+class ConnectivityPortResult(BaseModel):
+    port: int
+    status: Literal[
+        "reachable",
+        "connection_refused",
+        "timeout",
+        "host_unreachable",
+        "network_unreachable",
+        "blocked_by_local_policy",
+        "connection_error",
+        "dns_failure",
+    ]
+    message: str
+    latency_ms: Optional[float] = None
+
+
+class ConnectivityCheckResponse(BaseModel):
+    target: str
+    resolved_addresses: list[str]
+    status: Literal["reachable", "partially_reachable", "unreachable"]
+    reachable: bool
+    summary: str
+    results: list[ConnectivityPortResult]
+
+
 class JobCreateRequest(BaseModel):
     # Unknown fields are an error, not silently ignored: a client still
     # sending the old tshark_mode gets a 422 naming it, instead of a job
@@ -83,6 +137,12 @@ class JobOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class UploadOut(BaseModel):
+    upload_id: str
+    kind: str
+    size_bytes: int
 
 
 class SignalOut(BaseModel):

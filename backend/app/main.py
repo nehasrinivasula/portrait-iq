@@ -6,8 +6,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.db import init_db
+from app.db import SessionLocal, init_db
 from app.auth import AuthError, User, authenticate_demo_user, create_access_token, get_current_user, touch_session
+from app.orchestrator.jobs import recover_interrupted_jobs
 from app.orchestrator.routes import router as orchestrator_router
 from app.schemas import CurrentUserOut, LoginRequest, TokenResponse
 from app.secrets_loader import install_log_redaction
@@ -67,6 +68,8 @@ def current_user(user: User = Depends(get_current_user)):
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    with SessionLocal() as db:
+        recover_interrupted_jobs(db)
 
 
 @app.get("/health")
