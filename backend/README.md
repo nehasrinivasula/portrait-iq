@@ -54,7 +54,7 @@ app/
   config.py           Settings (DB path, resource limit defaults)
   db.py                SQLAlchemy engine/session setup
   models.py             ORM tables: Device, Job, NormalizedEvent, Signal,
-                         AcquiredFileRecord, AuditLogEntry
+                         AcquiredFileRecord, IngestedFile, AuditLogEntry
   schemas.py             Pydantic request/response models
   auth.py                 Local-demo bearer auth + in-memory session activity tracking
   audit.py                 Audit log helper, used everywhere an action happens
@@ -90,6 +90,14 @@ app/
       portrait_csv.py     Real parser, built from the 35 sample files you uploaded
       compute_csv.py      Stub — we don't have a sample of this format yet
     pipeline.py            Glue: find files, pick a parser, write normalized events
+
+  storage/               Central log storage + unified log view (see below)
+    filters.py            Search filters, time rules, paging cursors (no database)
+    completeness.py        "Is every entry there?" verdict (no database)
+    events.py               Queries: search, facets, collections, completeness summary
+    removal.py               remove_events(): the only way to delete stored events
+    routes.py                /api/logs endpoints
+    schemas.py                Response models for those endpoints
 
   analysis/
     rules.py               The 5 findings from the sample logs, as rule objects
@@ -257,6 +265,110 @@ PHI/PII collection point: acquired files are raw logs and may contain
 patient or staff data. They stay in the gitignored staging folder and are
 never written to the audit log.
 
+## Central log storage and the unified log view
+
+Every log that goes through `ingestion.pipeline.ingest_file` ends up in one
+table, `normalized_events`, in one shape, whichever source, parser or device
+it came from. The `/api/logs` endpoints are how you read it back. All of them
+need a signed-in, unlocked session.
+
+```
+GET /api/logs/events                        search everything, newest first
+GET /api/logs/facets                        counts per source / severity / category / device
+GET /api/logs/collections                   every collection (job) and how many events it holds
+GET /api/logs/collections/{id}              is this collection complete? what is missing?
+GET /api/logs/collections/{id}/events       unified log view: all its entries, oldest first
+```
+
+`{id}` is a job id, or `unassigned` for logs ingested without a job.
+
+**Search.** One request searches every source and device at once. Filters
+combine (AND): `since` (inclusive) / `until` (exclusive) as ISO times (no
+timezone means UTC), `device`, `source`, `category`, `severity` (each can be
+repeated), `min_severity` (e.g. `WARN` = WARN and ERROR), `process`,
+`source_file`, `job_id`, and `q` (case-insensitive text in the message).
+`order=asc|desc` and `limit` (1-1000, default 100). Paging uses a cursor:
+send the previous page's `next_cursor` back as `cursor`. The cursor is
+stable when new logs arrive between pages, which `offset` is not. `total`
+is returned on the first page only.
+
+```bash
+# everything at WARN or above, from any device, since a given time
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8000/api/logs/events?min_severity=WARN&since=2024-06-02T00:00:00Z"
+# hide the noisy category: ask /facets what is there, then filter the rest
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/logs/facets"
+```
+
+**Unified log view.** `/collections/{id}/events` returns every entry of one
+collection as a single time-ordered stream across all its files, sources and
+devices. "Every entry is there" is checked, not assumed:
+
+- Each file stored by ingestion leaves a receipt (`ingested_files` table:
+  rows read, events stored, rows rejected), written in the same transaction as
+  its events.
+- `GET /api/logs/collections/{id}` compares those receipts with what is in the
+  store now and with the acquisition manifest. `complete` is `true` only if
+  there are no `problem` issues. Problems it reports, each with the file and
+  the count: rows that could not be converted (`rows_rejected`), events missing
+  from the store (`store_mismatch`), files that failed, were unrecognised, hit
+  the size limit or were never ingested (`file_not_stored`), events with no
+  receipt (`untracked_events`), a collection that is still running or failed,
+  or one with no logs at all. For `unassigned` (logs ingested without a job,
+  which is every pull through `/api/sources` today) the acquisition records
+  that have no job are checked too, so one failed file in such a pull makes it
+  incomplete.
+- Events removed on purpose (see below) show as an `info` note,
+  `events_removed`, not as a problem.
+- The first page of `/events` has `total`: it equals `events_stored` in the
+  report when no filters are used.
+
+**Rejected rows: open decision.** Ingest accepts a file if up to 1% of its rows
+cannot be converted, and those rows are not stored. Today a rejected row is a
+`problem`, so `complete` is `false` and the issue names the file and the count.
+That matches the story's "none left out", but it means one bad row marks a
+collection incomplete for good. Whether rejected rows should instead be
+reported with counts without flipping `complete` is a product-owner decision
+that has not been made. Until it is, the stricter behaviour stays; changing it
+is one line in `storage/completeness.py`.
+
+**Removing events on purpose.** Never delete rows from `normalized_events`
+directly: the receipts would say events were lost. Call
+`storage.removal.remove_events(db, event_ids)` instead. It deletes the events
+and records the count on each file's receipt (`events_removed`), in one
+transaction, and returns how many were deleted. SCRUM-70's duplicate removal
+(a device pull followed by an all-devices pull) should use it.
+
+A freshly cloned database has no receipts for logs ingested before this
+feature, so those show as `untracked_events`. They are development data:
+delete `portrait_iq.db` and re-ingest.
+
+Searches and unified-view requests are written to the audit log (who, which
+filters were used, how many matched). Filter values, including the `q` text,
+are never recorded, because a search term can be a patient identifier.
+
+**PHI/PII.** `message` is raw log text. In the sample logs it contains patient
+identifiers. The API returns it as is, so treat any screen, export or
+screenshot of it as sensitive, and never paste it into issues, PRs or chat.
+
+Limits to know about:
+
+- `q` is a substring match (`LIKE`), which scans messages. Fine at the
+  ~550,000 events in the 35 sample files; combine it with `since`/`until` or
+  `source` to keep it fast. A real full-text index (SQLite FTS5 or Postgres)
+  is the next step if searches get slow.
+- Device ids are not reconciled across sources yet (a Portrait `hostName`, a
+  pod name and an IP are different values), so filtering by `device` finds one
+  naming scheme at a time. Category names are not unified either; use
+  `/facets` to see what exists.
+- `complete` says nothing was lost after the logs were read. It cannot say
+  that the source gave us everything (for example a device that never
+  uploaded an hour).
+- New tables and indexes: `init_db` creates the `ingested_files` table and the
+  two new indexes on an existing database, so nothing needs deleting just for
+  that. The standalone `device_id` index is gone because `(device_id, timestamp)`
+  covers it; a database created earlier keeps the old one, which is harmless.
+
 ## Tool plugins (SCRUM-39)
 
 Start a job with `POST /api/jobs?target_ip=...`. It returns at once with
@@ -327,6 +439,8 @@ uses for GE-provided files instead.
 - The UMF RTI and hub import plugins
 - The compute-platform log parser (`parsers/compute_csv.py` — need a sample)
 - Manual/documentation matching (`knowledge/lookup.py` always returns unconfirmed)
+- Downloading a whole collection as CSV/NDJSON (the unified view pages through it; an export route would reuse `storage.events.iter_events`)
+- Full-text search index, and reconciled device ids / category names across sources
 - Analytics endpoints (`analytics/service.py` has no route pointing to it)
 - Packaging the final zip artifact (`orchestrator/routes.py::package` is a stub)
 
