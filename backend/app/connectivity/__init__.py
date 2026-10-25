@@ -1,0 +1,1 @@
+"""Network connectivity preflight checks."""

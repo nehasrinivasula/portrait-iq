@@ -156,3 +156,13 @@ def is_locked(user_id: str) -> bool:
     if last is None:
         return False
     return (time.time() - last) > settings.session_idle_timeout_seconds
+
+
+def get_active_user(user: User = Depends(get_current_user)) -> User:
+    """Dependency for actions the idle lock (S-2) blocks: refuse while
+    locked, otherwise count the request as activity. Read-only GETs (e.g.
+    polling a job) do not use it, so a page left open still locks."""
+    if is_locked(user.id):
+        raise HTTPException(423, "Session locked. Log in again to unlock.")
+    touch_session(user.id)
+    return user

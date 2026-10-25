@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.audit import log_action
-from app.auth import User, get_current_user, is_locked, touch_session
+from app.auth import User, get_active_user
 from app.config import settings
 from app.db import get_db
 from app.models import Job
@@ -33,13 +33,6 @@ from app.sources.service import (
 )
 
 router = APIRouter()
-
-
-def _active_user(user: User = Depends(get_current_user)) -> User:
-    if is_locked(user.id):
-        raise HTTPException(423, "Session locked. Unlock before acquiring logs.")
-    touch_session(user.id)
-    return user
 
 
 def _source(source_id: str) -> LogSource:
@@ -73,14 +66,14 @@ def _device_out(d) -> KnownDeviceOut:
 
 
 @router.get("/devices", response_model=list[KnownDeviceOut])
-def known_devices(db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def known_devices(db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """Devices to pick from for a log pull (SCRUM-70): every device seen in
     acquired logs, plus devices added by hand."""
     return [_device_out(d) for d in list_known(db)]
 
 
 @router.post("/devices", response_model=KnownDeviceOut)
-def add_device(req: DeviceAddRequest, db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def add_device(req: DeviceAddRequest, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """Add a device the tool hasn't seen in any logs yet, by its ID."""
     try:
         device, created = add_manual(db, req.device_uuid, req.name)
@@ -92,7 +85,7 @@ def add_device(req: DeviceAddRequest, db: Session = Depends(get_db), user: User 
 
 
 @router.get("", response_model=list[SourceOut])
-def list_sources(user: User = Depends(_active_user)):
+def list_sources(user: User = Depends(get_active_user)):
     out = []
     for s in registry.all_sources():
         status = s.is_configured()
@@ -105,7 +98,7 @@ def list_sources(user: User = Depends(_active_user)):
 
 
 @router.post("/{source_id}/test", response_model=SourceStatusOut)
-def test_source(source_id: str, db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def test_source(source_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     source = _source(source_id)
     status = source.test_connection()
     log_action(db, user.id, "source_test", detail=f"source={source_id} ok={status.ok}")
@@ -120,7 +113,7 @@ def preview_files(
     path: str | None = Query(None, description="Local import only: file or folder to read"),
     device_uuids: str | None = Query(None, description="Log export API only: comma-separated device IDs"),
     db: Session = Depends(get_db),
-    user: User = Depends(_active_user),
+    user: User = Depends(get_active_user),
 ):
     source = _source(source_id)
     try:
@@ -154,7 +147,7 @@ def _run(db: Session, source: LogSource, user: User, req: AcquireRequest) -> Acq
 
 @router.post("/{source_id}/acquire", response_model=AcquisitionOut)
 def acquire_logs(source_id: str, req: AcquireRequest, db: Session = Depends(get_db),
-                 user: User = Depends(_active_user)):
+                 user: User = Depends(get_active_user)):
     return _run(db, _source(source_id), user, req)
 
 
@@ -164,7 +157,7 @@ def upload_logs(
     job_id: str | None = None,
     ingest: bool = True,
     db: Session = Depends(get_db),
-    user: User = Depends(_active_user),
+    user: User = Depends(get_active_user),
 ):
     """Save uploads to a fresh folder, then acquire that folder through the
     local import source, so uploads get the same dedupe, ZIP checks, limits

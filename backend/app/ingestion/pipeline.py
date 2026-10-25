@@ -15,11 +15,15 @@ top of it):
   * Loud. A file no parser recognises raises UnrecognizedLogFormat; a file
     with an unacceptable share of unconvertible rows raises IngestError.
     Data is never silently dropped.
+  * Receipted. Each stored file also gets one IngestedFile row (rows read,
+    events stored, rows rejected) in the same transaction, so the unified log
+    view can prove nothing was lost after ingest.
   * UTC only. Timestamps are stored as naive UTC. SQLite discards timezone
     info, so storing anything other than UTC would silently shift times.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
@@ -29,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.ingestion.parsers.base import LogParser, ParseReport, UnrecognizedLogFormat
 from app.ingestion.registry import detect_parser, iter_events
+from app.models import IngestedFile
 from app.models import NormalizedEvent as EventRow
 
 DEFAULT_PATTERNS = ("*.csv", "*.log")
@@ -99,6 +104,11 @@ def ingest_file(
             stmt = delete(EventRow).where(EventRow.source_file == label)
             stmt = stmt.where(EventRow.job_id.is_(None) if job_id is None else EventRow.job_id == job_id)
             db.execute(stmt)
+            receipts = delete(IngestedFile).where(IngestedFile.source_file == label)
+            receipts = receipts.where(
+                IngestedFile.job_id.is_(None) if job_id is None else IngestedFile.job_id == job_id
+            )
+            db.execute(receipts)
 
         batch: list[dict] = []
         for event in iter_events(path, parser=chosen, report=report):
@@ -133,6 +143,17 @@ def ingest_file(
                 f"({report.reject_rate:.1%}) could not be converted, over the "
                 f"{max_reject_rate:.1%} limit; reasons: {dict(report.reject_reasons)}"
             )
+        db.add(IngestedFile(
+            source_file=label,
+            job_id=job_id,
+            parser=chosen.name,
+            rows_read=report.rows_read,
+            events_written=written,
+            rows_rejected=report.rows_rejected,
+            reject_reasons=json.dumps(dict(report.reject_reasons)) if report.reject_reasons else None,
+            first_timestamp=report.first_timestamp.replace(tzinfo=None) if report.first_timestamp else None,
+            last_timestamp=report.last_timestamp.replace(tzinfo=None) if report.last_timestamp else None,
+        ))
         db.commit()
     except Exception:
         db.rollback()
