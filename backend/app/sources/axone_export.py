@@ -59,14 +59,19 @@ def _to_ms(dt: datetime) -> datetime:
     return dt.replace(microsecond=dt.microsecond // 1000 * 1000)
 
 
+ALL_DEVICES = "alldevices"
+
+
 def _scope(device_uuid: str | None, category: int | None) -> str:
+    # ":" separates device and category because device IDs can contain "-"
+    # (an ID like "hub-cat5" made "-cat" ambiguous) but never ":".
     if device_uuid and category is not None:
-        return f"dev{device_uuid}-cat{category}"
+        return f"dev{device_uuid}:cat{category}"
     if device_uuid:
         return f"dev{device_uuid}"
     if category is not None:
         return f"cat{category}"
-    return "alldevices"
+    return ALL_DEVICES
 
 
 class AxoneLogExportSource(LogSource):
@@ -205,9 +210,20 @@ class AxoneLogExportSource(LogSource):
 
     @staticmethod
     def _scope_parts(scope: str) -> tuple[str | None, int | None]:
-        if scope == "alldevices":
+        if scope == ALL_DEVICES:
             return None, None
         if scope.startswith("cat"):
             return None, int(scope[3:])
-        device, _, cat = scope[3:].partition("-cat")
-        return device, (int(cat) if cat else None)
+        device, sep, cat = scope[3:].partition(":cat")
+        return device, (int(cat) if sep else None)
+
+    def covering_scopes(self, scope: str | None) -> list[str | None]:
+        """All devices covers everything; a category covers that category for
+        any device; a device covers all of that device's categories."""
+        device, category = self._scope_parts(scope or ALL_DEVICES)
+        scopes: list[str | None] = [scope]
+        if device and category is not None:
+            scopes += [_scope(device, None), _scope(None, category)]
+        if device or category is not None:
+            scopes.append(ALL_DEVICES)
+        return scopes

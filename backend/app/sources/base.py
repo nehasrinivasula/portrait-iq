@@ -95,6 +95,12 @@ class LogSource(ABC):
         """Why effective_until() moved the end back, in words for the user."""
         return ""
 
+    def covering_scopes(self, scope: str | None) -> list[str | None]:
+        """Scopes whose pulls already contain everything in `scope`, including
+        `scope` itself. E.g. an "all devices" pull contains every device's
+        lines. Used so the same log line is never fetched or stored twice."""
+        return [scope]
+
     @abstractmethod
     def list_available(
         self, since: datetime, until: datetime, options: dict[str, str]

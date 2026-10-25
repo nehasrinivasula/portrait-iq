@@ -29,6 +29,7 @@ from app.config import settings
 from app.ingestion.parsers.base import UnrecognizedLogFormat
 from app.ingestion.pipeline import IngestError, ingest_file
 from app.models import AcquiredFileRecord
+from app.models import NormalizedEvent as EventRow
 from app.secrets_loader import redact
 from app.sources.base import ALLOWED_SUFFIXES, ONE_MS, LogSource, RemoteFile, SourceError, window_file
 from app.sources.devices import harvest_csv, record_devices
@@ -144,12 +145,14 @@ def clamp_to_source(source: LogSource, since: datetime, until: datetime) -> tupl
     return end, [f"End moved back to {_utc(end):%Y-%m-%d %H:%M} UTC: {reason}."]
 
 
-def _covered(db: Session, remote: RemoteFile, start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
-    """Half-open intervals of [start, end) already pulled successfully for the
-    same source and scope (device / category)."""
+def _covered(db: Session, remote: RemoteFile, start: datetime, end: datetime,
+             scopes: list[str | None]) -> list[tuple[datetime, datetime]]:
+    """Half-open intervals of [start, end) already pulled successfully by this
+    source for this scope or a broader one (an all-devices pull covers every
+    device)."""
     q = db.query(AcquiredFileRecord.window_start, AcquiredFileRecord.window_end).filter(
         AcquiredFileRecord.source == remote.source,
-        AcquiredFileRecord.scope == remote.scope,
+        AcquiredFileRecord.scope.in_(scopes),
         AcquiredFileRecord.status.in_(DONE_STATUSES),
         AcquiredFileRecord.window_start.is_not(None),
         AcquiredFileRecord.window_end.is_not(None),
@@ -176,7 +179,8 @@ def _gaps(start: datetime, end: datetime, covered: list[tuple[datetime, datetime
     return gaps
 
 
-def plan_new_windows(db: Session, remotes: list[RemoteFile]) -> list[tuple[RemoteFile, bool]]:
+def plan_new_windows(db: Session, remotes: list[RemoteFile],
+                     source: LogSource | None = None) -> list[tuple[RemoteFile, bool]]:
     """Decide what to request. Returns (remote, already_covered) in order.
 
     Time-window remotes (the log export API) are compared by TIME, not by id:
@@ -191,7 +195,8 @@ def plan_new_windows(db: Session, remotes: list[RemoteFile]) -> list[tuple[Remot
             planned.append((r, False))
             continue
         start, end = _utc(r.window_start), _utc(r.window_end) + ONE_MS
-        gaps = _gaps(start, end, _covered(db, r, start, end))
+        scopes = source.covering_scopes(r.scope) if source else [r.scope]
+        gaps = _gaps(start, end, _covered(db, r, start, end, scopes))
         if not gaps:
             planned.append((r, True))
         elif gaps == [(start, end)]:
@@ -321,6 +326,37 @@ def _ingest(paths: list[Path], db: Session, job_id: str | None,
     return "ingested", events, note
 
 
+def _replace_narrower_rows(db: Session, source: LogSource, remote: RemoteFile) -> int:
+    """After a broad window (e.g. all devices, 09:00-10:00) is ingested, delete
+    the rows that earlier NARROWER pulls (e.g. device X) stored for the same
+    time: the broad file contains those lines too. Together with coverage in
+    plan_new_windows (broad pulls cover narrow ones), each log line is stored
+    once whichever order the pulls happen in. Rows are found through the
+    ingestion source_label "<source>/<remote_id>/..." set in _ingest."""
+    if remote.window_start is None or remote.window_end is None:
+        return 0
+    start, end = _utc(remote.window_start), _utc(remote.window_end)
+    candidates = db.query(AcquiredFileRecord).filter(
+        AcquiredFileRecord.source == remote.source,
+        AcquiredFileRecord.status.in_(DONE_STATUSES),
+        AcquiredFileRecord.scope.is_not(None),
+        AcquiredFileRecord.scope != remote.scope,
+        AcquiredFileRecord.window_start <= end,
+        AcquiredFileRecord.window_end >= start,
+    ).all()
+    removed = 0
+    for rec in candidates:
+        if remote.scope not in source.covering_scopes(rec.scope):
+            continue   # not narrower (e.g. a different device or category)
+        removed += db.query(EventRow).filter(
+            EventRow.source_file.startswith(f"{rec.source}/{rec.remote_id}/", autoescape=True),
+            EventRow.timestamp >= start.replace(tzinfo=None),
+            EventRow.timestamp <= end.replace(tzinfo=None),
+        ).delete(synchronize_session=False)
+    db.commit()
+    return removed
+
+
 def _learn_devices(db: Session, paths: list[Path], source_id: str) -> None:
     """Add the devices in these files to the device registry (SCRUM-70).
     Best effort: a problem here never fails the acquisition itself."""
@@ -373,7 +409,7 @@ def acquire(
         _audit(db, actor, result, error=str(e))
         raise
 
-    for i, (remote, covered) in enumerate(plan_new_windows(db, remotes)):
+    for i, (remote, covered) in enumerate(plan_new_windows(db, remotes, source)):
         if covered or is_already_acquired(db, remote):
             result.files.append(FileOutcome(remote.name, remote.remote_id, "already_acquired", remote.size))
             continue
@@ -414,9 +450,18 @@ def acquire(
             result.bytes_staged += size
 
             outcome.status = "acquired"
-            _learn_devices(db, staged, source.id)
             if ingest:
                 outcome.status, outcome.events, outcome.error = _ingest(staged, db, job_id, remote, file_dir)
+            # Only files that succeeded feed the device list, never a file we rejected.
+            if outcome.status in ("acquired", "ingested"):
+                _learn_devices(db, staged, source.id)
+            if outcome.status == "ingested":
+                replaced = _replace_narrower_rows(db, source, remote)
+                if replaced:
+                    result.notes.append(
+                        f"{remote.name}: replaced {replaced} rows stored earlier by narrower pulls "
+                        "(e.g. single devices) for the same time, so each line is stored once."
+                    )
         except Exception as e:
             if not isinstance(e, SourceError):
                 log.exception("Acquiring %s from %s failed", remote.name, source.id)

@@ -133,7 +133,7 @@ def preview_files(
     # Same planning acquire() uses, so the preview shows exactly what would be requested.
     return [RemoteFileOut(remote_id=r.remote_id, name=r.name, size=r.size, modified_at=r.modified_at,
                           already_acquired=covered or is_already_acquired(db, r))
-            for r, covered in plan_new_windows(db, remotes)]
+            for r, covered in plan_new_windows(db, remotes, source)]
 
 
 def _run(db: Session, source: LogSource, user: User, req: AcquireRequest) -> AcquisitionOut:
