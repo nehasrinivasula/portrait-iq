@@ -157,6 +157,24 @@ class AcquiredFileRecord(Base):
     acquired_at = Column(DateTime, default=datetime.utcnow)
 
 
+class KnownDevice(Base):
+    """Devices the tool has seen, so a field engineer can pick devices by name
+    for a log pull (SCRUM-70). The log export API has no "list devices"
+    endpoint, so this registry is built from every Portrait-format log file
+    acquired (sourceUUID / friendlyName / hostName columns), plus devices an
+    engineer adds by hand. Keyed on the device ID, never the name: devices get
+    renamed (4 of the 28 in the real sample were), and the newest name wins."""
+    __tablename__ = "known_devices"
+
+    device_uuid = Column(String, primary_key=True)    # sourceUUID; not always a 36-char UUID
+    friendly_name = Column(String, nullable=True)     # latest friendlyName, if one was set
+    host_name = Column(String, nullable=True)         # latest hostName
+    first_seen = Column(DateTime, nullable=True)       # earliest log time seen (naive UTC)
+    last_seen = Column(DateTime, nullable=True)        # latest log time seen (naive UTC)
+    learned_from = Column(String, nullable=False)      # "axone" | "local" | "box" | "manual"
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class AuditLogEntry(Base):
     """Every action, per the requirements doc's 'all tool actions and
     configuration changes to be logged' line."""

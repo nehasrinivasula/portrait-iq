@@ -29,8 +29,11 @@ from app.config import settings
 from app.ingestion.parsers.base import UnrecognizedLogFormat
 from app.ingestion.pipeline import IngestError, ingest_file
 from app.models import AcquiredFileRecord
+from app.models import NormalizedEvent as EventRow
 from app.secrets_loader import redact
-from app.sources.base import ALLOWED_SUFFIXES, LogSource, RemoteFile, SourceError
+from app.sources.base import ALLOWED_SUFFIXES, ONE_MS, LogSource, RemoteFile, SourceError, window_file
+from app.sources.devices import harvest_csv, record_devices
+from app.storage.removal import remove_events
 from app.sources.local_import import sha256_of
 
 log = logging.getLogger(__name__)
@@ -74,6 +77,7 @@ class AcquisitionResult:
     until: datetime
     files: list[FileOutcome] = field(default_factory=list)
     bytes_staged: int = 0
+    notes: list[str] = field(default_factory=list)   # e.g. end moved back for late logs
 
     def count(self, *statuses: str) -> int:
         return sum(1 for f in self.files if f.status in statuses)
@@ -126,6 +130,81 @@ def _existing(db: Session, remote: RemoteFile) -> AcquiredFileRecord | None:
 def is_already_acquired(db: Session, remote: RemoteFile) -> bool:
     rec = _existing(db, remote)
     return rec is not None and rec.status in SKIP_STATUSES
+
+
+# --- time windows (SCRUM-44) ------------------------------------------------------
+
+def clamp_to_source(source: LogSource, since: datetime, until: datetime) -> tuple[datetime, list[str]]:
+    """Apply the source's hold-back for recent data. Returns the end to use and
+    a note for the user when it moved. Raises WindowError if nothing is left."""
+    end = source.effective_until(until)
+    if end >= until:
+        return until, []
+    reason = source.hold_back_reason() or "recent data is held back by this source"
+    if end <= since:
+        raise WindowError(f"Nothing to pull yet: {reason}.")
+    return end, [f"End moved back to {_utc(end):%Y-%m-%d %H:%M} UTC: {reason}."]
+
+
+def _covered(db: Session, remote: RemoteFile, start: datetime, end: datetime,
+             scopes: list[str | None]) -> list[tuple[datetime, datetime]]:
+    """Half-open intervals of [start, end) already pulled successfully by this
+    source for this scope or a broader one (an all-devices pull covers every
+    device)."""
+    q = db.query(AcquiredFileRecord.window_start, AcquiredFileRecord.window_end).filter(
+        AcquiredFileRecord.source == remote.source,
+        AcquiredFileRecord.scope.in_(scopes),
+        AcquiredFileRecord.status.in_(DONE_STATUSES),
+        AcquiredFileRecord.window_start.is_not(None),
+        AcquiredFileRecord.window_end.is_not(None),
+        AcquiredFileRecord.window_start < end,
+        AcquiredFileRecord.window_end >= start,
+    )
+    return sorted((_utc(ws), _utc(we) + ONE_MS) for ws, we in q.all())
+
+
+def _gaps(start: datetime, end: datetime, covered: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
+    gaps, cursor = [], start
+    for c_start, c_end in covered:
+        if c_end <= cursor:
+            continue
+        if c_start >= end:
+            break
+        if c_start > cursor:
+            gaps.append((cursor, c_start))
+        cursor = max(cursor, c_end)
+        if cursor >= end:
+            break
+    if cursor < end:
+        gaps.append((cursor, end))
+    return gaps
+
+
+def plan_new_windows(db: Session, remotes: list[RemoteFile],
+                     source: LogSource | None = None) -> list[tuple[RemoteFile, bool]]:
+    """Decide what to request. Returns (remote, already_covered) in order.
+
+    Time-window remotes (the log export API) are compared by TIME, not by id:
+    a request for 09:30-10:30 after 09:00-10:00 was pulled becomes just
+    10:00-10:30, so overlapping pulls never fetch the same minutes twice.
+    Older hour-window manifest rows count as covered too. Failed windows are
+    not "done", so they are requested again. Remotes without a window (local
+    files, Box) pass through; acquire() checks them by id and checksum."""
+    planned: list[tuple[RemoteFile, bool]] = []
+    for r in remotes:
+        if r.window_start is None or r.window_end is None:
+            planned.append((r, False))
+            continue
+        start, end = _utc(r.window_start), _utc(r.window_end) + ONE_MS
+        scopes = source.covering_scopes(r.scope) if source else [r.scope]
+        gaps = _gaps(start, end, _covered(db, r, start, end, scopes))
+        if not gaps:
+            planned.append((r, True))
+        elif gaps == [(start, end)]:
+            planned.append((r, False))
+        else:
+            planned += [(window_file(r.source, r.scope or "", s, e), False) for s, e in gaps]
+    return planned
 
 
 def _content_seen(db: Session, source: str, sha256: str, exclude_remote_id: str) -> bool:
@@ -248,6 +327,52 @@ def _ingest(paths: list[Path], db: Session, job_id: str | None,
     return "ingested", events, note
 
 
+def _replace_narrower_rows(db: Session, source: LogSource, remote: RemoteFile) -> int:
+    """After a broad window (e.g. all devices, 09:00-10:00) is ingested, delete
+    the rows that earlier NARROWER pulls (e.g. device X) stored for the same
+    time: the broad file contains those lines too. Together with coverage in
+    plan_new_windows (broad pulls cover narrow ones), each log line is stored
+    once whichever order the pulls happen in. Rows are found through the
+    ingestion source_label "<source>/<remote_id>/..." set in _ingest, and
+    deleted through storage.removal.remove_events so each file's ingest
+    receipt records the removal: the unified view's completeness report then
+    shows it as a deliberate removal, not as missing data."""
+    if remote.window_start is None or remote.window_end is None:
+        return 0
+    start, end = _utc(remote.window_start), _utc(remote.window_end)
+    candidates = db.query(AcquiredFileRecord).filter(
+        AcquiredFileRecord.source == remote.source,
+        AcquiredFileRecord.status.in_(DONE_STATUSES),
+        AcquiredFileRecord.scope.is_not(None),
+        AcquiredFileRecord.scope != remote.scope,
+        AcquiredFileRecord.window_start <= end,
+        AcquiredFileRecord.window_end >= start,
+    ).all()
+    ids: list[int] = []
+    for rec in candidates:
+        if remote.scope not in source.covering_scopes(rec.scope):
+            continue   # not narrower (e.g. a different device or category)
+        ids += [event_id for (event_id,) in db.query(EventRow.id).filter(
+            EventRow.source_file.startswith(f"{rec.source}/{rec.remote_id}/", autoescape=True),
+            EventRow.timestamp >= start.replace(tzinfo=None),
+            EventRow.timestamp <= end.replace(tzinfo=None),
+        )]
+    return remove_events(db, ids) if ids else 0
+
+
+def _learn_devices(db: Session, paths: list[Path], source_id: str) -> None:
+    """Add the devices in these files to the device registry (SCRUM-70).
+    Best effort: a problem here never fails the acquisition itself."""
+    for p in paths:
+        if p.suffix.lower() != ".csv":
+            continue
+        try:
+            record_devices(db, harvest_csv(p), learned_from=source_id)
+        except Exception:
+            db.rollback()
+            log.warning("Could not read devices from %s", p.name, exc_info=True)
+
+
 def _safe_message(e: Exception) -> str:
     if isinstance(e, SourceError):
         return redact(str(e))
@@ -275,10 +400,11 @@ def acquire(
     status = source.is_configured()
     if not status.ok:
         raise SourceError(status.reason)
+    until, notes = clamp_to_source(source, since, until)
     max_bytes = max_bytes if max_bytes is not None else settings.default_max_output_mb * 1024 * 1024
     run_id = uuid.uuid4().hex[:12]
     run_dir = Path(staging_root or settings.staging_dir) / run_id / source.id
-    result = AcquisitionResult(run_id=run_id, source=source.id, since=since, until=until)
+    result = AcquisitionResult(run_id=run_id, source=source.id, since=since, until=until, notes=notes)
 
     try:
         remotes = source.list_available(since, until, options or {})
@@ -286,8 +412,8 @@ def acquire(
         _audit(db, actor, result, error=str(e))
         raise
 
-    for i, remote in enumerate(remotes):
-        if is_already_acquired(db, remote):
+    for i, (remote, covered) in enumerate(plan_new_windows(db, remotes, source)):
+        if covered or is_already_acquired(db, remote):
             result.files.append(FileOutcome(remote.name, remote.remote_id, "already_acquired", remote.size))
             continue
         remaining = max_bytes - result.bytes_staged
@@ -310,7 +436,10 @@ def acquire(
             outcome.size, outcome.local_path = size, str(path)
             if size > remaining:
                 raise _OverBudget(OVER_BUDGET_MSG)
-            if _content_seen(db, source.id, sha, remote.remote_id):
+            # Same bytes under another id means a copied FILE (local, Box). For time
+            # windows the window is the identity: every quiet window returns the
+            # same header-only CSV, and it must still count as pulled.
+            if remote.window_start is None and _content_seen(db, source.id, sha, remote.remote_id):
                 shutil.rmtree(file_dir, ignore_errors=True)
                 outcome.status, outcome.local_path = "duplicate", None
                 _record(db, remote, outcome, sha, job_id)
@@ -326,6 +455,16 @@ def acquire(
             outcome.status = "acquired"
             if ingest:
                 outcome.status, outcome.events, outcome.error = _ingest(staged, db, job_id, remote, file_dir)
+            # Only files that succeeded feed the device list, never a file we rejected.
+            if outcome.status in ("acquired", "ingested"):
+                _learn_devices(db, staged, source.id)
+            if outcome.status == "ingested":
+                replaced = _replace_narrower_rows(db, source, remote)
+                if replaced:
+                    result.notes.append(
+                        f"{remote.name}: replaced {replaced} rows stored earlier by narrower pulls "
+                        "(e.g. single devices) for the same time, so each line is stored once."
+                    )
         except Exception as e:
             if not isinstance(e, SourceError):
                 log.exception("Acquiring %s from %s failed", remote.name, source.id)
