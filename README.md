@@ -13,9 +13,10 @@ UW-Madison Capstone, Fall 2026, sponsored by GE HealthCare.
 
 - `backend/` — FastAPI backend. See [backend/README.md](backend/README.md)
   for setup instructions, architecture, and what's implemented vs. stubbed.
-- `frontend/` — not yet added to this repo. An interactive HTML prototype
-  exists for stakeholder demos; a decision on the real frontend's framework
-  (plain JS vs. React) is still open.
+- `frontend/` — React + TypeScript (Vite). Pages: sign in, environment
+  prerequisites, and log import (`/ingest`: where logs can come from, import a
+  file or ZIP, what happened). Run the backend, then `cd frontend && npm install
+  && npm run dev`; `/api` is proxied to `localhost:8000`. Tests: `npm test`.
 
 ## Status
 

@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { useAuth } from "./auth/AuthContext";
 import IdleWarning from "./auth/IdleWarning";
 import LoginPage from "./features/login/LoginPage";
+import IngestionPage from "./features/ingestion/IngestionPage";
 import PrerequisitesPage from "./features/prerequisites/PrerequisitesPage";
 import type { ReactNode } from "react";
 
@@ -18,6 +19,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/prerequisites" element={<Protected><PrerequisitesPage /></Protected>} />
+      <Route path="/ingest" element={<Protected><IngestionPage /></Protected>} />
       <Route path="*" element={<Navigate to="/prerequisites" replace />} />
     </Routes>
     </>

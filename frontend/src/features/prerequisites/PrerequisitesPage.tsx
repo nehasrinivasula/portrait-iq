@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { IDLE_LABEL, useAuth } from '../../auth/AuthContext';
+import { IDLE_LABEL } from '../../auth/AuthContext';
+import AppHeader from '../../components/AppHeader';
 import { CHECKS, runChecks, type CheckResult } from './checks';
 import './prerequisites.css';
 
@@ -15,7 +16,6 @@ const STATUS_TEXT: Record<ItemState, string> = {
 const allIds = CHECKS.map((c) => c.id as string);
 
 export default function PrerequisitesPage() {
-  const { user, logout } = useAuth();
   const [results, setResults] = useState<Record<string, CheckResult>>({});
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set(allIds));
@@ -73,15 +73,7 @@ export default function PrerequisitesPage() {
 
   return (
     <>
-      <header className="app-header">
-        <span>Portrait IQ</span>
-        <span className="header-user">
-          <span>
-            Signed in as <strong>{user?.username}</strong>
-          </span>
-          <button className="btn ghost" onClick={() => logout()}>Sign out</button>
-        </span>
-      </header>
+      <AppHeader />
       <main className="prereq">
         {showIdleNotice && (
           <div className="notice" role="note">
