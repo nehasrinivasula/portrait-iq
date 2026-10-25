@@ -397,7 +397,10 @@ def acquire(
             outcome.size, outcome.local_path = size, str(path)
             if size > remaining:
                 raise _OverBudget(OVER_BUDGET_MSG)
-            if _content_seen(db, source.id, sha, remote.remote_id):
+            # Same bytes under another id means a copied FILE (local, Box). For time
+            # windows the window is the identity: every quiet window returns the
+            # same header-only CSV, and it must still count as pulled.
+            if remote.window_start is None and _content_seen(db, source.id, sha, remote.remote_id):
                 shutil.rmtree(file_dir, ignore_errors=True)
                 outcome.status, outcome.local_path = "duplicate", None
                 _record(db, remote, outcome, sha, job_id)

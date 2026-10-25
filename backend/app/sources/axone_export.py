@@ -5,8 +5,8 @@ no manual download, no Keycloak login.
 
 How a pull works (SCRUM-44: exactly the window asked for, nothing outside it):
   - The requested range is cut into windows the API accepts, keeping its
-    exact edges. All devices: cut at every hour boundary, because both
-    timestamps must be in the same hour, so 09:30 to 11:15 becomes
+    exact edges. All devices: cut at every hour boundary of the API's clock
+    (AXONE_TIMEZONE), because both timestamps must be in the same hour there, so 09:30 to 11:15 becomes
     09:30-10:00, 10:00-11:00 and 11:00-11:15. One device: chunks of at most
     7 days.
   - The end is held back by AXONE_SETTLE_MINUTES (default 15): at 14:40 a
@@ -23,6 +23,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from app.config import settings
 from app.sources.axone_client import MAX_DEVICE_RANGE, AxoneLogExportClient
@@ -38,6 +39,19 @@ MAX_DEVICES_PER_PULL = 50
 
 def _floor_hour(dt: datetime) -> datetime:
     return dt.replace(minute=0, second=0, microsecond=0)
+
+
+def _next_api_hour(dt: datetime, tz: ZoneInfo) -> datetime:
+    """The next hour boundary in the API's timezone, as a UTC datetime.
+
+    The API requires start and end in the same hour of ITS clock
+    (AXONE_TIMEZONE). For UTC and whole-hour zones that matches UTC hours;
+    for e.g. +05:30 the boundaries fall on :30 UTC. The +1 hour is done in
+    UTC so daylight-saving changes never produce a 0 or 2 hour piece. (A
+    repeated local hour at the autumn change is ambiguous to the API itself;
+    nothing we send can disambiguate it.)"""
+    local_hour = _floor_hour(dt.astimezone(tz))
+    return local_hour.astimezone(timezone.utc) + timedelta(hours=1)
 
 
 def _to_ms(dt: datetime) -> datetime:
@@ -150,6 +164,7 @@ class AxoneLogExportSource(LogSource):
         # All devices: one set of hour windows. Selected devices (SCRUM-70):
         # one set of up-to-7-day windows per device, each with its own scope,
         # so "already pulled" is tracked per device.
+        tz = ZoneInfo(settings.axone_timezone)
         windows: list[RemoteFile] = []
         for device in devices or [None]:
             scope = _scope(device, category)
@@ -158,8 +173,9 @@ class AxoneLogExportSource(LogSource):
                 if device:
                     piece_end = min(cursor + MAX_DEVICE_RANGE, end)
                 else:
-                    # Stop at the next hour boundary: start and end must share an hour.
-                    piece_end = min(_floor_hour(cursor) + timedelta(hours=1), end)
+                    # Stop at the next hour boundary of the API's clock: start and
+                    # end must share an hour there.
+                    piece_end = min(_next_api_hour(cursor, tz), end)
                 windows.append(window_file(self.id, scope, cursor, piece_end))
                 cursor = piece_end
         return windows
