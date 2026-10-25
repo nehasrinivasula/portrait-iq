@@ -35,3 +35,22 @@ describe("apiFetch 401 handling", () => {
     expect(onUnauthorized).toHaveBeenCalledOnce();
   });
 });
+
+describe("apiFetch Content-Type", () => {
+  const sent = () => (vi.mocked(fetch).mock.calls[0][1]!.headers as Headers).get("Content-Type");
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("labels JSON string bodies as JSON", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}")));
+    await apiFetch("/api/auth/login", { method: "POST", body: JSON.stringify({ username: "u" }) });
+    expect(sent()).toBe("application/json");
+  });
+
+  it("leaves FormData uploads to the browser so the multipart boundary survives", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}")));
+    const form = new FormData();
+    form.append("file", new Blob(["synthetic"]), "test.pcap");
+    await apiFetch("/api/uploads?kind=pcap", { method: "POST", body: form });
+    expect(sent()).toBeNull();
+  });
+});
