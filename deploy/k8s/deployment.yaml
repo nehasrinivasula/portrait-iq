@@ -64,6 +64,10 @@ spec:
               value: /data/jobs
             - name: UPLOAD_DIR
               value: /data/uploads
+            # tshark live capture (SCRUM-39): off unless TSHARK_LIVE_CAPTURE
+            # = true in deploy/lab.mk, for a bench whose owners approved it.
+            - name: TSHARK_LIVE_CAPTURE_ENABLED
+              value: "__TSHARK_LIVE_CAPTURE__"
           # The pod shares the MiniEdge with the Portrait software and must
           # not starve it. Raise only after watching real usage.
           resources:

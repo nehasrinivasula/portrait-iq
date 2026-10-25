@@ -25,5 +25,11 @@ LOG_EXPORT_NAMESPACE =
 NAMESPACE            = portrait-iq
 NODE_PORT            = 30080
 
+# tshark live capture: a host-network pod that sees ALL traffic on the node.
+# Only on a bench whose owners approved it; always pass a capture_filter for
+# the traffic you need (e.g. "udp portrange 7400-7500" for RTI), so logins
+# and other plain-HTTP traffic are not captured. Default: false.
+# TSHARK_LIVE_CAPTURE  = true
+
 # Absolute path to a folder outside the repo, e.g. $(HOME)/portrait-iq-secrets
 SECRETS_DIR          =
