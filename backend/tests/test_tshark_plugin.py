@@ -17,7 +17,7 @@ from app.auth import User
 from app.collectors import k8s
 from app.collectors import tshark as tshark_module
 from app.collectors.base import PluginConfigError, PluginError, ResourceLimits
-from app.collectors.tshark import VISIBILITY_WARNING, TsharkCollector
+from app.collectors.tshark import FILTER_PRESETS, VISIBILITY_WARNING, TsharkCollector
 from app.config import settings
 from app.orchestrator import routes
 
@@ -86,7 +86,34 @@ def test_run_options(live_capture):
         {"upload_id": "0" * 32},   # import-only option in run mode
     ):
         with pytest.raises(PluginConfigError):
+            t.configure({"capture_filter": "udp", **bad})
+
+
+def test_live_capture_needs_exactly_one_filter(live_capture):
+    t = TsharkCollector(LIMITS)
+    for bad in ({}, {"duration_s": 30},
+                {"filter_preset": "rti_all", "capture_filter": "udp"}):
+        with pytest.raises(PluginConfigError, match="exactly one of filter_preset"):
             t.configure(bad)
+    for bad in ({"filter_preset": "everything"}, {"filter_preset": 1}, {"capture_filter": ""},
+                {"capture_filter": "   "}):
+        with pytest.raises(PluginConfigError):
+            t.configure(bad)
+
+
+def test_filter_presets_cover_the_umf_rti_domains(live_capture):
+    assert FILTER_PRESETS == {
+        "rti_all": "udp portrange 9150-9399 or udp portrange 10400-10649 or udp portrange 10650-10899",
+        "rti_logging": "udp portrange 9150-9399",
+        "rti_source_pod": "udp portrange 10400-10649",
+        "rti_view_pod": "udp portrange 10650-10899",
+    }
+    t = TsharkCollector(LIMITS)
+    t.configure({"filter_preset": "rti_source_pod"})
+    assert t.capture_filter == "udp portrange 10400-10649"
+    assert t.audit_fields()["filter_preset"] == "rti_source_pod"
+    for preset in FILTER_PRESETS.values():   # the presets pass the free-text check too
+        assert TsharkCollector.FILTER_PATTERN.match(preset)
 
 
 def test_import_needs_an_existing_upload():
@@ -203,7 +230,7 @@ def test_failed_capture_reports_tsharks_reason(tmp_path, live_capture, tools, mo
     runner = FakeRunner(exit_code=2)
     monkeypatch.setattr(k8s, "get_pod_runner", lambda: runner)
     t = TsharkCollector(LIMITS)
-    t.configure({})
+    t.configure({"filter_preset": "rti_all"})
     t.bind_job("job-1", tmp_path)
     with pytest.raises(PluginError, match=r"tshark capture failed \(exit 2\) tshark: permission denied"):
         t.run("192.0.2.10")

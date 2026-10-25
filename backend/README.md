@@ -436,7 +436,11 @@ against the target, and deletes the pod. Options: `ports`, `dns_names`,
 - `run`: a live capture from a host-network pod (`TSHARK_IMAGE`, built from
   `deploy/images/tshark`). Refused unless `TSHARK_LIVE_CAPTURE_ENABLED=true`,
   because the pod gets raw-socket rights on the customer's node. Options:
-  `duration_s` (5 to 900), `interface`, `capture_filter`.
+  `duration_s` (5 to 900), `interface`, and exactly one of `filter_preset`
+  or `capture_filter` (a live capture never takes everything). Presets:
+  `rti_all` (UMF DDS domains 7, 12 and 13), `rti_logging` (7),
+  `rti_source_pod` (12), `rti_view_pod` (13). `capture_filter` is a BPF
+  filter for anything else, e.g. `host 192.0.2.1`.
 
 Both keep headers only (first 128 bytes per packet) unless `headers_only`
 is false with a `full_payload_reason`.

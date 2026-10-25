@@ -59,7 +59,7 @@ def configured(tmp_path, monkeypatch, runner, **options) -> RtiCollector:
 
 
 def test_off_unless_enabled():
-    with pytest.raises(PluginConfigError, match="turned off"):
+    with pytest.raises(PluginConfigError, match="rtitools image is missing"):
         RtiCollector(LIMITS).configure({})
 
 

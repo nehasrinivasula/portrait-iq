@@ -31,6 +31,12 @@ from app.secrets_loader import redact
 # 7 logging, 12 source pod ("umfgeneral"), 13 view pod (GE's rtitools README).
 DOMAINS = (7, 12, 13)
 
+
+def rtps_port_range(domain: int) -> tuple[int, int]:
+    """The UDP ports RTPS uses on a domain: 250 from 7400 + 250 * domain."""
+    first = 7400 + 250 * domain
+    return first, first + 249
+
 # e.g.  1698077520.123456 New writer   from 10.0.0.1   "Topic"   "Type"
 SPY_LINE = re.compile(
     r"\b(?P<event>New writer|New reader|New data|Deleted writer|Deleted reader|"
@@ -64,10 +70,7 @@ class RtiCollector(Collector):
         if unknown:
             raise PluginConfigError(f"rti does not accept options: {unknown}")
         if not settings.rti_enabled:
-            raise PluginConfigError(
-                "UMF RTI is turned off here: it needs GE's rtitools image on the bench and the "
-                "site's OK to join its DDS domain as a listener (RTI_ENABLED)."
-            )
+            raise PluginConfigError("UMF RTI can't run: GE's rtitools image is missing.")
         domain = options.get("domain", self.DEFAULT_DOMAIN)
         if domain not in DOMAINS or isinstance(domain, bool):
             raise PluginConfigError(f"rti domain must be one of {list(DOMAINS)}")
