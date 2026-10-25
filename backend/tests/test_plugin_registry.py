@@ -231,7 +231,7 @@ def test_default_configure_rejects_options():
 
 def test_tshark_configure(live_capture):
     t = TsharkCollector(LIMITS)
-    t.configure({})
+    t.configure({"filter_preset": "rti_all"})
     assert (t.mode, t.headers_only) == ("run", True)
     upload_id, _ = uploads.save(io.BytesIO(b"\x0a\x0d\x0d\x0a" + b"\0" * 28), "pcap")
     t.configure({"mode": "import", "upload_id": upload_id,
@@ -244,24 +244,26 @@ def test_tshark_configure(live_capture):
 
 def test_tshark_full_payload_needs_a_reason(live_capture):
     t = TsharkCollector(LIMITS)
+    rti = {"filter_preset": "rti_all"}
     for missing in ({"headers_only": False}, {"headers_only": False, "full_payload_reason": "  "}):
         with pytest.raises(PluginConfigError, match="full_payload_reason"):
-            t.configure(missing)
+            t.configure({**rti, **missing})
     with pytest.raises(PluginConfigError, match="only applies"):
-        t.configure({"full_payload_reason": "ticket 123"})
+        t.configure({**rti, "full_payload_reason": "ticket 123"})
     with pytest.raises(PluginConfigError, match="must be text"):
-        t.configure({"headers_only": False, "full_payload_reason": 42})
+        t.configure({**rti, "headers_only": False, "full_payload_reason": 42})
     with pytest.raises(PluginConfigError, match="limited to 500"):
-        t.configure({"headers_only": False, "full_payload_reason": "x" * 501})
-    t.configure({"headers_only": False, "full_payload_reason": "x" * 500})  # the limit itself is fine
+        t.configure({**rti, "headers_only": False, "full_payload_reason": "x" * 501})
+    t.configure({**rti, "headers_only": False, "full_payload_reason": "x" * 500})  # the limit itself is fine
 
-    t.configure({"headers_only": False, "full_payload_reason": " Hospital IT asked, ticket 123 "})
+    t.configure({**rti, "headers_only": False, "full_payload_reason": " Hospital IT asked, ticket 123 "})
     assert t.audit_fields() == {
         "mode": "run", "headers_only": False, "full_payload_reason": "Hospital IT asked, ticket 123",
-        "duration_s": 60, "interface": "any",
+        "duration_s": 60, "interface": "any", "filter_preset": "rti_all",
     }
-    t.configure({})
-    assert t.audit_fields() == {"mode": "run", "headers_only": True, "duration_s": 60, "interface": "any"}
+    t.configure({"capture_filter": "host 192.0.2.1"})
+    assert t.audit_fields() == {"mode": "run", "headers_only": True, "duration_s": 60, "interface": "any",
+                                "capture_filter": "host 192.0.2.1"}
 
 
 def test_create_all_rejects_duplicates_and_stray_options(local_registry):
@@ -371,7 +373,7 @@ def test_start_job_passes_options_through(db, monkeypatch):
 def test_start_job_audits_full_payload_and_reason(db, live_capture):
     user = User(id="tester", name="Tester")
     req = JobCreateRequest(tools=["tshark"], plugin_options={
-        "tshark": {"headers_only": False, "full_payload_reason": "ticket 123"},
+        "tshark": {"headers_only": False, "full_payload_reason": "ticket 123", "filter_preset": "rti_all"},
     })
     job = routes.start_job(req, target_ip="192.0.2.10", background_tasks=BackgroundTasks(),
                            db=db, user=user)

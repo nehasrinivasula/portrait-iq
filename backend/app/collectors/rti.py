@@ -31,6 +31,12 @@ from app.secrets_loader import redact
 # 7 logging, 12 source pod ("umfgeneral"), 13 view pod (GE's rtitools README).
 DOMAINS = (7, 12, 13)
 
+
+def rtps_port_range(domain: int) -> tuple[int, int]:
+    """The UDP ports RTPS uses on a domain: 250 from 7400 + 250 * domain."""
+    first = 7400 + 250 * domain
+    return first, first + 249
+
 # e.g.  1698077520.123456 New writer   from 10.0.0.1   "Topic"   "Type"
 SPY_LINE = re.compile(
     r"\b(?P<event>New writer|New reader|New data|Deleted writer|Deleted reader|"
