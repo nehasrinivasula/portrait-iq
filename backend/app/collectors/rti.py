@@ -64,10 +64,7 @@ class RtiCollector(Collector):
         if unknown:
             raise PluginConfigError(f"rti does not accept options: {unknown}")
         if not settings.rti_enabled:
-            raise PluginConfigError(
-                "UMF RTI is turned off here: it needs GE's rtitools image on the bench and the "
-                "site's OK to join its DDS domain as a listener (RTI_ENABLED)."
-            )
+            raise PluginConfigError("UMF RTI can't run: GE's rtitools image is missing.")
         domain = options.get("domain", self.DEFAULT_DOMAIN)
         if domain not in DOMAINS or isinstance(domain, bool):
             raise PluginConfigError(f"rti domain must be one of {list(DOMAINS)}")
