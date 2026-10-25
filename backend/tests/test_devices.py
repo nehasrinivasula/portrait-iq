@@ -279,3 +279,19 @@ def test_acquire_without_ingest_still_learns_devices(db, staging, tmp_path):
     f.write_text(HDR + line("2026-10-19T09:00:00.000+0000", "h", HUB, "Hub-01"))
     acquire(db, LocalImportSource(), actor="tester", options={"path": str(f)}, ingest=False)
     assert [d.device_uuid for d in list_known(db)] == [HUB]
+
+
+def test_replaced_rows_keep_the_unified_view_complete(db, staging, source, fake):
+    # Device pull then all-devices pull: the duplicate rows are removed through
+    # storage.removal.remove_events, so the completeness report shows a
+    # deliberate removal (info), not missing data.
+    from app.storage import events as store
+    from app.storage.filters import UNASSIGNED
+    window = dict(since=BASE, until=BASE + timedelta(hours=2))
+    acquire(db, source, actor="tester", options={"device_uuids": HUB}, ingest=True, **window)
+    acquire(db, source, actor="tester", ingest=True, **window)
+    s = store.collection_summary(db, UNASSIGNED)
+    assert s.complete is True
+    assert s.events_stored == s.events_expected == 4
+    # The 2-hour device pull was one file (device windows are up to 7 days): one note.
+    assert [(i.kind, i.severity) for i in s.issues] == [("events_removed", "info")]

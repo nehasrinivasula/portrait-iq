@@ -33,6 +33,7 @@ from app.models import NormalizedEvent as EventRow
 from app.secrets_loader import redact
 from app.sources.base import ALLOWED_SUFFIXES, ONE_MS, LogSource, RemoteFile, SourceError, window_file
 from app.sources.devices import harvest_csv, record_devices
+from app.storage.removal import remove_events
 from app.sources.local_import import sha256_of
 
 log = logging.getLogger(__name__)
@@ -332,7 +333,10 @@ def _replace_narrower_rows(db: Session, source: LogSource, remote: RemoteFile) -
     time: the broad file contains those lines too. Together with coverage in
     plan_new_windows (broad pulls cover narrow ones), each log line is stored
     once whichever order the pulls happen in. Rows are found through the
-    ingestion source_label "<source>/<remote_id>/..." set in _ingest."""
+    ingestion source_label "<source>/<remote_id>/..." set in _ingest, and
+    deleted through storage.removal.remove_events so each file's ingest
+    receipt records the removal: the unified view's completeness report then
+    shows it as a deliberate removal, not as missing data."""
     if remote.window_start is None or remote.window_end is None:
         return 0
     start, end = _utc(remote.window_start), _utc(remote.window_end)
@@ -344,17 +348,16 @@ def _replace_narrower_rows(db: Session, source: LogSource, remote: RemoteFile) -
         AcquiredFileRecord.window_start <= end,
         AcquiredFileRecord.window_end >= start,
     ).all()
-    removed = 0
+    ids: list[int] = []
     for rec in candidates:
         if remote.scope not in source.covering_scopes(rec.scope):
             continue   # not narrower (e.g. a different device or category)
-        removed += db.query(EventRow).filter(
+        ids += [event_id for (event_id,) in db.query(EventRow.id).filter(
             EventRow.source_file.startswith(f"{rec.source}/{rec.remote_id}/", autoescape=True),
             EventRow.timestamp >= start.replace(tzinfo=None),
             EventRow.timestamp <= end.replace(tzinfo=None),
-        ).delete(synchronize_session=False)
-    db.commit()
-    return removed
+        )]
+    return remove_events(db, ids) if ids else 0
 
 
 def _learn_devices(db: Session, paths: list[Path], source_id: str) -> None:
