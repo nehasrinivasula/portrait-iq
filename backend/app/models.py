@@ -2,7 +2,7 @@
 ORM tables. One per architecture-diagram box that needs to persist state:
 Device (connect), Job (orchestrator), NormalizedEvent (event store), Signal
 (analysis engine output), AcquiredFileRecord (log acquisition manifest),
-AuditLogEntry (cross-cutting).
+IngestedFile (receipt of what ingestion stored per file), AuditLogEntry (cross-cutting).
 """
 import uuid
 from datetime import datetime
@@ -38,7 +38,7 @@ class Job(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     mode = Column(String, nullable=False, default="live")     # "live" | "pre_install"
-    status = Column(String, nullable=False, default="queued")  # queued|running|done|failed|cleanup_failed|interrupted
+    status = Column(String, nullable=False, default="queued")  # queued|running|done|partial|failed|cleanup_failed|interrupted
     current_step = Column(String, nullable=True)
     cpu_limit_pct = Column(Integer, nullable=True)
     mem_limit_mb = Column(Integer, nullable=True)
@@ -59,7 +59,7 @@ class NormalizedEvent(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     job_id = Column(String, ForeignKey("jobs.id"), nullable=True)  # null for ad-hoc ingests
     timestamp = Column(DateTime, nullable=False, index=True)
-    device_id = Column(String, nullable=True, index=True)         # hostName / friendlyName from source
+    device_id = Column(String, nullable=True)                     # hostName / friendlyName from source
     source = Column(String, nullable=False)             # "portrait" | "compute" | "network"
     source_file = Column(String, nullable=True, index=True)
     source_line = Column(Integer, nullable=True)
@@ -69,6 +69,40 @@ class NormalizedEvent(Base):
     message = Column(Text, nullable=False)
 
     job = relationship("Job", back_populates="events")
+
+    # Search is by time, usually inside one collection or one device. These
+    # keep those queries fast at hundreds of thousands of rows. (job_id,
+    # timestamp, id) matches the paging order of the unified view exactly.
+    __table_args__ = (
+        Index("ix_events_job_ts", "job_id", "timestamp", "id"),
+        # Also serves plain device_id lookups, so device_id has no index of its own.
+        Index("ix_events_device_ts", "device_id", "timestamp"),
+    )
+
+
+class IngestedFile(Base):
+    """One row per file the pipeline stored, written in the same transaction
+    as that file's events. It is the receipt the unified view checks against:
+    rows read, events stored, rows rejected. Without it, "every entry is
+    visible" could not be told apart from "every entry we happened to keep".
+    Keyed like the events: (source_file, job_id)."""
+    __tablename__ = "ingested_files"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_file = Column(String, nullable=False, index=True)
+    job_id = Column(String, ForeignKey("jobs.id"), nullable=True, index=True)
+    parser = Column(String, nullable=True)
+    rows_read = Column(Integer, nullable=False, default=0)
+    events_written = Column(Integer, nullable=False, default=0)
+    rows_rejected = Column(Integer, nullable=False, default=0)
+    # Events deliberately deleted after ingest (e.g. duplicates), via
+    # storage.removal.remove_events. Keeps rows_read == events_written +
+    # rows_rejected true forever; events now expected = written - removed.
+    events_removed = Column(Integer, nullable=False, default=0)
+    reject_reasons = Column(Text, nullable=True)     # JSON {reason: count}; short constants, never row text
+    first_timestamp = Column(DateTime, nullable=True)
+    last_timestamp = Column(DateTime, nullable=True)
+    ingested_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Signal(Base):

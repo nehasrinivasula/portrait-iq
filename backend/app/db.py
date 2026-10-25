@@ -18,6 +18,17 @@ def init_db() -> None:
     from app import models  # noqa: F401  (import so tables register on Base)
     Base.metadata.create_all(bind=engine)
     _check_schema_is_current()
+    _create_missing_indexes()
+
+
+def _create_missing_indexes() -> None:
+    """create_all skips indexes on tables that already exist, so a database
+    created before an index was added would never get it. Adding an index
+    is safe on live data, unlike adding a column."""
+    for table in Base.metadata.sorted_tables:
+        for index in table.indexes:
+            index.create(bind=engine, checkfirst=True)
+
 
 def _check_schema_is_current() -> None:
     """create_all never alters existing tables. Fail early and say what to do."""
