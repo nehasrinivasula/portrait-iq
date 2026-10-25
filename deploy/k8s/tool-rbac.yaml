@@ -1,0 +1,42 @@
+# What the backend may do in the cluster (SCRUM-39): start, watch, exec into
+# and delete its own tool pods (Netshoot, tshark live capture), in its own
+# namespace and nowhere else. No ClusterRole: it cannot touch Portrait's pm
+# namespace or GE's compute namespace. Tool pods themselves get no token.
+#
+# Applied by `make deploy` with the rest of deploy/k8s/, which fills in
+# __NAMESPACE__.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: portrait-iq
+  labels:
+    app.kubernetes.io/name: portrait-iq
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: portrait-iq-tools
+  labels:
+    app.kubernetes.io/name: portrait-iq
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]   # the exec stream is a websocket GET in newer clients
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: portrait-iq-tools
+  labels:
+    app.kubernetes.io/name: portrait-iq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: portrait-iq-tools
+subjects:
+  - kind: ServiceAccount
+    name: portrait-iq
+    namespace: __NAMESPACE__

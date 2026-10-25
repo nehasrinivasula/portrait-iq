@@ -1,10 +1,8 @@
 """
-Job state machine. Deliberately synchronous/in-request for the skeleton —
-that's wrong for a real collection run (which should be a background task
-so the frontend can poll status without holding a connection open), but
-right for a skeleton where every collector is a stub anyway. Swap in
-FastAPI's BackgroundTasks or a real task queue (Celery/RQ) when the
-collectors do real, slow work.
+Job state machine. POST /jobs starts run_job as a background task after
+the response is sent (SCRUM-39), and the frontend polls GET /jobs/{id}.
+That is enough for one field engineer and one backend process; a crash
+mid-job is handled at startup by recover_interrupted_jobs().
 
 STEPS mirrors the prototype's collect screen and the requirements doc's
 progress/notify requirements ("monitor progress in real time", "notify
@@ -12,15 +10,19 @@ when complete or if any step fails").
 """
 import json
 import logging
+from dataclasses import asdict
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.analysis.engine import run_analysis
 from app.audit import log_action
-from app.collectors.base import Collector, PluginError, ResourceLimits
+from app.collectors import k8s
+from app.collectors.base import Collector, CollectorResult, PluginError, ResourceLimits
 from app.collectors.registry import PluginRegistry, get_registry
+from app.config import settings
 from app.models import Job
 
 log = logging.getLogger(__name__)
@@ -57,10 +59,7 @@ def run_job(
     registry: PluginRegistry | None = None,
     plugins: list[Collector] | None = None,
 ) -> Job:
-    """Walks the job through STEPS. Every built-in plugin's run() raises
-    NotImplementedError right now; that's fine, it's a skeleton. The point
-    of this function is the *shape* of configure/run/fail/cleanup, not
-    working plugins yet.
+    """Walks the job through STEPS.
 
     Plugins come from the registry by name (SCRUM-38), so a new plugin
     needs no change here. All selected plugins are configured before any
@@ -80,6 +79,8 @@ def run_job(
     limits = ResourceLimits(job.cpu_limit_pct, job.mem_limit_mb, job.max_output_mb)
     tools = json.loads(job.tools or "[]")
     started = []
+    results: list[dict[str, Any]] = []
+    running: Collector | None = None
     cleanup_failed = False
 
     try:
@@ -92,8 +93,13 @@ def run_job(
 
             if step == "deploy_tools":
                 for plugin in plugins:
+                    out_dir = job_output_dir(job.id) / plugin.name
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    plugin.bind_job(job.id, out_dir)
                     started.append(plugin)   # before run(), so a half-done run is cleaned up
-                    plugin.run(target_ip)    # raises NotImplementedError today
+                    running = plugin
+                    _record(job.id, results, plugin.run(target_ip))
+                    running = None
 
             elif step == "collect_server_logs":
                 # TODO: point ingestion.pipeline.ingest_directory() at wherever
@@ -114,19 +120,61 @@ def run_job(
 
         _finish(db, job, "cleanup_failed" if cleanup_failed else "done")
 
-    except (NotImplementedError, PluginError):
-        # Expected right now: every built-in plugin is a stub, and a bad
-        # option is a user error, not a crash. Still exercise the cleanup
-        # path so that behavior is proven correct early.
+    except (NotImplementedError, PluginError) as e:
+        # A plugin that is still a stub, a bad option or a tool that could
+        # not run: a known failure with a message safe to show, not a crash.
+        if running is not None:
+            _record(job.id, results, {"tool": running.name, "error": str(e) or type(e).__name__})
         cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
         _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
 
-    except Exception:
+    except Exception as e:
+        if running is not None:   # type only: an unexpected error's text may hold anything
+            _record(job.id, results, {"tool": running.name, "error": type(e).__name__})
         cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
         _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
         raise
 
     return job
+
+
+def job_output_dir(job_id: str) -> Path:
+    return Path(settings.job_output_dir) / job_id
+
+
+def read_results(job_id: str) -> list[dict[str, Any]]:
+    path = job_output_dir(job_id) / "results.json"
+    return json.loads(path.read_text()) if path.is_file() else []
+
+
+def _record(job_id: str, results: list, result: CollectorResult | dict) -> None:
+    results.append(asdict(result) if isinstance(result, CollectorResult) else result)
+    path = job_output_dir(job_id) / "results.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(results, indent=2))
+
+
+def recover_interrupted_jobs(db: Session) -> None:
+    """At startup: no job of this process can be running yet, so a job still
+    marked queued or running was cut off by a crash or restart. Mark it, and
+    delete any tool pod it left behind (C-5). Pods also stop by themselves
+    at their activeDeadlineSeconds; this just does it sooner."""
+    stale = db.query(Job).filter(Job.status.in_(("queued", "running"))).all()
+    for job in stale:
+        job.status = "interrupted"
+        job.finished_at = datetime.utcnow()
+        log_action(db, "system", "job_interrupted", detail=f"job={job.id} step={job.current_step}")
+    db.commit()
+    if not settings.sweep_tool_pods_on_startup:
+        return
+    try:
+        removed = k8s.get_pod_runner().sweep()
+    except Exception as e:  # noqa: BLE001  no cluster (e.g. a laptop) must not stop startup
+        log.info("tool pod sweep skipped: %s", e)
+        return
+    if removed:
+        log.warning("deleted %d leftover tool pod(s): %s", len(removed), ", ".join(removed))
+        log_action(db, "system", "tool_pods_swept", detail=f"pods={removed}")
 
 
 def _finish(db: Session, job: Job, status: str) -> None:
