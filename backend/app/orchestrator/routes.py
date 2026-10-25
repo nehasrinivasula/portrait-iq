@@ -14,11 +14,18 @@ from app.auth import User, get_current_user, is_locked, touch_session
 from app.collectors.base import Collector, PluginError, ResourceLimits
 from app.collectors.registry import get_registry
 from app.config import settings
+from app.connectivity.service import check_connectivity
 from app.db import SessionLocal, get_db
 from app.models import Device, Job, Signal
 from app.orchestrator.jobs import create_job, read_results, run_job
 from app.schemas import (
     ConnectRequest,
+    ConnectivityCheckRequest,
+    ConnectivityCheckResponse,
+    DeviceOut,
+    JobCreateRequest,
+    JobOut,
+    SignalOut,
     DeviceOut,
     JobCreateRequest,
     JobOut,
@@ -32,6 +39,62 @@ from app.secrets_loader import redaction_scope
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.post("/connectivity-check", response_model=ConnectivityCheckResponse)
+def connectivity_check(
+    req: ConnectivityCheckRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Run a bounded TCP reachability check before diagnostics start.
+
+    An unreachable result is returned as a successful HTTP response because
+    the check itself completed successfully; callers should inspect `status`
+    and the per-port results.
+    """
+    if is_locked(user.id):
+        raise HTTPException(423, "Session locked — unlock before checking connectivity.")
+
+    log_action(
+        db,
+        user.id,
+        "connectivity_check",
+        detail=json.dumps(
+            {"target": req.target, "ports": req.ports, "event": "started"},
+            ensure_ascii=True,
+        ),
+    )
+    try:
+        response = check_connectivity(req.target, req.ports, req.timeout_seconds)
+    except Exception:
+        log_action(
+            db,
+            user.id,
+            "connectivity_check",
+            detail=json.dumps(
+                {"target": req.target, "ports": req.ports, "event": "failed"},
+                ensure_ascii=True,
+            ),
+        )
+        raise
+    else:
+        log_action(
+            db,
+            user.id,
+            "connectivity_check",
+            detail=json.dumps(
+                {
+                    "target": req.target,
+                    "ports": req.ports,
+                    "event": "completed",
+                    "result": response.status,
+                },
+                ensure_ascii=True,
+            ),
+        )
+        touch_session(user.id)
+        return response
 
 
 @router.post("/connect", response_model=list[DeviceOut])
