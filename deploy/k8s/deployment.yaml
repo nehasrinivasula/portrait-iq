@@ -71,6 +71,9 @@ spec:
               value: /data/jobs
             - name: UPLOAD_DIR
               value: /data/uploads
+            # Pulled and imported logs are staged here before ingestion (SCRUM-43).
+            - name: STAGING_DIR
+              value: /data/staging
             # tshark live capture (SCRUM-39): off unless TSHARK_LIVE_CAPTURE
             # = true in deploy/lab.mk, for a bench whose owners approved it.
             - name: TSHARK_LIVE_CAPTURE_ENABLED
