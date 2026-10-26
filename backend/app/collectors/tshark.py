@@ -36,6 +36,7 @@ from pathlib import Path
 from app import uploads
 from app.collectors import k8s
 from app.collectors.base import Collector, CollectorResult, PluginConfigError, PluginError
+from app.collectors.rti import rtps_port_range
 from app.config import settings
 from app.secrets_loader import redact
 
@@ -44,6 +45,20 @@ VISIBILITY_WARNING = (
     "multicast. Traffic between other devices is missing unless the switch mirrors it."
 )
 ANALYZE_TIMEOUT_S = 300
+
+
+def _rti_filter(*domains: int) -> str:
+    return " or ".join("udp portrange %d-%d" % rtps_port_range(d) for d in domains)
+
+
+# Named capture filters, so the UI offers choices instead of GE's port
+# numbers. Same at every site: the ports follow from the UMF DDS domains.
+FILTER_PRESETS = {
+    "rti_all": _rti_filter(7, 12, 13),
+    "rti_logging": _rti_filter(7),
+    "rti_source_pod": _rti_filter(12),
+    "rti_view_pod": _rti_filter(13),
+}
 
 
 class TsharkCollector(Collector):
@@ -61,7 +76,7 @@ class TsharkCollector(Collector):
     FILTER_PATTERN = re.compile(r"^[A-Za-z0-9 .:/()!=<>&|\[\]-]{1,200}$")
 
     COMMON_OPTIONS = {"mode", "headers_only", "full_payload_reason"}
-    RUN_OPTIONS = {"duration_s", "interface", "capture_filter"}
+    RUN_OPTIONS = {"duration_s", "interface", "capture_filter", "filter_preset"}
     IMPORT_OPTIONS = {"upload_id"}
 
     def __init__(self, limits):
@@ -72,6 +87,7 @@ class TsharkCollector(Collector):
         self.duration_s = self.DEFAULT_DURATION_S
         self.interface = "any"
         self.capture_filter = ""
+        self.filter_preset = ""
         self.upload_id = ""
         self._runner = None
         self._pod: str | None = None
@@ -81,7 +97,8 @@ class TsharkCollector(Collector):
         headers_only (bool, default True) and full_payload_reason (text,
         required when headers_only is false, not allowed otherwise).
         Run mode: duration_s (default 60, at most 900), interface (default
-        "any") and capture_filter (BPF, optional). Import mode: upload_id
+        "any") and exactly one of filter_preset (a FILTER_PRESETS name) or
+        capture_filter (BPF). Import mode: upload_id
         (required, from POST /api/uploads?kind=pcap)."""
         unknown = sorted(set(options) - self.COMMON_OPTIONS - self.RUN_OPTIONS - self.IMPORT_OPTIONS)
         if unknown:
@@ -112,6 +129,7 @@ class TsharkCollector(Collector):
             raise PluginConfigError("tshark full_payload_reason only applies when headers_only is false")
 
         duration_s, interface, capture_filter, upload_id = self.DEFAULT_DURATION_S, "any", "", ""
+        preset = ""
         if mode == "run":
             if not settings.tshark_live_capture_enabled:
                 raise PluginConfigError(
@@ -128,14 +146,30 @@ class TsharkCollector(Collector):
             interface = options.get("interface", "any")
             if not isinstance(interface, str) or not self.INTERFACE_PATTERN.match(interface):
                 raise PluginConfigError("tshark interface must be an interface name such as eth0 or any")
-            capture_filter = options.get("capture_filter", "")
-            if not isinstance(capture_filter, str):
-                raise PluginConfigError("tshark capture_filter must be text")
-            capture_filter = capture_filter.strip()
-            if capture_filter and not self.FILTER_PATTERN.match(capture_filter):
+            # A filter is required: a live capture never takes everything on
+            # the customer's network, which could include logins and PHI.
+            if ("filter_preset" in options) == ("capture_filter" in options):
                 raise PluginConfigError(
-                    "tshark capture_filter may only use letters, digits, spaces and . : / ( ) ! = < > & | [ ] -"
+                    f"tshark live capture needs exactly one of filter_preset "
+                    f"({', '.join(FILTER_PRESETS)}) or capture_filter"
                 )
+            if "filter_preset" in options:
+                preset = options["filter_preset"]
+                if not isinstance(preset, str) or preset not in FILTER_PRESETS:
+                    raise PluginConfigError(
+                        f"tshark filter_preset must be one of: {', '.join(FILTER_PRESETS)}"
+                    )
+                capture_filter = FILTER_PRESETS[preset]
+            else:
+                capture_filter = options["capture_filter"]
+                if not isinstance(capture_filter, str):
+                    raise PluginConfigError("tshark capture_filter must be text")
+                capture_filter = capture_filter.strip()
+                if not self.FILTER_PATTERN.match(capture_filter):
+                    raise PluginConfigError(
+                        "tshark capture_filter may only use letters, digits, spaces and "
+                        ". : / ( ) ! = < > & | [ ] -"
+                    )
         else:
             upload_id = options.get("upload_id")
             if not uploads.is_valid_id(upload_id):
@@ -149,10 +183,13 @@ class TsharkCollector(Collector):
         self.headers_only = headers_only
         self.full_payload_reason = reason
         self.duration_s, self.interface, self.capture_filter = duration_s, interface, capture_filter
+        self.filter_preset = preset
         self.upload_id = upload_id
         self.options = {"mode": mode, "headers_only": headers_only, "full_payload_reason": reason}
         if mode == "run":
             self.options.update(duration_s=duration_s, interface=interface, capture_filter=capture_filter)
+            if preset:
+                self.options["filter_preset"] = preset
         else:
             self.options.update(upload_id=upload_id)
 
@@ -163,7 +200,9 @@ class TsharkCollector(Collector):
             fields["full_payload_reason"] = redact(self.full_payload_reason)
         if self.mode == "run":
             fields.update(duration_s=self.duration_s, interface=self.interface)
-            if self.capture_filter:
+            if self.filter_preset:
+                fields["filter_preset"] = self.filter_preset
+            else:
                 fields["capture_filter"] = redact(self.capture_filter)
         else:
             fields["upload_id"] = self.upload_id
