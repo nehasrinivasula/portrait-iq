@@ -105,6 +105,10 @@
 .filters .field input, .filters .field select { width: 100%; min-height: 44px; background: var(--bg); border: 1.5px solid var(--line); border-radius: 6px; padding: 6px 12px; }
 .filters .tf-grid { margin-top: 8px; }
 .job-chip { margin: 0; flex: none; }
+.active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.active-filters ul { list-style: none; margin: 0; padding: 0; }
+.remove-chip { display: inline-flex; align-items: center; gap: 8px; border-color: var(--primary); font-weight: 400; }
+.remove-chip span { font-size: 20px; line-height: .8; }
 
 /* Run page: setup on the left, the run on the right */
 .run-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 32px; align-items: start; }
