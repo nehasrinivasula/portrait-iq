@@ -49,7 +49,8 @@ spec:
           ports:
             - containerPort: 8000
           env:
-            - name: LOG_EXPORT_URL
+            # The Axone Log Export API, read by the backend's log source.
+            - name: AXONE_BASE_URL
               value: "__LOG_EXPORT_URL__"
             # Secrets are files, never env values (backend/SECRETS.md).
             # Login (SCRUM-32). Until `make secrets` creates these files,
