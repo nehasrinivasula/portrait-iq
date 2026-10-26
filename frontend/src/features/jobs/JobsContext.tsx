@@ -28,6 +28,10 @@ interface JobsState {
   /** Watch a run; pullLogs, when given, starts the log pull for it right away. */
   track: (job: Job, pullLogs?: () => Promise<AcquisitionResult>) => void;
   clear: () => void;
+  /** The Run page's target IP, kept here so it survives leaving the page.
+   * Memory only, never browser storage, and forgotten on sign-out. */
+  targetIp: string;
+  setTargetIp: (ip: string) => void;
 }
 
 const Ctx = createContext<JobsState | null>(null);
@@ -46,6 +50,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   const [results, setResults] = useState<ToolResult[] | null>(null);
   const [lost, setLost] = useState(false);
   const [logPull, setLogPull] = useState<LogPull | null>(null);
+  const [targetIp, setTargetIp] = useState("");
   const announced = useRef<string | null>(null);
 
   const clear = useCallback(() => { store.clear(); setJob(null); setResults(null); setLost(false); setLogPull(null); }, []);
@@ -66,7 +71,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
       });
   }, [notify]);
 
-  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); setLogPull(null); } }, [user]);
+  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); setLogPull(null); setTargetIp(""); } }, [user]);
 
   // A page reload must not lose a run that is still going: pick it back up.
   useEffect(() => {
@@ -106,5 +111,5 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     else notify({ kind: "error", title: "The run failed", body: "Open Run diagnostics for details." });
   }, [job, notify]);
 
-  return <Ctx.Provider value={{ job, results, lost, logPull, track, clear }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ job, results, lost, logPull, track, clear, targetIp, setTargetIp }}>{children}</Ctx.Provider>;
 }

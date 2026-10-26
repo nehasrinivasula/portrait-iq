@@ -8,6 +8,7 @@ import { defaultTimeFrame, resolveTimeFrame, toApi } from "../logs/timeframe";
 import { listPlugins, startJob, uploadPcap, type Job, type Plugin } from "./api";
 import { RtiOptions, TsharkOptions } from "./ToolOptions";
 import { buildOptions, defaultChoices, validateChoices, validateTargetIp } from "./options";
+import { useJobs } from "../jobs/JobsContext";
 import "./plugins.css";
 
 // Not offered here: hub_import is only a demo path, and lives on the Logs page.
@@ -39,7 +40,7 @@ export default function PluginPicker({ onStarted, locked }: {
   const [skipped, setSkipped] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [choices, setChoices] = useState(defaultChoices);
-  const [targetIp, setTargetIp] = useState("");
+  const { targetIp, setTargetIp } = useJobs();   // kept when the engineer leaves this page
   const [logsOn, setLogsOn] = useState(true);
   const [logsReason, setLogsReason] = useState<string | null>(null); // why logs can't be collected here
   const [frame, setFrame] = useState(defaultTimeFrame);
