@@ -1,7 +1,7 @@
 import * as Label from "@radix-ui/react-label";
 import * as RadioGroup from "@radix-ui/react-radio-group";
 import DurationField from "./DurationField";
-import { RTI_DOMAINS, TSHARK_PRESETS, type Choices, type TsharkChoice } from "./options";
+import { RTI_DOMAINS, RTI_DURATION, TSHARK_DURATION, TSHARK_PRESETS, type Choices, type TsharkChoice } from "./options";
 
 interface Props {
   uid: string;
@@ -26,7 +26,7 @@ export function TsharkOptions({ uid, choices, onChoices, errors, upload }: Props
 
       {t.mode === "run" ? (
         <>
-          <DurationField id={`${uid}-t-dur`} label="Capture length" value={t.durationS} onChange={(v) => set({ durationS: v })}
+          <DurationField id={`${uid}-t-dur`} label="Capture length" value={t.durationS} onChange={(v) => set({ durationS: v })} limits={TSHARK_DURATION}
             error={errors["tshark.duration"]} hint="Packet headers only; no message contents are kept." />
 
           <div className="field">
@@ -91,7 +91,7 @@ export function RtiOptions({ uid, choices, onChoices, errors }: Omit<Props, "upl
         </RadioGroup.Root>
       </div>
       <DurationField id={`${uid}-r-dur`} label="Listen time" value={r.durationS}
-        onChange={(v) => onChoices({ ...choices, rti: { ...r, durationS: v } })} error={errors["rti.duration"]}
+        onChange={(v) => onChoices({ ...choices, rti: { ...r, durationS: v } })} limits={RTI_DURATION} error={errors["rti.duration"]}
         hint="Reports which hosts and topics are active, never message contents." />
     </div>
   );
