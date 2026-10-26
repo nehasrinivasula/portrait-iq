@@ -430,6 +430,10 @@ def acquire(
         outcome = FileOutcome(remote.name, remote.remote_id, "failed", remote.size)
         sha = None
         try:
+            # Raw exports may contain PHI/PII. Keep the per-file directory
+            # private even if the process umask allows wider access.
+            file_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            file_dir.chmod(0o700)
             path = source.fetch(remote, file_dir)
             size = path.stat().st_size
             sha = sha256_of(path)

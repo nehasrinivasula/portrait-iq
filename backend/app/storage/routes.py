@@ -27,7 +27,7 @@ from app.storage import events as store
 from app.storage.filters import DEFAULT_LIMIT, MAX_LIMIT, UNASSIGNED, EventFilter, FilterError, build_filter
 from app.storage.schemas import (
     CollectionOut, CollectionSummaryOut, FacetsOut, FacetValueOut, FileSummaryOut, IssueOut,
-    LogEventOut, LogPageOut,
+    LogEventOut, LogPageOut, OffsetLogPageOut,
 )
 
 router = APIRouter()
@@ -90,6 +90,39 @@ def _page(db: Session, user: User, f: EventFilter, *, limit: int, order: str, cu
         # search could be a patient identifier.
         log_action(db, user.id, action, detail=f"{detail} filters={f.used_fields()} matched={page.total}")
     return LogPageOut(items=[_event_out(e) for e in page.items], next_cursor=page.next_cursor, total=page.total)
+
+
+@router.get("", response_model=OffsetLogPageOut)
+def filter_logs(
+    device_id: Optional[str] = Query(None, min_length=1),
+    severity: Optional[Literal["DEBUG", "INFO", "WARN", "ERROR"]] = None,
+    category: Optional[str] = Query(None, min_length=1),
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(_active_user),
+) -> OffsetLogPageOut:
+    """SCRUM-53's simple AND-filter API over normalized_events only."""
+    if (device_id is not None and not device_id.strip()) or (category is not None and not category.strip()):
+        raise HTTPException(422, "Filter values cannot be blank.")
+    try:
+        f = build_filter(
+            since=start, until=end,
+            devices=[device_id] if device_id is not None else None,
+            severities=[severity] if severity is not None else None,
+            categories=[category] if category is not None else None,
+        )
+    except FilterError as e:
+        raise HTTPException(422, str(e))
+    page = store.search_events_offset(db, f, limit=limit, offset=offset)
+    if offset == 0:
+        log_action(db, user.id, "logs_search", detail=f"filters={f.used_fields()} matched={page.total}")
+    return OffsetLogPageOut(
+        items=[_event_out(e) for e in page.items], total=page.total or 0,
+        limit=limit, offset=offset,
+    )
 
 
 @router.get("/events", response_model=LogPageOut)

@@ -90,7 +90,7 @@ def walk(client, url, **params):
 def test_every_log_route_needs_a_signed_in_user(env):
     client, _ = env
     app.dependency_overrides.pop(get_current_user)
-    for url in ("/api/logs/events", "/api/logs/facets", "/api/logs/collections",
+    for url in ("/api/logs", "/api/logs/events", "/api/logs/facets", "/api/logs/collections",
                 "/api/logs/collections/x", "/api/logs/collections/x/events"):
         r = client.get(url)
         assert r.status_code == 401, url
@@ -101,6 +101,43 @@ def test_a_locked_session_cannot_read_logs(env, monkeypatch):
     client, _ = env
     monkeypatch.setattr("app.storage.routes.is_locked", lambda user_id: True)
     assert client.get("/api/logs/events").status_code == 423
+    assert client.get("/api/logs").status_code == 423
+
+
+def test_scrum53_offset_api_filters_exactly_and_pages(env):
+    client, db = env
+    add_event(db, seconds=0, device_id="hub-1", severity="ERROR", category="General")
+    add_event(db, seconds=1, device_id="hub-1", severity="ERROR", category="General")
+    add_event(db, seconds=2, device_id="hub-1", severity="WARN", category="PerfData")
+    add_event(db, seconds=3, device_id="hub-2", severity="ERROR", category="General")
+    window = {"start": "2024-06-02T10:00:00Z", "end": "2024-06-02T10:00:03Z"}
+    all_logs = client.get("/api/logs", params=window).json()
+    assert all_logs["total"] == 3
+    params = {**window, "device_id": "hub-1", "severity": "ERROR", "category": "General"}
+    first = client.get("/api/logs", params={**params, "limit": 1, "offset": 0}).json()
+    second = client.get("/api/logs", params={**params, "limit": 1, "offset": 1}).json()
+    assert first["total"] == second["total"] == 2
+    assert first["limit"] == second["limit"] == 1
+    assert (first["offset"], second["offset"]) == (0, 1)
+    assert {first["items"][0]["id"], second["items"][0]["id"]} == {
+        item["id"] for item in all_logs["items"] if item["device_id"] == "hub-1" and item["severity"] == "ERROR"
+    }
+    assert client.get("/api/logs", params={**params, "device_id": "missing"}).json()["total"] == 0
+    assert client.get("/api/logs", params={**window, "category": "PerfData"}).json()["total"] == 1
+
+
+@pytest.mark.parametrize("params", [
+    {"severity": "CRITICAL"},
+    {"severity": "error"},
+    {"device_id": " "},
+    {"category": " "},
+    {"start": "2024-06-02T10:01:00Z", "end": "2024-06-02T10:00:00Z"},
+    {"limit": 0},
+    {"offset": -1},
+])
+def test_scrum53_offset_api_rejects_invalid_filters(env, params):
+    client, _ = env
+    assert client.get("/api/logs", params=params).status_code == 422
 
 
 # --- search --------------------------------------------------------------------

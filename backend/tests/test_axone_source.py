@@ -1,7 +1,10 @@
 """Axone log export source: hour windows, endpoint choice, and the full pull
 through acquire() into the database. Runs against tests/axone_fake.py."""
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import stat
 
+import httpx
 import pytest
 
 from app.config import settings
@@ -166,6 +169,7 @@ def test_pull_three_hours_then_nothing_new(db, staging, source, fake):
     assert db.query(NormalizedEvent).count() == 5
     rec = db.query(AcquiredFileRecord).order_by(AcquiredFileRecord.id).first()
     assert rec.scope == "alldevices" and rec.window_start is not None
+    assert stat.S_IMODE(Path(rec.local_path).parent.stat().st_mode) == 0o700
 
     second = acquire(db, source, actor="tester", since=BASE, until=BASE + timedelta(hours=3), ingest=True)
     assert second.new_files == 0 and second.count("already_acquired") == 3
@@ -325,3 +329,16 @@ def test_daylight_saving_change_never_makes_a_2_hour_piece(monkeypatch):
     windows = src.list_available(utc(2026, 11, 1, 5), utc(2026, 11, 1, 9), {})
     assert all(w.window_end + timedelta(milliseconds=1) - w.window_start == timedelta(hours=1) for w in windows)
     assert len(windows) == 4
+
+
+def test_streaming_export_stops_at_byte_limit(tmp_path):
+    client = AxoneLogExportClient(
+        "http://fake-axone:9200",
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, content=b"more-than-ten-bytes")),
+        max_bytes=10,
+    )
+    out = tmp_path / "sample.csv"
+    with pytest.raises(SourceError, match="size limit"):
+        client.all_device_logs_csv(BASE, BASE + timedelta(hours=1) - timedelta(milliseconds=1), out)
+    assert not out.exists()
+    assert not (tmp_path / "sample.csv.part").exists()

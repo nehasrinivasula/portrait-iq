@@ -315,6 +315,17 @@ table, `normalized_events`, in one shape, whichever source, parser or device
 it came from. The `/api/logs` endpoints are how you read it back. All of them
 need a signed-in, unlocked session.
 
+For SCRUM-53 / SCRUM-54, `GET /api/logs` is the small filter contract over that
+same table. It accepts exact `device_id`, `severity` (`DEBUG`, `INFO`, `WARN`,
+`ERROR`), and source-defined `category`, plus UTC `start` (inclusive), `end`
+(exclusive), `limit` (default 100, maximum 500), and `offset` (default 0).
+Filters combine with AND. It returns `{items, total, limit, offset}`; `total`
+counts every match before pagination. The UI can request `limit=100` and
+increase `offset` for lazy loading. Axone's integer `eventCategory` is an
+acquisition option, **not** the normalized `category` string used here.
+For a changing collection, prefer the cursor-based `/api/logs/events` endpoint
+below: offset pages can shift if new rows arrive between requests.
+
 ```
 GET /api/logs/events                        search everything, newest first
 GET /api/logs/facets                        counts per source / severity / category / device

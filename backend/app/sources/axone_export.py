@@ -117,6 +117,7 @@ class AxoneLogExportSource(LogSource):
                     settings.axone_base_url,
                     timeout=settings.axone_timeout_seconds,
                     tz=settings.axone_timezone,
+                    max_bytes=settings.default_max_output_mb * 1024 * 1024,
                 )
         return self._client
 

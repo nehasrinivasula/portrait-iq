@@ -32,10 +32,12 @@ CHUNK = 1024 * 1024
 
 class AxoneLogExportClient:
     def __init__(self, base_url: str, *, timeout: float = 60, tz: str = "UTC",
-                 transport: httpx.BaseTransport | None = None):
+                 transport: httpx.BaseTransport | None = None,
+                 max_bytes: int | None = None):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.tz = ZoneInfo(tz)
+        self.max_bytes = max_bytes
         self._http = httpx.Client(base_url=self.base_url, timeout=timeout, transport=transport)
 
     def close(self) -> None:
@@ -140,7 +142,13 @@ class AxoneLogExportClient:
                     resp.read()
                     self._raise_for_status(resp)
                 with tmp.open("wb") as f:
+                    received = 0
                     for chunk in resp.iter_bytes(CHUNK):
+                        received += len(chunk)
+                        if self.max_bytes is not None and received > self.max_bytes:
+                            raise SourceError(
+                                "The log export exceeds the configured size limit. Narrow the time range or scope."
+                            )
                         f.write(chunk)
             tmp.replace(out)
         except httpx.HTTPError as e:

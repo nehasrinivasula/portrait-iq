@@ -114,6 +114,22 @@ def search_events(
     )
 
 
+def search_events_offset(db: Session, f: EventFilter, *, limit: int, offset: int) -> EventPage:
+    """SCRUM-53's offset contract, sharing predicates with cursor search.
+
+    Use a completed/static collection when walking pages: inserts between
+    offset requests can shift rows. The existing cursor API remains available
+    for changing collections.
+    """
+    conds = _conditions(f)
+    rows = list(db.scalars(
+        select(E).where(*conds)
+        .order_by(E.timestamp.desc(), E.id.desc())
+        .limit(limit).offset(offset)
+    ))
+    return EventPage(items=rows, total=count_events(db, f))
+
+
 def iter_events(db: Session, f: EventFilter, *, order: str = "asc", page_size: int = MAX_LIMIT) -> Iterator:
     """Every matching event, page by page, without loading them all at once."""
     cursor = None

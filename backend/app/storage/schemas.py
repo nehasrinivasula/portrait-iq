@@ -26,6 +26,13 @@ class LogPageOut(BaseModel):
     total: Optional[int]             # matching events overall; only on the first page
 
 
+class OffsetLogPageOut(BaseModel):
+    items: list[LogEventOut]
+    total: int
+    limit: int
+    offset: int
+
+
 class FacetValueOut(BaseModel):
     value: Optional[str]             # null = events that have no value for this field
     count: int
