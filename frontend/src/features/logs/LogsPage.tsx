@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import ImportLogs from "./ImportLogs";
 import LogFilters from "./LogFilters";
 import LogTable from "./LogTable";
+import { activeFilters, removeFilter } from "./activeFilters";
 import { emptyFilter, getFacets, type Facets, type LogFilter } from "./logsApi";
 import { defaultTimeFrame, filterRange, type TimeFrameChoice } from "./timeframe";
 
@@ -43,9 +44,12 @@ export default function LogsPage() {
     return () => { live = false; };
   }, [optionScope, reloadKey]);
 
-  const activeCount =
-    (frame.preset !== "any" ? 1 : 0) + filter.sources.length + filter.severities.length +
-    (filter.value.trim() ? 1 : 0) + (filter.q.trim() ? 1 : 0);
+  const active = activeFilters(frame, filter);
+  const onRemove = (id: string) => {
+    const next = removeFilter(id, frame, filter);
+    setFrame(next.frame);
+    setFilter(next.filter);
+  };
   const onClear = () => { setFilter(emptyFilter()); setFrame({ ...defaultTimeFrame(), preset: "any" }); };
   const onTotal = useCallback((n: number | null) => setTotal(n), []);
 
@@ -64,10 +68,10 @@ export default function LogsPage() {
       )}
 
       <LogFilters frame={frame} onFrame={setFrame} filter={filter} onFilter={setFilter}
-        facets={facets} activeCount={activeCount} onClear={onClear} />
+        facets={facets} active={active} onRemove={onRemove} onClear={onClear} />
 
       <div className="logs-body">
-        <LogTable filter={applied} reloadKey={reloadKey} onTotal={onTotal} filtered={activeCount > 0 || !!jobId} />
+        <LogTable filter={applied} reloadKey={reloadKey} onTotal={onTotal} filtered={active.length > 0 || !!jobId} />
       </div>
     </div>
   );

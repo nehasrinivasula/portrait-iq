@@ -3,6 +3,7 @@ import * as Label from "@radix-ui/react-label";
 import * as ToggleGroup from "@radix-ui/react-toggle-group";
 import TimeFramePicker from "./TimeFramePicker";
 import type { TimeFrameChoice } from "./timeframe";
+import type { ActiveFilter } from "./activeFilters";
 import type { Facets, FieldColumn, LogFilter, Severity } from "./logsApi";
 
 const LEVELS: Severity[] = ["ERROR", "WARN", "INFO", "DEBUG"];
@@ -18,13 +19,14 @@ interface Props {
   filter: LogFilter;
   onFilter: (f: LogFilter) => void;
   facets: Facets | null;
-  activeCount: number;
+  active: ActiveFilter[];
+  onRemove: (id: string) => void;
   onClear: () => void;
 }
 
 // Everything that narrows the table lives here, above it, so the controls
 // stay in view while the table scrolls.
-export default function LogFilters({ frame, onFrame, filter, onFilter, facets, activeCount, onClear }: Props) {
+export default function LogFilters({ frame, onFrame, filter, onFilter, facets, active, onRemove, onClear }: Props) {
   const uid = useId();
   const set = (patch: Partial<LogFilter>) => onFilter({ ...filter, ...patch });
   const options =
@@ -74,9 +76,30 @@ export default function LogFilters({ frame, onFrame, filter, onFilter, facets, a
           <input id={`${uid}-q`} type="search" value={filter.q} autoComplete="off" placeholder="Words in the log message"
             onChange={(e) => set({ q: e.target.value })} />
         </div>
-        <button type="button" className="btn ghost" onClick={onClear} disabled={activeCount === 0}>
-          Clear filters{activeCount ? ` (${activeCount})` : ""}
+        <button type="button" className="btn ghost" onClick={onClear} disabled={active.length === 0}>
+          Clear filters{active.length ? ` (${active.length})` : ""}
         </button>
+      </div>
+
+      <div className="active-filters" aria-live="polite">
+        <span className="filter-label">Active filters</span>
+        {active.length === 0 ? (
+          <span className="muted">None, showing all logs.</span>
+        ) : (
+          <>
+            <ul className="chips" aria-label="Active filters">
+              {active.map((a) => (
+                <li key={a.id}>
+                  <button type="button" className="chip remove-chip" onClick={() => onRemove(a.id)}
+                    aria-label={`Remove filter ${a.label}: ${a.value}`}>
+                    {a.label}: {a.value} <span aria-hidden="true">×</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <span className="muted">Logs must match every filter.</span>
+          </>
+        )}
       </div>
     </section>
   );
