@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { IDLE_LABEL, useAuth } from '../../auth/AuthContext';
 import { CHECKS, runChecks, type CheckResult } from './checks';
 import './prerequisites.css';
@@ -16,6 +17,7 @@ const allIds = CHECKS.map((c) => c.id as string);
 
 export default function PrerequisitesPage() {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [results, setResults] = useState<Record<string, CheckResult>>({});
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set(allIds));
@@ -111,6 +113,9 @@ export default function PrerequisitesPage() {
           </button>
           <button className="btn ghost" disabled={busy} onClick={() => setSelected(new Set())}>
             Select none
+          </button>
+          <button className="btn ghost" disabled={busy} onClick={() => navigate('/log-filters')}>
+            Log filters
           </button>
           <button className="btn" disabled={!allPass || busy}>Start run</button>
         </div>

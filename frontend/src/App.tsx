@@ -3,6 +3,7 @@ import { useAuth } from "./auth/AuthContext";
 import IdleWarning from "./auth/IdleWarning";
 import LoginPage from "./features/login/LoginPage";
 import PrerequisitesPage from "./features/prerequisites/PrerequisitesPage";
+import LogFiltersPage from "./features/logs/LogFiltersPage";
 import type { ReactNode } from "react";
 
 function Protected({ children }: { children: ReactNode }) {
@@ -18,6 +19,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/prerequisites" element={<Protected><PrerequisitesPage /></Protected>} />
+      <Route path="/log-filters" element={<Protected><LogFiltersPage /></Protected>} />
       <Route path="*" element={<Navigate to="/prerequisites" replace />} />
     </Routes>
     </>
