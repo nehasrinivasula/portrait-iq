@@ -86,7 +86,9 @@ def _lan_address(ip: str) -> bool:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return False
-    return (addr.version == 4 and not addr.is_loopback and not addr.is_link_local
+    # Not is_global: devices are on the site's private network; a public
+    # address (e.g. 8.8.8.8 the node tries for DNS) is the internet, not a device.
+    return (addr.version == 4 and not addr.is_global and not addr.is_loopback and not addr.is_link_local
             and not addr.is_multicast and not any(addr in n for n in _CLUSTER_NETS))
 
 

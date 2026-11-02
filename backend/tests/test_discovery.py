@@ -41,6 +41,7 @@ Filter:<No Filter>
 192.0.2.10:9160         <-> 192.0.2.3:32007         2 900 bytes       40 20 kB          42 21 kB
 192.0.2.3:32014         <-> 192.0.2.5:10700         3 1000 bytes      90 50 kB          93 51 kB
 100.64.64.244:35983     <-> 100.64.64.236:9174      0 0 bytes        377 67 kB         377 67 kB
+192.0.2.3:33432         <-> 8.8.8.8:53              0 0 bytes          4 300 bytes        4 300 bytes
 ================================================================================
 TCP Conversations
 Filter:<No Filter>
@@ -102,7 +103,7 @@ def test_parse_arp_keeps_only_complete_site_entries():
 
 def test_parse_conversations_keeps_peers_of_the_node():
     peers = parse_conversations(CONV, NODE)
-    assert set(peers) == {"192.0.2.10", "192.0.2.5", "192.0.2.4"}   # pod-to-pod traffic left out
+    assert set(peers) == {"192.0.2.10", "192.0.2.5", "192.0.2.4"}   # pod-to-pod and internet (8.8.8.8) left out
     assert peers["192.0.2.10"].udp == {10535, 9160}
     assert peers["192.0.2.10"].to_node == {"udp 32013", "udp 32007"}
     assert peers["192.0.2.5"].udp == {10700}                          # node listed first
