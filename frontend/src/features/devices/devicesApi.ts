@@ -34,8 +34,11 @@ export const SEARCH_LENGTHS = [
   { s: 60, label: "Thorough (1 min)" },
 ] as const;
 
-export const discover = (durationS: number) =>
-  apiFetch<Discovery>("/api/discover", { method: "POST", body: JSON.stringify({ duration_s: durationS }) });
+/** sweepSubnet: also check every address on the system's subnet (active scanning, opt-in). */
+export const discover = (durationS: number, sweepSubnet = false) =>
+  apiFetch<Discovery>("/api/discover", {
+    method: "POST", body: JSON.stringify({ duration_s: durationS, sweep_subnet: sweepSubnet }),
+  });
 
 export const listDevices = () => apiFetch<Device[]>("/api/devices");
 

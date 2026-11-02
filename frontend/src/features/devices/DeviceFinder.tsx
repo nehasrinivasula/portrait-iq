@@ -16,6 +16,7 @@ export default function DeviceFinder({ selectedIp, onUse }: { selectedIp: string
   const uid = useId();
   const [devices, setDevices] = useState<Device[] | null>(null);
   const [length, setLength] = useState<number>(SEARCH_LENGTHS[0].s);
+  const [sweep, setSweep] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
@@ -28,7 +29,7 @@ export default function DeviceFinder({ selectedIp, onUse }: { selectedIp: string
   async function search() {
     setBusy(true); setError(null); setNotes([]);
     try {
-      const r = await discover(length);
+      const r = await discover(length, sweep);
       setDevices(r.devices);
       setNotes(r.notes);
     } catch (e) {
@@ -63,6 +64,14 @@ export default function DeviceFinder({ selectedIp, onUse }: { selectedIp: string
           {busy ? "Searching…" : "Find devices"}
         </button>
       </div>
+      <label className="sweep-option">
+        <input type="checkbox" checked={sweep} disabled={busy} onChange={(e) => setSweep(e.target.checked)} />
+        <span>
+          Also check every address on the system's network
+          <span className="muted"> Finds devices that are on but quiet. Sends one small packet to each address,
+            so use it only where the site allows network scanning.</span>
+        </span>
+      </label>
       <div className="hint" role="status">
         {busy ? `Watching the system's network for about ${length} seconds…`
           : "Lists the hub, viewers and other devices the system talks to. Only addresses and ports are kept."}

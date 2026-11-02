@@ -17,6 +17,11 @@ Nothing leaves the pod but addresses and ports: tshark summarizes the
 capture inside it, and the capture is deleted with the pod. Packets are
 cut at the header size anyway.
 
+Optional subnet check (sweep_subnet): one small UDP packet to every address
+on the node's own subnet (at most 254) makes the node ARP for each, so a
+device that is on but quiet still shows up. It is active scanning, so it
+is off unless the engineer asks for it.
+
 A later source can add RTI's own participant discovery (rtiddsspy) once
 GE's rtitools image is on the bench; it would replace the port guess with
 the topics each device publishes.
@@ -154,18 +159,50 @@ def classify(ip: str, peer: _Peer | None, mac: str | None) -> Found:
     return found
 
 
-def run_discovery(duration_s: int = DEFAULT_DURATION_S) -> Discovery:
+def parse_route_subnet(route_text: str, node_ip: str) -> ipaddress.IPv4Network | None:
+    """The directly connected network that holds node_ip, from /proc/net/route
+    (hex, little-endian). None if no such route."""
+    node = ipaddress.ip_address(node_ip)
+    best = None
+    for line in route_text.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 8 or _CLUSTER_IFACES.match(parts[0]) or parts[2] != "00000000":
+            continue
+        try:
+            dest = ipaddress.ip_address(bytes(reversed(bytes.fromhex(parts[1]))))
+            mask = ipaddress.ip_address(bytes(reversed(bytes.fromhex(parts[7]))))
+            net = ipaddress.ip_network(f"{dest}/{mask}", strict=False)
+        except ValueError:
+            continue
+        if net.prefixlen and node in net and (best is None or net.prefixlen > best.prefixlen):
+            best = net
+    return best
+
+
+def sweep_targets(net: ipaddress.IPv4Network | None, node_ip: str) -> tuple[list[str], str | None]:
+    """Addresses to check (never more than a /24), and a note if the subnet was cut."""
+    node = ipaddress.ip_address(node_ip)
+    note = None
+    if net is None or net.prefixlen < 24:
+        if net is not None:
+            note = (f"The system's network ({net}) is larger than 254 addresses; only the 254 "
+                    "around the system were checked.")
+        net = ipaddress.ip_network(f"{node_ip}/24", strict=False)
+    return [str(h) for h in net.hosts() if h != node], note
+
+
+def run_discovery(duration_s: int = DEFAULT_DURATION_S, sweep: bool = False) -> Discovery:
     """One discovery pass from a pod on the node. Raises DiscoveryBusy if one
     is already running, PluginError if the pod can't do its work."""
     if not _lock.acquire(blocking=False):
         raise DiscoveryBusy("A device search is already running. Wait for it to finish.")
     try:
-        return _discover(duration_s)
+        return _discover(duration_s, sweep)
     finally:
         _lock.release()
 
 
-def _discover(duration_s: int) -> Discovery:
+def _discover(duration_s: int, sweep: bool) -> Discovery:
     capture = settings.tshark_live_capture_enabled
     runner = k8s.get_pod_runner()
     name = k8s.pod_name("discovery", None)
@@ -180,10 +217,22 @@ def _discover(duration_s: int) -> Discovery:
     )
     try:
         node_ip = runner.wait_running(name, start_s)
-        arp = runner.exec(name, ["cat", "/proc/net/arp"], 30)
-        if arp.exit_code != 0:
-            raise PluginError("could not read the system's ARP table")
-        macs = parse_arp(arp.stdout)
+        macs = _read_arp(runner, name)
+        swept: set[str] = set()
+        if sweep and node_ip:
+            route = runner.exec(name, ["cat", "/proc/net/route"], 30)
+            targets, cut = sweep_targets(parse_route_subnet(route.stdout, node_ip) if route.exit_code == 0 else None,
+                                         node_ip)
+            if cut:
+                notes.append(cut)
+            # bash's /dev/udp: one empty datagram to the discard port. Sending
+            # it makes the node ARP for the address; nothing listens there.
+            script = ("for ip in " + " ".join(targets) +
+                      "; do (echo -n > /dev/udp/$ip/9) 2>/dev/null & done; wait; sleep 3")
+            runner.exec(name, ["bash", "-c", script], 90)
+            after = _read_arp(runner, name)
+            swept = set(after) - set(macs)
+            macs = after
 
         peers: dict[str, _Peer] = {}
         if capture and node_ip:
@@ -208,12 +257,22 @@ def _discover(duration_s: int) -> Discovery:
 
     ips = sorted((set(macs) | set(peers)) - {node_ip}, key=ipaddress.ip_address)
     devices = [classify(ip, peers.get(ip), macs.get(ip)) for ip in ips]
+    for d in devices:
+        if d.ip in swept:
+            d.evidence = [e if e != "in the system's ARP table" else "found by the subnet check" for e in d.evidence]
     if node_ip:
         devices.insert(0, Found(ip=node_ip, kind="server", evidence=["the system this tool runs on"]))
     if not [d for d in devices if d.kind in ("hub", "viewer")] and capture:
         notes.append("No hub or viewer traffic was seen. Devices may be idle or off; try again "
                      "with a longer search, or set roles by hand.")
     return Discovery(node_ip=node_ip, devices=devices, notes=notes, captured=capture and bool(node_ip))
+
+
+def _read_arp(runner, name: str) -> dict[str, str]:
+    arp = runner.exec(name, ["cat", "/proc/net/arp"], 30)
+    if arp.exit_code != 0:
+        raise PluginError("could not read the system's ARP table")
+    return parse_arp(arp.stdout)
 
 
 AUTO_NAMES = {"hub": "Hub", "viewer": "Viewer", "server": "System (MiniEdge)", "unknown": "Device"}

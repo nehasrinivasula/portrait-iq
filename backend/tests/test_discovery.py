@@ -14,7 +14,9 @@ from app.collectors import k8s
 from app.config import settings
 from app.db import Base
 from app.discovery import service as discovery
-from app.discovery.service import classify, parse_arp, parse_conversations, rtps_domain
+from app.discovery.service import (
+    classify, parse_arp, parse_conversations, parse_route_subnet, rtps_domain, sweep_targets,
+)
 from app.models import Device
 from app.orchestrator import routes
 from app.schemas import DeviceUpdate, DiscoverRequest
@@ -59,10 +61,22 @@ def db():
     session.close()
 
 
+# /proc/net/route: destination and mask are hex, little-endian.
+ROUTE = """\
+Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+eth0\t00000000\t010200C0\t0003\t0\t0\t0\t00000000\t0\t0\t0
+eth0\t000200C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0
+cni0\t00004064\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0
+"""
+# A quiet device that only answers once the subnet check asks for it.
+QUIET = "192.0.2.77       0x1         0x2         02:00:00:00:00:77     *        eth0\n"
+
+
 class FakeRunner:
     def __init__(self, node_ip=NODE, arp=ARP, conv=CONV, fail_capture=False):
         self.node_ip, self.arp, self.conv, self.fail_capture = node_ip, arp, conv, fail_capture
         self.created, self.execs, self.deleted = [], [], []
+        self.swept = False
 
     def create(self, **kw):
         self.created.append(kw)
@@ -72,8 +86,13 @@ class FakeRunner:
 
     def exec(self, name, argv, timeout_s):
         self.execs.append(argv)
+        if argv == ["cat", "/proc/net/route"]:
+            return k8s.ExecResult(0, ROUTE, "")
         if argv[0] == "cat":
-            return k8s.ExecResult(0, self.arp, "")
+            return k8s.ExecResult(0, self.arp + (QUIET if self.swept else ""), "")
+        if argv[0] == "bash":
+            self.swept = True
+            return k8s.ExecResult(0, "", "")
         if "-w" in argv:
             return k8s.ExecResult(1 if self.fail_capture else 0, "", "")
         return k8s.ExecResult(0, self.conv, "")
@@ -192,7 +211,7 @@ def test_discover_route_returns_evidence_and_audits(db, runner):
     hub = next(d for d in out.devices if d.kind == "hub")
     assert "RTI domain 12 (source pod)" in hub.evidence
     details = [e.detail for e in db.query(models.AuditLogEntry).filter_by(action="discover")]
-    assert details[0] == "duration_s=20" and "found=4" in details[1]
+    assert details[0] == "duration_s=20 sweep_subnet=False" and "found=4" in details[1]
 
 
 def test_discover_route_errors(db, runner):
@@ -207,3 +226,28 @@ def test_discover_route_errors(db, runner):
     with pytest.raises(HTTPException) as e:
         routes.update_device("nope", DeviceUpdate(), db=db, user=user)
     assert e.value.status_code in (400, 404)
+
+
+def test_route_subnet_and_sweep_targets():
+    assert str(parse_route_subnet(ROUTE, NODE)) == "192.0.2.0/24"     # pod network (cni0) ignored
+    targets, note = sweep_targets(parse_route_subnet(ROUTE, NODE), NODE)
+    assert len(targets) == 253 and NODE not in targets and note is None
+    assert "192.0.2.0" not in targets and "192.0.2.255" not in targets
+    big = parse_route_subnet(ROUTE.replace("00FFFFFF", "0000FFFF"), NODE)   # a /16
+    targets, note = sweep_targets(big, NODE)
+    assert len(targets) == 253 and "only the 254" in note
+    assert sweep_targets(None, NODE)[0][0] == "192.0.2.1"
+
+
+def test_subnet_check_is_opt_in_and_finds_quiet_devices(runner):
+    quiet = discovery.run_discovery(20)
+    assert "192.0.2.77" not in [d.ip for d in quiet.devices]
+    assert not any(a[0] == "bash" for a in runner.execs)            # off unless asked
+
+    result = discovery.run_discovery(20, sweep=True)
+    found = next(d for d in result.devices if d.ip == "192.0.2.77")
+    assert found.kind == "unknown" and found.evidence == ["found by the subnet check"]
+    script = next(a for a in runner.execs if a[0] == "bash")[2]
+    assert "/dev/udp/$ip/9" in script and " 192.0.2.254;" in script and " 192.0.2.3 " not in script
+    hub = next(d for d in result.devices if d.ip == "192.0.2.10")
+    assert "in the system's ARP table" in hub.evidence               # already known, not "found by"

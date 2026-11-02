@@ -155,9 +155,9 @@ def list_devices(db: Session = Depends(get_db), user: User = Depends(get_current
 def discover(req: DiscoverRequest, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """Find the hub, viewers and other devices on the system's network (D-3).
     Takes about duration_s plus pod start-up; one search at a time."""
-    log_action(db, user.id, "discover", detail=f"duration_s={req.duration_s}")
+    log_action(db, user.id, "discover", detail=f"duration_s={req.duration_s} sweep_subnet={req.sweep_subnet}")
     try:
-        result = discovery.run_discovery(req.duration_s)
+        result = discovery.run_discovery(req.duration_s, sweep=req.sweep_subnet)
     except discovery.DiscoveryBusy as e:
         raise HTTPException(409, str(e))
     except PluginError as e:

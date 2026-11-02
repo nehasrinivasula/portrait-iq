@@ -56,6 +56,9 @@ class DiscoverRequest(BaseModel):
     """How long to watch the system's traffic (D-3). Longer catches devices
     that only send now and then."""
     duration_s: int = Field(20, ge=5, le=60)
+    # Also check every address on the system's own subnet (one small packet
+    # each, at most 254). Active scanning: only where the site allows it.
+    sweep_subnet: bool = False
 
 
 class DiscoveredDeviceOut(DeviceOut):
