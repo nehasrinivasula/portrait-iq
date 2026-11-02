@@ -28,7 +28,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 
@@ -52,11 +52,20 @@ class ResourceLimits:
 
 
 @dataclass
+class CheckOutcome:
+    """Safe, UI-facing outcome for one diagnostic check (no raw output)."""
+    label: str
+    status: Literal["pass", "fail"]
+    reason: str | None = None
+
+
+@dataclass
 class CollectorResult:
     tool: str
     artifact_paths: list[str] = field(default_factory=list)   # raw files produced
     summary: str = ""
     warnings: list[str] = field(default_factory=list)
+    checks: list[CheckOutcome] = field(default_factory=list)
 
 
 class Collector(ABC):

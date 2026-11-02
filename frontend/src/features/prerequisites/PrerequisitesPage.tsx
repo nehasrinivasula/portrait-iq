@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { IDLE_LABEL, useAuth } from '../../auth/AuthContext';
 import { CHECKS, runChecks, type CheckResult } from './checks';
 import './prerequisites.css';
@@ -15,12 +16,14 @@ const STATUS_TEXT: Record<ItemState, string> = {
 const allIds = CHECKS.map((c) => c.id as string);
 
 export default function PrerequisitesPage() {
+  const navigate = useNavigate();
   const { user, logout } = useAuth();
   const [results, setResults] = useState<Record<string, CheckResult>>({});
   const [running, setRunning] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set(allIds));
   const [error, setError] = useState<string | null>(null);
   const [showIdleNotice, setShowIdleNotice] = useState(true);
+  const [resultsJobId, setResultsJobId] = useState('');
 
   const busy = running.size > 0;
 
@@ -137,6 +140,16 @@ export default function PrerequisitesPage() {
             );
           })}
         </ul>
+        <form className="job-lookup" onSubmit={(event) => {
+          event.preventDefault();
+          if (resultsJobId.trim()) navigate(`/jobs/${encodeURIComponent(resultsJobId.trim())}/results`);
+        }}>
+          <label htmlFor="results-job-id">View Netshoot results for a job</label>
+          <div>
+            <input id="results-job-id" value={resultsJobId} onChange={(event) => setResultsJobId(event.target.value)} placeholder="Job ID" />
+            <button className="btn" type="submit" disabled={!resultsJobId.trim()}>View results</button>
+          </div>
+        </form>
       </main>
     </>
   );

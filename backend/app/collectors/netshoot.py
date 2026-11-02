@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 
 from app.collectors import k8s
-from app.collectors.base import Collector, CollectorResult, PluginConfigError, PluginError
+from app.collectors.base import CheckOutcome, Collector, CollectorResult, PluginConfigError, PluginError
 from app.config import settings
 from app.secrets_loader import redact
 
@@ -136,7 +136,7 @@ class NetshootCollector(Collector):
         )
         self._runner.wait_running(self._pod, start_s)
 
-        records, warnings = [], []
+        records, warnings, outcomes = [], [], []
         for check in checks:
             res = self._runner.exec(self._pod, check.argv, self.CHECK_TIMEOUT_S)
             stdout, stderr = redact(res.stdout), redact(res.stderr)
@@ -146,6 +146,11 @@ class NetshootCollector(Collector):
                 "exit_code": res.exit_code, "stdout": stdout, "stderr": stderr,
                 "truncated": res.truncated,
             })
+            outcomes.append(CheckOutcome(
+                label=check.label,
+                status="pass" if ok else "fail",
+                reason=None if ok else _safe_reason(res.exit_code, stdout, stderr),
+            ))
             if not ok:
                 warnings.append(f"{check.label} failed: {_why(res.exit_code, stdout, stderr)}")
 
@@ -157,6 +162,7 @@ class NetshootCollector(Collector):
             artifact_paths=[str(out_dir / "netshoot.txt"), str(out_dir / "netshoot.json")],
             summary=f"{passed} of {len(records)} network checks passed against {target_ip}",
             warnings=warnings,
+            checks=outcomes,
         )
 
     def cleanup(self) -> None:
@@ -172,6 +178,22 @@ def _why(exit_code, stdout, stderr) -> str:
         return "no answer"     # dig +short with an empty result
     lines = (stderr or stdout).strip().splitlines()
     return (lines[-1][:200] if lines else f"exit code {exit_code}") or f"exit code {exit_code}"
+
+
+def _safe_reason(exit_code: int | None, stdout: str, stderr: str) -> str:
+    """Short failure category for the UI; never return raw command output."""
+    if exit_code is None:
+        return "Timed out or connection interrupted."
+    if exit_code == 0:
+        return "No answer returned."
+    detail = (stderr or stdout).lower()
+    if "refused" in detail:
+        return "Connection refused."
+    if "unreachable" in detail:
+        return "Host or network unreachable."
+    if "timed out" in detail or "timeout" in detail:
+        return "Timed out."
+    return f"Check exited with code {exit_code}."
 
 
 def _report(target_ip, records) -> str:
