@@ -6,6 +6,15 @@ from typing import Literal, Optional
 from pydantic import BaseModel
 
 
+class SensitiveFlagOut(BaseModel):
+    """A span of a field that looks like PHI/PII. Never contains the text itself."""
+    field: Literal["message", "device_id", "process", "category"]
+    category: str                    # e.g. email, ssn, person_name (see GET /api/logs/privacy/categories)
+    confidence: Literal["high", "medium", "low"]
+    start: Optional[int]             # character range in the original field; null when the response is masked
+    end: Optional[int]
+
+
 class LogEventOut(BaseModel):
     id: int
     timestamp: datetime              # always UTC
@@ -18,6 +27,9 @@ class LogEventOut(BaseModel):
     source_file: Optional[str]
     source_line: Optional[int]
     job_id: Optional[str]
+    privacy_scanned: bool = False    # false = not yet judged by the current scanner; treat as unchecked
+    sensitive: list[SensitiveFlagOut] = []   # empty + privacy_scanned = nothing found
+    masked: bool = False             # true = flagged spans were replaced with [REDACTED:<category>]
 
 
 class LogPageOut(BaseModel):
@@ -85,3 +97,40 @@ class CollectionSummaryOut(BaseModel):
     by_severity: list[FacetValueOut]
     files: list[FileSummaryOut]
     issues: list[IssueOut]
+
+
+class FlagCountOut(BaseModel):
+    value: str
+    count: int
+
+
+class PrivacyFileOut(BaseModel):
+    source_file: Optional[str]
+    events: int
+    flagged_events: int
+    unscanned_events: int
+
+
+class PrivacyReportOut(BaseModel):
+    """What the PHI/PII scan found in one collection. Counts only, no log text."""
+    job_id: str
+    scanner_version: int
+    events: int
+    scanned_events: int
+    unscanned_events: int            # not judged by the current scanner version
+    all_scanned: bool                # true only when unscanned_events is 0
+    flagged_events: int
+    by_category: list[FlagCountOut]
+    by_confidence: list[FlagCountOut]
+    by_field: list[FlagCountOut]
+    files: list[PrivacyFileOut]
+    limits: list[str]                # what the scan cannot find, to show next to the numbers
+
+
+class PrivacyCategoryOut(BaseModel):
+    category: str
+    description: str
+
+
+class RescanOut(BaseModel):
+    scanned: int

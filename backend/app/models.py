@@ -67,6 +67,12 @@ class NormalizedEvent(Base):
     severity = Column(String, nullable=False)               # INFO | WARN | ERROR
     process = Column(String, nullable=True)
     message = Column(Text, nullable=False)
+    # PHI/PII flagging (app/privacy). privacy_scan_version is the scanner
+    # version that judged this event, NULL if it never was. sensitive_flags is
+    # a JSON list of [field, category, confidence, start, end] and is NULL when
+    # the scan found nothing. Only positions are stored, never the matched text.
+    privacy_scan_version = Column(Integer, nullable=True)
+    sensitive_flags = Column(Text, nullable=True)
 
     job = relationship("Job", back_populates="events")
 

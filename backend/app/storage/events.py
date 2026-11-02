@@ -62,6 +62,14 @@ def _conditions(f: EventFilter) -> list:
         conds.append(E.source_file == f.source_file)
     if f.text is not None:
         conds.append(E.message.ilike(_like_pattern(f.text), escape="\\"))
+    if f.flagged is True:
+        conds.append(E.sensitive_flags.is_not(None))
+    elif f.flagged is False:
+        conds.append(E.sensitive_flags.is_(None))
+        conds.append(E.privacy_scan_version.is_not(None))   # "clean" means scanned and nothing found
+    if f.flag_categories:
+        # The stored JSON holds only field names, kinds and numbers, so a quoted kind matches only a kind.
+        conds.append(or_(*[E.sensitive_flags.like(f'%"{k}"%') for k in f.flag_categories]))
     return conds
 
 
