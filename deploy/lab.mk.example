@@ -38,5 +38,11 @@ NODE_PORT            = 30080
 # 7, 12 and 13. Default: false.
 # TSHARK_LIVE_CAPTURE  = true
 
+# UMF RTI: true to turn on, false to turn off, then make deploy. Needs GE's
+# rtitools image imported on the node (k3s ctr images import --local <tar>);
+# RTI_IMAGE is the name it was saved under. Default: false.
+# RTI                  = true
+# RTI_IMAGE            = axone-umf-rtitools:temp
+
 # Absolute path to a folder outside the repo, e.g. $(HOME)/portrait-iq-secrets
 SECRETS_DIR          =

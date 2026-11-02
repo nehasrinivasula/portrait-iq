@@ -78,6 +78,12 @@ spec:
             # = true in deploy/lab.mk, for a bench whose owners approved it.
             - name: TSHARK_LIVE_CAPTURE_ENABLED
               value: "__TSHARK_LIVE_CAPTURE__"
+            # UMF RTI (SCRUM-39): off unless RTI = true in deploy/lab.mk, once
+            # GE's rtitools image is imported and the mentors approved it.
+            - name: RTI_ENABLED
+              value: "__RTI__"
+            - name: RTI_IMAGE
+              value: "__RTI_IMAGE__"
           # The pod shares the MiniEdge with the Portrait software and must
           # not starve it. Raise only after watching real usage.
           resources:
