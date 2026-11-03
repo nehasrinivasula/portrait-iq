@@ -27,7 +27,12 @@ from app.ingestion.validate_samples import _collect_files
 from app.privacy.scanner import SCANNER_VERSION, scan_event_fields
 
 
-def scan_file(path: Path) -> Optional[tuple[int, int, Counter, Counter]]:
+def _shape(text: str) -> str:
+    """Hide the characters, keep the form: digits -> 9, letters -> a / A."""
+    return "".join("9" if c.isdigit() else ("a" if c.islower() else ("A" if c.isupper() else c)) for c in text)
+
+
+def scan_file(path: Path, examples: Optional[Counter] = None) -> Optional[tuple[int, int, Counter, Counter]]:
     parser = detect_parser(path)
     if parser is None:
         return None
@@ -42,6 +47,9 @@ def scan_file(path: Path) -> Optional[tuple[int, int, Counter, Counter]]:
             for f in flags:
                 kinds[f.category] += 1
                 confidences[f.confidence] += 1
+                if examples is not None and f.field == "message":
+                    before = e.message[max(0, f.start - 24):f.start]
+                    examples[(f.category, f"{_shape(before)}<{_shape(e.message[f.start:f.end])}>")] += 1
     return events, flagged, kinds, confidences
 
 
@@ -49,12 +57,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Count PHI/PII flags in sample log files (counts only, no text).")
     ap.add_argument("inputs", nargs="+", type=Path, help="files, folders or .zip archives")
     ap.add_argument("-v", "--verbose", action="store_true", help="one line per file")
+    ap.add_argument("--examples", type=int, metavar="N", default=0,
+                    help="show the N most common SHAPES per kind: 24 characters before each match and the match "
+                         "itself with every digit shown as 9 and letters as a/A, so no real value appears")
     args = ap.parse_args(argv)
 
     problems = 0
     total_events = total_flagged = 0
     kinds: Counter = Counter()
     confidences: Counter = Counter()
+    examples: Optional[Counter] = Counter() if args.examples else None
     start = time.perf_counter()
     with tempfile.TemporaryDirectory() as tmp:
         files = _collect_files(args.inputs, Path(tmp))
@@ -63,7 +75,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1
         for path in files:
             try:
-                result = scan_file(path)
+                result = scan_file(path, examples)
             except (UnrecognizedLogFormat, NotImplementedError, OSError) as exc:
                 result, problems = None, problems + 1
                 print(f"[FAIL] {path.name}: {type(exc).__name__}")
@@ -87,7 +99,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"  {kind}: {n:,}")
     if confidences:
         print(f"  by confidence: {dict(confidences)}")
-    print("Counts only: no log text was printed.")
+    if examples:
+        for kind in kinds:
+            print(f"\n  shapes for {kind}:")
+            for (k, shape), n in [x for x in examples.most_common() if x[0][0] == kind][:args.examples]:
+                print(f"    {n:>8,}  {shape}")
+    print("Counts and shapes only: no log text or values were printed.")
     return 1 if problems else 0
 
 

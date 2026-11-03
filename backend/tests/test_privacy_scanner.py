@@ -84,6 +84,14 @@ def test_card_numbers_need_a_valid_luhn_checksum():
     assert all(c != "credit_card" for c, _ in found("counter 1234567890123456"))
 
 
+def test_card_numbers_must_look_like_a_real_card_network():
+    # Both pass the Luhn check; only the first starts and is sized like a card.
+    assert ("credit_card", "4111111111111111") in found("card 4111111111111111")
+    assert all(c != "credit_card" for c, _ in found("id 9111111111111118"))
+    assert all(c != "credit_card" for c, _ in found("value 4111111111111111.5 ms"))
+    assert ("credit_card", "378282246310005") in found("amex 378282246310005")
+
+
 def test_bare_digit_runs_and_timestamps_are_not_phone_numbers():
     for text in ["counter 6085550142", "2024-06-02T02:00:00.393+0000", "pid 12345 tid 6789"]:
         assert all(c != "phone" for c, _ in found(text)), text

@@ -98,7 +98,7 @@ _EMAIL = re.compile(r"(?<![\w.+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9
 # Separators are required between the groups: a bare 10-digit run is far more
 # likely to be a counter or an id than a phone number.
 _PHONE = re.compile(r"(?<![\w.-])(?:\+?1[ .-])?(?:\(\d{3}\)\s?|\d{3}[ .-])\d{3}[ .-]\d{4}(?![\w-])")
-_CARD = re.compile(r"(?<![\w-])(?:\d[ -]?){12,18}\d(?![\w-])")
+_CARD = re.compile(r"(?<![\w.-])(?:\d[ -]?){12,18}\d(?![\w-])")
 _STREET = re.compile(
     r"\b\d{1,5}\s+(?:[A-Z][a-z]+\.?\s){1,3}"
     r"(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Way|Place|Pl)\b\.?"
@@ -155,11 +155,30 @@ def _hits_phone(text: str) -> list[_Hit]:
     return [_Hit("phone", MEDIUM, m.start(), m.end()) for m in _PHONE.finditer(text)]
 
 
+def _card_issuer_ok(d: str) -> bool:
+    """Digits start like a real card network and have its length. Luhn alone
+    passes about 1 in 10 random numbers, which is far too many in logs full of counters."""
+    n = len(d)
+    if d[0] == "4":
+        return n in (16, 19)                                    # Visa
+    if d[:2] in ("34", "37"):
+        return n == 15                                          # American Express
+    if 51 <= int(d[:2]) <= 55 or 2221 <= int(d[:4]) <= 2720:
+        return n == 16                                          # Mastercard
+    if d[:4] == "6011" or d[:2] == "65" or 644 <= int(d[:3]) <= 649:
+        return n in (16, 19)                                    # Discover
+    if 3528 <= int(d[:4]) <= 3589:
+        return n in (16, 19)                                    # JCB
+    return False
+
+
 def _hits_card(text: str) -> list[_Hit]:
     out = []
     for m in _CARD.finditer(text):
         digits = re.sub(r"[ -]", "", m.group())
-        if 13 <= len(digits) <= 19 and digits[0] in "3456" and _luhn_ok(digits):
+        if m.end() < len(text) and text[m.end()] == "." and text[m.end() + 1:m.end() + 2].isdigit():
+            continue                                            # the start of a decimal number
+        if len(digits) >= 15 and _card_issuer_ok(digits) and _luhn_ok(digits):
             out.append(_Hit("credit_card", MEDIUM, m.start(), m.end()))
     return out
 
