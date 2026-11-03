@@ -19,6 +19,26 @@ came from.
 | `process`     | `str \| None`   | Emitting process, when the source has one. |
 | `source_file` | `str \| None`   | Raw file the event came from. |
 | `source_line` | `int \| None`   | Line in that file (first line of the record for multi-line CSV rows). |
+| `component`   | `str \| None`   | Class (or source file) that logged the line, from `sourceInfo`: `com.ge...ConfigMessageProcessor:478` -> `ConfigMessageProcessor`, `DdsLogProcess.cpp:120` -> `DdsLogProcess`. |
+| `message_kind`| `str \| None`   | `request`, `reply`, `response`, `publish` or `timeout` when the line records an exchange; `None` for ordinary lines. |
+| `command`     | `str \| None`   | What was asked for or published, e.g. `ChangeConfigCmd`, `cmd://cmd/util/ping`. |
+| `correlation_id` | `str \| None` | Id that ties a request to its reply (`uuidRequest`, `reqId`, `responseuuid`, stream id), lowercase. |
+| `status`      | `str \| None`   | Outcome a reply reports, normalised: `Ea52_ack` -> `ack`, `Ea52_nak_alreadyExists` -> `nak_alreadyExists`. |
+
+### Request / reply / publish messages
+
+`ingestion/messages.py` fills the last five fields from the free-text
+`description` of non-PerfData rows. The class path comes from **`sourceInfo`**;
+`processInfo` only holds `name[pid:thread]` and stays the `process`. A rule
+table covers every exchange shape in the 35-file sample (config service
+request/reply/publish, persistence queries, ping responses and timeouts, HL7
+health checks, resource downloads, trend-data publishes, site-config and OS
+update responses); unseen shapes still get a `message_kind` from whole-word
+keywords. `category` is unchanged (`General` stays `General`).
+
+Lines can carry patient identifiers (e.g. "... for patient <id>"): they are
+never copied into these fields. `messages.PAIRING` says how each component's
+requests pair with replies, used by `GET /api/logs/sequences`.
 
 In the database (`normalized_events`) timestamps are stored as **naive UTC**
 because SQLite drops timezone info. `ingestion/pipeline.py` converts before

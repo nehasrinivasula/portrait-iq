@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
-from app.ingestion.schema import SEVERITIES
+from app.ingestion.schema import MESSAGE_KINDS, SEVERITIES
 
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 1000
@@ -57,6 +57,10 @@ class EventFilter:
     process: Optional[str] = None
     source_file: Optional[str] = None
     text: Optional[str] = None                # case-insensitive substring of the message
+    # Parsed exchange fields (ingestion/messages.py)
+    message_kinds: tuple[str, ...] = ()       # request | reply | response | publish | timeout
+    components: tuple[str, ...] = ()          # e.g. ConfigMessageProcessor
+    correlation_id: Optional[str] = None      # one whole exchange: request + reply
 
     @property
     def effective_severities(self) -> Optional[tuple[str, ...]]:
@@ -77,6 +81,8 @@ class EventFilter:
             "device": self.devices, "source": self.sources, "category": self.categories,
             "severity": self.severities, "min_severity": self.min_severity,
             "process": self.process, "source_file": self.source_file, "text": self.text,
+            "message_kind": self.message_kinds, "component": self.components,
+            "correlation_id": self.correlation_id,
         }
         return [name for name, value in names.items() if value]
 
@@ -94,6 +100,9 @@ def build_filter(
     process: Optional[str] = None,
     source_file: Optional[str] = None,
     text: Optional[str] = None,
+    message_kinds: Optional[Iterable[str]] = None,
+    components: Optional[Iterable[str]] = None,
+    correlation_id: Optional[str] = None,
 ) -> EventFilter:
     """Validate and normalise raw search parameters. Raises FilterError."""
     since = to_naive_utc(since) if since else None
@@ -113,6 +122,11 @@ def build_filter(
         if min_level not in _RANK:
             raise FilterError(f"Unknown severity '{min_severity}'. Use one of: {', '.join(SEVERITIES)}.")
 
+    kinds = tuple(k.lower() for k in _clean(message_kinds))
+    for k in kinds:
+        if k not in MESSAGE_KINDS:
+            raise FilterError(f"Unknown message kind '{k}'. Use one of: {', '.join(MESSAGE_KINDS)}.")
+
     text = (text or "").strip() or None
     if text and len(text) > MAX_TEXT_LENGTH:
         raise FilterError(f"Search text is limited to {MAX_TEXT_LENGTH} characters.")
@@ -129,6 +143,9 @@ def build_filter(
         process=(process or "").strip() or None,
         source_file=(source_file or "").strip() or None,
         text=text,
+        message_kinds=kinds,
+        components=_clean(components),
+        correlation_id=(correlation_id or "").strip().lower() or None,
     )
 
 
