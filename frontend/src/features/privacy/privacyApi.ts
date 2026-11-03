@@ -80,8 +80,67 @@ export function privacyHeadline(r: PrivacyReport): string {
   return `Scanned: ${plural(r.flagged_events, "event", "events")} may contain PHI/PII.`;
 }
 
+/** Key of the combined report shown when no single run is selected. */
+export const ALL_LOGS = "all";
+
+export interface PrivacyView {
+  key: string;            // the run id, or ALL_LOGS: lets the panel ignore a report for something it no longer shows
+  report: PrivacyReport;
+  toScan: string[];       // collections that still hold unscanned events
+}
+
+function mergeCounts(lists: FlagCount[][]): FlagCount[] {
+  const total = new Map<string, number>();
+  lists.flat().forEach((c) => total.set(c.value, (total.get(c.value) ?? 0) + c.count));
+  return [...total].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+}
+
+/** One report for several collections: counts add up, and it is only "all scanned" if every part is. */
+export function combineReports(reports: PrivacyReport[], key: string): PrivacyReport {
+  const sum = (pick: (r: PrivacyReport) => number) => reports.reduce((n, r) => n + pick(r), 0);
+  const unscanned = sum((r) => r.unscanned_events);
+  const events = sum((r) => r.events);
+  return {
+    job_id: key,
+    scanner_version: reports[0]?.scanner_version ?? 0,
+    events,
+    scanned_events: events - unscanned,
+    unscanned_events: unscanned,
+    all_scanned: unscanned === 0,
+    flagged_events: sum((r) => r.flagged_events),
+    network_identifier_events: sum((r) => r.network_identifier_events),
+    network_by_category: mergeCounts(reports.map((r) => r.network_by_category)),
+    by_category: mergeCounts(reports.map((r) => r.by_category)),
+    by_confidence: mergeCounts(reports.map((r) => r.by_confidence)),
+    by_field: mergeCounts(reports.map((r) => r.by_field)),
+    files: reports.flatMap((r) => r.files),
+    limits: reports[0]?.limits ?? [],
+  };
+}
+
 export const getPrivacyReport = (jobId: string) =>
   apiFetch<PrivacyReport>(`/api/logs/collections/${encodeURIComponent(jobId)}/privacy`);
 
 export const scanCollection = (jobId: string) =>
   apiFetch<{ scanned: number }>(`/api/logs/collections/${encodeURIComponent(jobId)}/privacy/scan`, { method: "POST" });
+
+interface CollectionInfo { job_id: string; events: number }
+const listCollections = () => apiFetch<CollectionInfo[]>("/api/logs/collections?limit=200");
+
+/** The report for what the table shows: one run, or every collection (including logs not tied to a run). */
+export async function loadPrivacy(jobId: string | null): Promise<PrivacyView> {
+  if (jobId) {
+    const report = await getPrivacyReport(jobId);
+    return { key: jobId, report, toScan: report.unscanned_events > 0 ? [jobId] : [] };
+  }
+  const reports = await Promise.all((await listCollections()).filter((c) => c.events > 0).map((c) => getPrivacyReport(c.job_id)));
+  return {
+    key: ALL_LOGS,
+    report: combineReports(reports, ALL_LOGS),
+    toScan: reports.filter((r) => r.unscanned_events > 0).map((r) => r.job_id),
+  };
+}
+
+export async function scanAll(ids: string[]): Promise<void> {
+  for (const id of ids) await scanCollection(id);
+}

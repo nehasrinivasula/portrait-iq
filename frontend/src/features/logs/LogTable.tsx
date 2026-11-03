@@ -17,7 +17,7 @@ function Message({ text }: { text: string }) {
 
 /** What the scan found in one event: kinds only, never the matched text. */
 function Flags({ e }: { e: LogEvent }) {
-  if (e.privacy_scanned === false) return <span className="muted" title="Not scanned yet">not scanned</span>;
+  if (!e.privacy_scanned) return <span className="muted" title="Not scanned yet">not scanned</span>;
   const flags = e.sensitive ?? [];
   if (flags.length === 0) return <span className="muted">—</span>;
   const kinds = [...new Set(flags.map((f) => f.category))];
@@ -41,10 +41,13 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered, privacy
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [more, setMore] = useState(false);
   const latest = useRef(0);
+  const shownMask = useRef(!!privacy?.mask);
   const scroller = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async (next: string | null) => {
     const id = ++latest.current;
+    // Rows loaded with the other mask setting must not stay on screen if this load fails.
+    if (!next && shownMask.current !== !!privacy?.mask) { shownMask.current = !!privacy?.mask; setRows([]); setCursor(null); }
     next ? setMore(true) : setState("loading");
     try {
       const page = await searchEvents(filter, next, 100, privacy);

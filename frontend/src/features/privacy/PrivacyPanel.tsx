@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  categoryLabel, getPrivacyReport, privacyHeadline, scanCollection, UNASSIGNED,
-  type PrivacyOptions, type PrivacyReport,
+  ALL_LOGS, categoryLabel, loadPrivacy, privacyHeadline, scanAll,
+  type PrivacyOptions, type PrivacyView,
 } from "./privacyApi";
 import "./privacy.css";
 
 interface Props {
-  jobId: string | null;            // the run being viewed, or null for logs not tied to a run
+  jobId: string | null;            // the run being viewed, or null for all logs
   options: PrivacyOptions;
   onOptions: (o: PrivacyOptions) => void;
   reloadKey: number;
@@ -15,90 +15,106 @@ interface Props {
 
 /** PHI/PII summary above the log table: was everything scanned, what was flagged, plus the two switches. */
 export default function PrivacyPanel({ jobId, options, onOptions, reloadKey, onScanned }: Props) {
-  const collection = jobId ?? UNASSIGNED;
-  const [report, setReport] = useState<PrivacyReport | null>(null);
+  const key = jobId ?? ALL_LOGS;
+  const [view, setView] = useState<PrivacyView | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
-  const [scanning, setScanning] = useState(false);
+  const [scan, setScan] = useState<"idle" | "running" | "error">("idle");
   const [localKey, setLocalKey] = useState(0);
 
   useEffect(() => {
     let live = true;
     setState("loading");
-    getPrivacyReport(collection)
-      .then((r) => { if (live) { setReport(r); setState("ready"); } })
+    loadPrivacy(jobId)
+      .then((v) => { if (live) { setView(v); setState("ready"); } })
       .catch(() => { if (live) setState("error"); });
     return () => { live = false; };
-  }, [collection, reloadKey, localKey]);
+  }, [jobId, reloadKey, localKey]);
 
-  const scan = useCallback(async () => {
-    setScanning(true);
+  // A report for a run that is no longer shown is never displayed.
+  const current = view && view.key === key ? view : null;
+  const report = current?.report ?? null;
+  const shown = state === "ready" ? report : null;   // only a report that loaded without error is shown in detail
+  const ready = shown !== null;
+
+  const runScan = useCallback(async () => {
+    if (!current) return;
+    setScan("running");
     try {
-      await scanCollection(collection);
+      await scanAll(current.toScan);
+      setScan("idle");
       setLocalKey((k) => k + 1);
       onScanned();
     } catch {
-      setState("error");
-    } finally {
-      setScanning(false);
+      setScan("error");
     }
-  }, [collection, onScanned]);
+  }, [current, onScanned]);
 
-  const kind = !report ? "info" : !report.all_scanned ? "warn" : report.flagged_events > 0 ? "warn" : "ok";
+  const kind = state === "error" ? "error" : !report ? "info" : !report.all_scanned || report.flagged_events > 0 ? "warn" : "ok";
 
   return (
     <section className="privacy" aria-label="PHI and PII scan">
-      <div className={`alert ${state === "error" ? "error" : kind}`} role={state === "error" ? "alert" : "status"}>
-        <strong>PHI / PII scan{jobId ? "" : " (logs not tied to a run)"}</strong>
-        {state === "loading" && !report && "Checking…"}
-        {state === "error" && "Couldn't read the scan report. Check the connection to the server."}
+      <div className={`alert ${kind}`} role={state === "error" ? "alert" : "status"}>
+        <strong>PHI / PII scan{jobId ? "" : " (all logs)"}</strong>
+        {state === "error" && (
+          <>Couldn't read the scan report, so flagging and masking are unavailable.{" "}
+            <button type="button" className="btn ghost" onClick={() => setLocalKey((k) => k + 1)}>Try again</button></>
+        )}
+        {state !== "error" && !report && "Checking…"}
         {state !== "error" && report && privacyHeadline(report)}
       </div>
 
-      {report && state !== "error" && report.events > 0 && (
+      {shown && shown.events > 0 && (
         <>
           <ul className="privacy-stats" aria-label="Scan counts">
-            <li><strong>{report.events.toLocaleString()}</strong> events</li>
-            <li><strong>{report.flagged_events.toLocaleString()}</strong> flagged</li>
+            <li><strong>{shown.events.toLocaleString()}</strong> events</li>
+            <li><strong>{shown.flagged_events.toLocaleString()}</strong> flagged</li>
             <li title="IP and MAC addresses identify equipment. They are listed apart and are not counted as flagged.">
-              <strong>{report.network_identifier_events.toLocaleString()}</strong> with IP / MAC addresses
+              <strong>{shown.network_identifier_events.toLocaleString()}</strong> with IP / MAC addresses
             </li>
           </ul>
 
-          {report.by_category.length > 0 && (
+          {shown.by_category.length > 0 && (
             <ul className="privacy-cats" aria-label="What was flagged">
-              {report.by_category.map((c) => (
+              {shown.by_category.map((c) => (
                 <li key={c.value} className="privacy-cat">{categoryLabel(c.value)} <span className="muted">{c.count}</span></li>
               ))}
             </ul>
           )}
 
-          {!report.all_scanned && (
+          {!shown.all_scanned && (
             <p>
-              <button type="button" className="btn" disabled={scanning} onClick={scan}>
-                {scanning ? "Scanning…" : `Scan ${report.unscanned_events.toLocaleString()} events now`}
+              <button type="button" className="btn" disabled={scan === "running"} onClick={runScan}>
+                {scan === "running" ? "Scanning…" : `Scan ${shown.unscanned_events.toLocaleString()} events now`}
               </button>
             </p>
+          )}
+          {scan === "error" && (
+            <div className="alert error" role="alert">
+              <strong>The scan didn't finish</strong>
+              Some events are still unscanned.{" "}
+              <button type="button" className="btn ghost" onClick={runScan}>Try again</button>
+            </div>
           )}
         </>
       )}
 
       <div className="privacy-switches">
         <label>
-          <input type="checkbox" checked={options.flaggedOnly}
+          <input type="checkbox" checked={options.flaggedOnly} disabled={!ready}
             onChange={(e) => onOptions({ ...options, flaggedOnly: e.target.checked })} />
           Show flagged events only
         </label>
         <label>
-          <input type="checkbox" checked={options.mask}
+          <input type="checkbox" checked={options.mask} disabled={!ready}
             onChange={(e) => onOptions({ ...options, mask: e.target.checked })} />
           Hide flagged text (mask)
         </label>
       </div>
 
-      {report && report.limits.length > 0 && (
+      {shown && shown.limits.length > 0 && (
         <details className="privacy-limits">
           <summary>What this scan can and can't find</summary>
-          <ul>{report.limits.map((l) => <li key={l}>{l}</li>)}</ul>
+          <ul>{shown.limits.map((l) => <li key={l}>{l}</li>)}</ul>
         </details>
       )}
     </section>

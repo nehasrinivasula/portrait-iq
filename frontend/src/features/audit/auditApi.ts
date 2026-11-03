@@ -26,21 +26,27 @@ export interface AuditFilter {
   action: string;
   sessionId: string;
   range: AuditRange;
+  since: string | null;     // start time worked out once, when the filter is applied (see withRange)
 }
 
-export const emptyAuditFilter = (): AuditFilter => ({ actor: "", action: "", sessionId: "", range: "any" });
+export const emptyAuditFilter = (): AuditFilter => ({ actor: "", action: "", sessionId: "", range: "any", since: null });
 export const PAGE_SIZE = 50;
 
 const RANGE_MS: Record<AuditRange, number | null> = { any: null, hour: 3_600_000, day: 86_400_000 };
 
-/** Query string for a filter. Empty fields are left out; `now` is a parameter so tests are exact. */
-export function auditParams(f: AuditFilter, limit: number, offset: number, now: Date = new Date()): URLSearchParams {
+/** Fix "last hour" / "last 24 hours" to an exact start time. Done once on Apply so paging doesn't shift it. */
+export function withRange(f: AuditFilter, now: Date = new Date()): AuditFilter {
+  const span = RANGE_MS[f.range];
+  return { ...f, since: span === null ? null : new Date(now.getTime() - span).toISOString() };
+}
+
+/** Query string for a filter. Empty fields are left out. */
+export function auditParams(f: AuditFilter, limit: number, offset: number): URLSearchParams {
   const p = new URLSearchParams();
   if (f.actor.trim()) p.set("actor", f.actor.trim());
   if (f.action.trim()) p.set("action", f.action.trim());
   if (f.sessionId.trim()) p.set("session_id", f.sessionId.trim());
-  const span = RANGE_MS[f.range];
-  if (span !== null) p.set("since", new Date(now.getTime() - span).toISOString());
+  if (f.since) p.set("since", f.since);
   p.set("limit", String(limit));
   p.set("offset", String(offset));
   return p;

@@ -6,8 +6,3 @@ export interface CheckOutcome {
   status: "pass" | "fail";
   reason: string | null;
 }
-
-export function checkSummary(checks: CheckOutcome[]): string {
-  const passed = checks.filter((c) => c.status === "pass").length;
-  return `${passed} of ${checks.length} checks passed`;
-}

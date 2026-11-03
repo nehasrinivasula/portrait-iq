@@ -1,6 +1,5 @@
 import { Link } from "react-router-dom";
 import { isFinished } from "./api";
-import { checkSummary } from "./checks";
 import "./checks.css";
 import { useJobs } from "../jobs/JobsContext";
 
@@ -64,7 +63,6 @@ export default function JobPanel() {
                   <p>{r.summary}</p>
                   {r.checks && r.checks.length > 0 && (
                     <>
-                      <p className="muted">{checkSummary(r.checks)}</p>
                       <ul className="checks" aria-label={`${r.tool} checks`}>
                         {r.checks.map((c, i) => (
                           <li key={`${i}-${c.label}`} className={`check ${c.status}`}>
@@ -76,7 +74,8 @@ export default function JobPanel() {
                       </ul>
                     </>
                   )}
-                  {r.warnings.map((w) => <div key={w} className="alert warn" role="status">{w}</div>)}
+                  {/* With per-check results the warnings only repeat them, and carry the tool's own output. */}
+                  {!(r.checks && r.checks.length > 0) && r.warnings.map((w) => <div key={w} className="alert warn" role="status">{w}</div>)}
                 </>
               )}
             </li>

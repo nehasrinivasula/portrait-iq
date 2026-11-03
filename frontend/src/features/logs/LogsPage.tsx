@@ -74,7 +74,7 @@ export default function LogsPage() {
         onScanned={() => setReloadKey((k) => k + 1)} />
 
       <LogFilters frame={frame} onFrame={setFrame} filter={filter} onFilter={setFilter}
-        facets={facets} active={active} onRemove={onRemove} onClear={onClear} />
+        facets={privacy.mask && facets ? { ...facets, devices: [], categories: [] } : facets} active={active} onRemove={onRemove} onClear={onClear} />
 
       <div className="logs-body">
         <LogTable filter={applied} reloadKey={reloadKey} onTotal={onTotal} privacy={privacy}

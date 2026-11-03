@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { actionLabel, emptyAuditFilter, getAudit, latestOffset, PAGE_SIZE, shortSession, type AuditFilter, type AuditPage as Page } from "./auditApi";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { actionLabel, emptyAuditFilter, getAudit, latestOffset, PAGE_SIZE, shortSession, withRange, type AuditFilter, type AuditPage as Page } from "./auditApi";
 import "./audit.css";
 
 const time = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
@@ -12,19 +12,25 @@ export default function AuditPage() {
   const [page, setPage] = useState<Page | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
 
+  const latest = useRef(0);
+
   const load = useCallback(async (f: AuditFilter, at: number | null) => {
+    const id = ++latest.current;
     setState("loading");
     try {
       let from = at;
       if (from === null) {                       // learn the total first, then open the last page
         const head = await getAudit(f, 1, 0);
+        if (id !== latest.current) return;       // a newer request replaced this one
         from = latestOffset(head.total, PAGE_SIZE);
       }
-      setPage(await getAudit(f, PAGE_SIZE, from));
+      const next = await getAudit(f, PAGE_SIZE, from);
+      if (id !== latest.current) return;
+      setPage(next);
       setOffset(from);
       setState("ready");
     } catch {
-      setState("error");
+      if (id === latest.current) setState("error");
     }
   }, []);
 
@@ -43,7 +49,7 @@ export default function AuditPage() {
         Opening this page is recorded too.
       </p>
 
-      <form className="audit-form" onSubmit={(e) => { e.preventDefault(); setFilter({ ...draft }); }}>
+      <form className="audit-form" onSubmit={(e) => { e.preventDefault(); setFilter(withRange({ ...draft })); }}>
         <div className="field">
           <label htmlFor="audit-actor">User</label>
           <input id="audit-actor" value={draft.actor} autoComplete="off" onChange={(e) => set({ actor: e.target.value })} />
