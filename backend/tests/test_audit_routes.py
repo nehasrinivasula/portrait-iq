@@ -8,13 +8,14 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.audit import log_action
 from app.auth import User, get_current_user
 from app.collectors.base import ResourceLimits
+from app import db as dbmodule
 from app.db import Base, get_db
 from app.main import app
 from app.models import AuditLogEntry
@@ -110,6 +111,97 @@ def test_audit_timeline_paginates_and_rejects_invalid_time_range(env):
     )
     assert invalid.status_code == 400
     assert invalid.json()["detail"] == "until must be after since"
+
+
+def test_audit_timeline_normalizes_offset_times_and_filters_actor_and_action(env):
+    client, db = env
+    _add(db, actor="alex", action="login", seconds=0)
+    matching = _add(db, actor="alex", action="connect", seconds=1)
+    _add(db, actor="blair", action="connect", seconds=2)
+    _add(db, actor="alex", action="connect", seconds=3)
+
+    # 04:00:00.500-06:00 is 10:00:00.500 UTC. The naive end is UTC too.
+    # This deliberately mixes aware and naive input and must not be treated
+    # as local UTC wall-clock time or raise a TypeError.
+    response = client.get(
+        "/api/audit",
+        params={
+            "actor": "alex",
+            "action": "connect",
+            "since": "2026-11-02T04:00:00.500-06:00",
+            "until": "2026-11-02T10:00:03",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert [item["id"] for item in body["items"]] == [matching.id]
+
+
+def test_audit_timeline_rejects_equivalent_mixed_timezone_range(env):
+    client, _ = env
+
+    response = client.get(
+        "/api/audit",
+        params={
+            "since": "2026-11-02T10:00:00Z",
+            "until": "2026-11-02T04:00:00-06:00",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "until must be after since"
+
+
+def test_init_db_adds_audit_columns_without_losing_existing_rows(tmp_path, monkeypatch):
+    """The narrow compatibility upgrade preserves development rows in place."""
+    old_engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    with old_engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE audit_log (
+                id INTEGER NOT NULL PRIMARY KEY,
+                timestamp DATETIME NOT NULL,
+                actor VARCHAR NOT NULL,
+                action VARCHAR NOT NULL,
+                detail TEXT
+            )
+        """))
+        connection.execute(text("""
+            CREATE TABLE jobs (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                mode VARCHAR NOT NULL,
+                status VARCHAR NOT NULL,
+                current_step VARCHAR,
+                cpu_limit_pct INTEGER,
+                mem_limit_mb INTEGER,
+                max_output_mb INTEGER,
+                tools TEXT,
+                created_at DATETIME,
+                finished_at DATETIME
+            )
+        """))
+        connection.execute(text(
+            "INSERT INTO audit_log (id, timestamp, actor, action, detail) "
+            "VALUES (1, '2026-11-02 10:00:00', 'engineer', 'connect', 'mode=live')"
+        ))
+        connection.execute(text(
+            "INSERT INTO jobs (id, mode, status) VALUES ('job-old', 'live', 'done')"
+        ))
+
+    monkeypatch.setattr(dbmodule, "engine", old_engine)
+    dbmodule.init_db()
+
+    inspector = inspect(old_engine)
+    assert "session_id" in {column["name"] for column in inspector.get_columns("audit_log")}
+    assert {"requested_by", "session_id"} <= {
+        column["name"] for column in inspector.get_columns("jobs")
+    }
+    with old_engine.connect() as connection:
+        assert connection.execute(text("SELECT actor, action FROM audit_log")).one() == (
+            "engineer", "connect"
+        )
+        assert connection.execute(text("SELECT id, status FROM jobs")).one() == ("job-old", "done")
 
 
 def test_log_action_records_the_request_session(db):

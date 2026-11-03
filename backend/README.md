@@ -215,6 +215,12 @@ This is a local-demo authorization model with one authenticated role. A real
 identity provider and role/tenant authorization are required before a
 production reviewer can access another engineer's audit records.
 
+The audit timeline records server-side API actions. Browser-only logout, and
+the observation of a stateless token expiry, do not create server-side events;
+the existing idle-lock behavior is owned by the separate session-lock work.
+Before production, those lifecycle events need a server-managed session and a
+retention/rate-limiting policy for high-frequency views.
+
 ## Log sources (SCRUM-43)
 
 Every way of getting raw logs into the tool is a `LogSource`

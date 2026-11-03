@@ -16,9 +16,20 @@ router = APIRouter()
 MAX_AUDIT_LIMIT = 200
 
 
-def _utc(value: datetime) -> datetime:
+def _as_utc_for_response(value: datetime) -> datetime:
     """Audit timestamps are stored as naive UTC in SQLite."""
     return value.replace(tzinfo=timezone.utc)
+
+
+def _normalize_query_time(value: datetime) -> datetime:
+    """Return a naive UTC value suitable for comparing with SQLite rows.
+
+    Naive input means UTC. Offset input must be converted to UTC before its
+    timezone is removed; directly dropping an offset changes the instant.
+    """
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 @router.get("", response_model=AuditLogPageOut)
@@ -40,7 +51,9 @@ def list_audit_log(
     records. Callers deliberately never write passwords, tokens, raw logs, or
     log-search text into an audit description.
     """
-    if since and until and since >= until:
+    normalized_since = _normalize_query_time(since) if since else None
+    normalized_until = _normalize_query_time(until) if until else None
+    if normalized_since and normalized_until and normalized_since >= normalized_until:
         raise HTTPException(400, "until must be after since")
 
     query = db.query(AuditLogEntry)
@@ -50,10 +63,10 @@ def list_audit_log(
         query = query.filter(AuditLogEntry.actor == actor)
     if action:
         query = query.filter(AuditLogEntry.action == action)
-    if since:
-        query = query.filter(AuditLogEntry.timestamp >= since.replace(tzinfo=None))
-    if until:
-        query = query.filter(AuditLogEntry.timestamp < until.replace(tzinfo=None))
+    if normalized_since:
+        query = query.filter(AuditLogEntry.timestamp >= normalized_since)
+    if normalized_until:
+        query = query.filter(AuditLogEntry.timestamp < normalized_until)
 
     total = query.with_entities(func.count(AuditLogEntry.id)).scalar() or 0
     entries = (
@@ -83,7 +96,7 @@ def list_audit_log(
         items=[
             AuditLogEntryOut(
                 id=entry.id,
-                timestamp=_utc(entry.timestamp),
+                timestamp=_as_utc_for_response(entry.timestamp),
                 actor=entry.actor,
                 session_id=entry.session_id,
                 action=entry.action,

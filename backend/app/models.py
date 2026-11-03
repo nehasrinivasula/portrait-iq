@@ -185,11 +185,11 @@ class AuditLogEntry(Base):
     __tablename__ = "audit_log"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    actor = Column(String, nullable=False)     # user id — real once auth.py is real
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    actor = Column(String, nullable=False, index=True)     # user id — real once auth.py is real
     # JWT ``jti`` for user-initiated work. System/background work has no
     # browser session, so it remains null. This lets a reviewer reconstruct
     # one login session without inferring it from timestamps alone.
     session_id = Column(String, nullable=True, index=True)
-    action = Column(String, nullable=False)
+    action = Column(String, nullable=False, index=True)
     detail = Column(Text, nullable=True)
