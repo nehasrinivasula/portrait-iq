@@ -85,9 +85,9 @@ def test_card_numbers_need_a_valid_luhn_checksum():
 
 
 def test_card_numbers_must_look_like_a_real_card_network():
-    # Both pass the Luhn check; only the first starts and is sized like a card.
+    # Both pass the Luhn check; only the first starts like a card network.
     assert ("credit_card", "4111111111111111") in found("card 4111111111111111")
-    assert all(c != "credit_card" for c, _ in found("id 9111111111111118"))
+    assert all(c != "credit_card" for c, _ in found("id 9000000000000001"))
     assert all(c != "credit_card" for c, _ in found("value 4111111111111111.5 ms"))
     assert ("credit_card", "378282246310005") in found("amex 378282246310005")
 
