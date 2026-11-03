@@ -69,6 +69,7 @@ def _device_out(d) -> KnownDeviceOut:
 def known_devices(db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """Devices to pick from for a log pull (SCRUM-70): every device seen in
     acquired logs, plus devices added by hand."""
+    log_action(db, user.id, "source_devices_view", detail="", session_id=user.session_id)
     return [_device_out(d) for d in list_known(db)]
 
 
@@ -80,12 +81,12 @@ def add_device(req: DeviceAddRequest, db: Session = Depends(get_db), user: User 
     except SourceError as e:
         raise HTTPException(400, str(e))
     if created:
-        log_action(db, user.id, "device_add", detail=f"device={device.device_uuid}")
+        log_action(db, user.id, "device_add", detail=f"device={device.device_uuid}", session_id=user.session_id)
     return _device_out(device)
 
 
 @router.get("", response_model=list[SourceOut])
-def list_sources(user: User = Depends(get_active_user)):
+def list_sources(db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     out = []
     for s in registry.all_sources():
         status = s.is_configured()
@@ -94,6 +95,7 @@ def list_sources(user: User = Depends(get_active_user)):
             configured=status.ok, reason=status.reason,
             options=s.options().fields if status.ok else {},
         ))
+    log_action(db, user.id, "sources_view", detail="", session_id=user.session_id)
     return out
 
 
@@ -101,7 +103,7 @@ def list_sources(user: User = Depends(get_active_user)):
 def test_source(source_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     source = _source(source_id)
     status = source.test_connection()
-    log_action(db, user.id, "source_test", detail=f"source={source_id} ok={status.ok}")
+    log_action(db, user.id, "source_test", detail=f"source={source_id} ok={status.ok}", session_id=user.session_id)
     return SourceStatusOut(ok=status.ok, reason=status.reason)
 
 
@@ -124,6 +126,15 @@ def preview_files(
     except (WindowError, SourceError) as e:
         raise HTTPException(400, str(e))
     # Same planning acquire() uses, so the preview shows exactly what would be requested.
+    # The local path and device IDs may be sensitive operational context, so
+    # record only which optional selectors were used, never their values.
+    log_action(
+        db,
+        user.id,
+        "source_preview",
+        detail=f"source={source_id} selectors={[name for name, value in {'path': path, 'device_uuids': device_uuids}.items() if value]}",
+        session_id=user.session_id,
+    )
     return [RemoteFileOut(remote_id=r.remote_id, name=r.name, size=r.size, modified_at=r.modified_at,
                           already_acquired=covered or is_already_acquired(db, r))
             for r, covered in plan_new_windows(db, remotes, source)]
@@ -136,7 +147,7 @@ def _run(db: Session, source: LogSource, user: User, req: AcquireRequest) -> Acq
         options = dict(req.options)
         if req.device_uuids:
             options["device_uuids"] = ",".join(req.device_uuids)
-        result = acquire(db, source, actor=user.id, since=req.since, until=req.until,
+        result = acquire(db, source, actor=user.id, session_id=user.session_id, since=req.since, until=req.until,
                          options=options, job_id=req.job_id, ingest=req.ingest)
     except WindowError as e:
         raise HTTPException(422, str(e))

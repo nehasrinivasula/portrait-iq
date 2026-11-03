@@ -88,7 +88,13 @@ def _page(db: Session, user: User, f: EventFilter, *, limit: int, order: str, cu
     if cursor is None:
         # Once per search, not once per page. Field names only: the text
         # search could be a patient identifier.
-        log_action(db, user.id, action, detail=f"{detail} filters={f.used_fields()} matched={page.total}")
+        log_action(
+            db,
+            user.id,
+            action,
+            detail=f"{detail} filters={f.used_fields()} matched={page.total}",
+            session_id=user.session_id,
+        )
     return LogPageOut(items=[_event_out(e) for e in page.items], next_cursor=page.next_cursor, total=page.total)
 
 
@@ -117,6 +123,11 @@ def get_facets(
 ):
     f = replace(f, job_id=job_id.strip() or None) if job_id else f
     r = store.facets(db, f)
+    log_action(
+        db, user.id, "logs_facets_view",
+        detail=f"filters={f.used_fields()} job_selected={bool(job_id)}",
+        session_id=user.session_id,
+    )
     return FacetsOut(
         total=r.total, first_timestamp=_utc(r.first_timestamp), last_timestamp=_utc(r.last_timestamp),
         sources=_facet_values(r.sources), severities=_facet_values(r.severities),
@@ -128,6 +139,7 @@ def get_facets(
 @router.get("/collections", response_model=list[CollectionOut])
 def list_collections(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db),
                      user: User = Depends(_active_user)):
+    log_action(db, user.id, "collections_view", detail=f"limit={limit}", session_id=user.session_id)
     return [
         CollectionOut(
             job_id=c.job_id, status=c.status, mode=c.mode, created_at=_utc(c.created_at),
@@ -150,6 +162,7 @@ def get_collection(job_id: str, db: Session = Depends(get_db), user: User = Depe
     """Completeness report: how many events were stored versus read, which
     files were rejected or never ingested, and a plain yes/no in `complete`."""
     s = _summary_or_404(db, job_id)
+    log_action(db, user.id, "collection_view", detail=f"job={job_id}", session_id=user.session_id)
     return CollectionSummaryOut(
         job_id=s.job_id, status=s.status, mode=s.mode, complete=s.complete,
         events_stored=s.events_stored, events_expected=s.events_expected,

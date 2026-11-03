@@ -384,6 +384,7 @@ def acquire(
     source: LogSource,
     *,
     actor: str,
+    session_id: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
     options: dict[str, str] | None = None,
@@ -409,7 +410,7 @@ def acquire(
     try:
         remotes = source.list_available(since, until, options or {})
     except SourceError as e:
-        _audit(db, actor, result, error=str(e))
+        _audit(db, actor, result, error=str(e), session_id=session_id)
         raise
 
     for i, (remote, covered) in enumerate(plan_new_windows(db, remotes, source)):
@@ -474,11 +475,18 @@ def acquire(
         _record(db, remote, outcome, sha, job_id)
         result.files.append(outcome)
 
-    _audit(db, actor, result)
+    _audit(db, actor, result, session_id=session_id)
     return result
 
 
-def _audit(db: Session, actor: str, result: AcquisitionResult, error: str | None = None) -> None:
+def _audit(
+    db: Session,
+    actor: str,
+    result: AcquisitionResult,
+    error: str | None = None,
+    *,
+    session_id: str | None = None,
+) -> None:
     detail = (
         f"source={result.source} run={result.run_id} "
         f"since={result.since.isoformat()} until={result.until.isoformat()} "
@@ -488,4 +496,4 @@ def _audit(db: Session, actor: str, result: AcquisitionResult, error: str | None
     )
     if error:
         detail += f" error={redact(error)}"
-    log_action(db, actor, "acquire_logs", detail=detail)
+    log_action(db, actor, "acquire_logs", detail=detail, session_id=session_id)

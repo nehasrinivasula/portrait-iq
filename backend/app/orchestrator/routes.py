@@ -64,6 +64,7 @@ def connectivity_check(
             {"target": req.target, "ports": req.ports, "event": "started"},
             ensure_ascii=True,
         ),
+        session_id=user.session_id,
     )
     try:
         response = check_connectivity(req.target, req.ports, req.timeout_seconds)
@@ -76,6 +77,7 @@ def connectivity_check(
                 {"target": req.target, "ports": req.ports, "event": "failed"},
                 ensure_ascii=True,
             ),
+            session_id=user.session_id,
         )
         raise
     else:
@@ -92,6 +94,7 @@ def connectivity_check(
                 },
                 ensure_ascii=True,
             ),
+            session_id=user.session_id,
         )
         touch_session(user.id)
         return response
@@ -114,7 +117,7 @@ def connect(
     forgotten (SCRUM-72). Keep everything that uses it inside the with."""
     with redaction_scope(req.password.get_secret_value(), "CONNECT_PASSWORD"):
         touch_session(user.id)
-        log_action(db, user.id, "connect", detail=f"mode={req.mode} ip={req.ip_address}")
+        log_action(db, user.id, "connect", detail=f"mode={req.mode} ip={req.ip_address}", session_id=user.session_id)
 
         if req.mode not in ("live", "pre_install"):
             raise HTTPException(400, "mode must be 'live' or 'pre_install'")
@@ -143,6 +146,7 @@ def list_plugins():
 
 @router.get("/devices", response_model=list[DeviceOut])
 def list_devices(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    log_action(db, user.id, "devices_view", detail="", session_id=user.session_id)
     return db.query(Device).all()
 
 
@@ -173,7 +177,14 @@ def start_job(
     except PluginError as e:
         raise HTTPException(400, str(e))
 
-    job = create_job(db, mode=req.mode, tools=req.tools, limits=limits)
+    job = create_job(
+        db,
+        mode=req.mode,
+        tools=req.tools,
+        limits=limits,
+        requested_by=user.id,
+        session_id=user.session_id,
+    )
     # Option names only, never values: a future plugin option could hold a
     # credential. A plugin lists the values worth auditing (e.g. tshark's
     # full-payload switch and its reason) in audit_fields().
@@ -182,6 +193,7 @@ def start_job(
     log_action(
         db, user.id, "job_start",
         detail=f"job={job.id} tools={req.tools} option_keys={option_keys} audited={audited}",
+        session_id=user.session_id,
     )
 
     background_tasks.add_task(_run_in_background, job.id, target_ip, plugins)
@@ -212,6 +224,7 @@ def get_job_results(job_id: str, db: Session = Depends(get_db), user: User = Dep
     it, in the order the plugins ran. Partial while the job is running."""
     if db.get(Job, job_id) is None:
         raise HTTPException(404, "job not found")
+    log_action(db, user.id, "job_results_view", detail=f"job={job_id}", session_id=user.session_id)
     return read_results(job_id)
 
 
@@ -230,7 +243,7 @@ def upload_file(
     except uploads.UploadError as e:
         raise HTTPException(400, str(e))
     # Never the client's file name: it can name a patient.
-    log_action(db, user.id, "upload", detail=f"upload={upload_id} kind={kind} bytes={size}")
+    log_action(db, user.id, "upload", detail=f"upload={upload_id} kind={kind} bytes={size}", session_id=user.session_id)
     return UploadOut(upload_id=upload_id, kind=kind, size_bytes=size)
 
 
@@ -239,11 +252,13 @@ def get_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(get
     job = db.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
+    log_action(db, user.id, "job_view", detail=f"job={job_id}", session_id=user.session_id)
     return job
 
 
 @router.get("/jobs/{job_id}/findings", response_model=list[SignalOut])
 def get_findings(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    log_action(db, user.id, "findings_view", detail=f"job={job_id}", session_id=user.session_id)
     signals = db.query(Signal).filter(Signal.job_id == job_id).all()
     out = []
     for s in signals:
@@ -270,5 +285,5 @@ def package_job(job_id: str, db: Session = Depends(get_db), user: User = Depends
     job = db.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
-    log_action(db, user.id, "package_download", detail=f"job={job_id}")
+    log_action(db, user.id, "package_download", detail=f"job={job_id}", session_id=user.session_id)
     raise HTTPException(501, "TODO: implement package assembly.")
