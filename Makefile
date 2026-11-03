@@ -49,7 +49,7 @@ REMOTE        := $(SSH) -t $(NODE) $(REMOTE_SUDO) sh $(REMOTE_DIR)/remote.sh
 require = $(if $(strip $($(1))),,$(error $(1) is not set. Add it to deploy/lab.mk (see deploy/lab.mk.example) or pass $(1)=...))
 
 .DEFAULT_GOAL := help
-.PHONY: help setup test dev image image-save image-load secrets deploy pod-check \
+.PHONY: help setup test dev dev-nocluster image image-save image-load secrets deploy pod-check \
         status logs api-check undeploy clean render bundle ship tool-images
 
 help:  ## List targets
@@ -70,6 +70,9 @@ test:  ## Run backend (and frontend, if present) tests
 
 dev:  ## Run the backend locally with auto-reload (http://localhost:8000/docs)
 	cd backend && ../$(VENV)/bin/uvicorn app.main:app --reload
+
+dev-nocluster:  ## Run the backend with fake tool pods and a demo login, no cluster needed
+	cd backend && ../$(VENV)/bin/python dev_nocluster.py
 
 # --- Image ----------------------------------------------------------------
 

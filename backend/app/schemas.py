@@ -67,6 +67,35 @@ class DeviceOut(BaseModel):
         from_attributes = True
 
 
+DeviceKind = Literal["hub", "viewer", "server", "unknown"]
+
+
+class DiscoverRequest(BaseModel):
+    """How long to watch the system's traffic (D-3). Longer catches devices
+    that only send now and then."""
+    duration_s: int = Field(20, ge=5, le=60)
+    # Also check every address on the system's own subnet (one small packet
+    # each, at most 254). Active scanning: only where the site allows it.
+    sweep_subnet: bool = False
+
+
+class DiscoveredDeviceOut(DeviceOut):
+    evidence: list[str]            # why the tool thinks this, e.g. "RTI domain 12 (source pod)"
+
+
+class DiscoveryOut(BaseModel):
+    system_ip: str                 # the node the search ran on
+    traffic_checked: bool          # False: ARP table only (live capture off here)
+    devices: list[DiscoveredDeviceOut]
+    notes: list[str]
+
+
+class DeviceUpdate(BaseModel):
+    """Manual override of a discovered value (D-7). Sticks across searches."""
+    name: Optional[str] = Field(None, min_length=1, max_length=80)
+    kind: Optional[DeviceKind] = None
+
+
 TcpPort = Annotated[int, Field(ge=1, le=65535)]
 
 

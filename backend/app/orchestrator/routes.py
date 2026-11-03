@@ -15,6 +15,7 @@ from app.collectors.base import Collector, PluginError, ResourceLimits
 from app.collectors.registry import get_registry
 from app.config import settings
 from app.connectivity.service import check_connectivity
+from app.discovery import service as discovery
 from app.db import SessionLocal, get_db
 from app.models import Device, Job, Signal
 from app.orchestrator.jobs import create_job, read_results, run_job
@@ -23,6 +24,10 @@ from app.schemas import (
     ConnectivityCheckRequest,
     ConnectivityCheckResponse,
     DeviceOut,
+    DeviceUpdate,
+    DiscoveredDeviceOut,
+    DiscoverRequest,
+    DiscoveryOut,
     JobCreateRequest,
     JobOut,
     SignalOut,
@@ -148,6 +153,48 @@ def list_plugins():
 def list_devices(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     log_action(db, user.id, "devices_view", detail="", session_id=user.session_id)
     return db.query(Device).all()
+
+
+@router.post("/discover", response_model=DiscoveryOut)
+def discover(req: DiscoverRequest, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
+    """Find the hub, viewers and other devices on the system's network (D-3).
+    Takes about duration_s plus pod start-up; one search at a time."""
+    log_action(db, user.id, "discover", detail=f"duration_s={req.duration_s} sweep_subnet={req.sweep_subnet}")
+    try:
+        result = discovery.run_discovery(req.duration_s, sweep=req.sweep_subnet)
+    except discovery.DiscoveryBusy as e:
+        raise HTTPException(409, str(e))
+    except PluginError as e:
+        raise HTTPException(502, f"Device search failed: {e}")
+    rows = discovery.save(db, result)
+    log_action(db, user.id, "discover", detail=(
+        f"system={result.node_ip} found={len(rows)} "
+        f"kinds={sorted({row.kind for row, _ in rows})} traffic={result.captured}"))
+    return DiscoveryOut(
+        system_ip=result.node_ip, traffic_checked=result.captured, notes=result.notes,
+        devices=[DiscoveredDeviceOut(**DeviceOut.model_validate(row).model_dump(), evidence=f.evidence)
+                 for row, f in rows],
+    )
+
+
+@router.patch("/devices/{device_id}", response_model=DeviceOut)
+def update_device(device_id: str, req: DeviceUpdate, db: Session = Depends(get_db),
+                  user: User = Depends(get_active_user)):
+    """Correct a discovered name or role (D-7). Later searches keep it."""
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(404, "device not found")
+    changes = req.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(400, "Give a name or a role to change.")
+    if "kind" in changes and "name" not in changes and device.name == discovery.auto_name(device.kind, device.ip_address):
+        changes["name"] = discovery.auto_name(changes["kind"], device.ip_address)   # the generated name follows the role
+    for key, value in changes.items():
+        setattr(device, key, value.strip() if isinstance(value, str) else value)
+    device.overridden = 1
+    db.commit()
+    log_action(db, user.id, "device_update", detail=f"device={device_id} ip={device.ip_address} fields={sorted(changes)}")
+    return device
 
 
 @router.post("/jobs", response_model=JobOut)
