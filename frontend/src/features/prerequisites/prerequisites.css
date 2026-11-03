@@ -17,3 +17,7 @@
 .notice-close { background: none; border: 0; font-size: 24px; line-height: 1; cursor: pointer; padding: 0 4px; color: var(--muted); }
 .prereq-pick { display: flex; align-items: center; gap: 10px; cursor: pointer; }
 .prereq-pick input { width: 20px; height: 20px; accent-color: var(--primary); }
+.job-lookup { margin-top: 24px; display: grid; gap: 8px; }
+.job-lookup label { font-weight: 600; }
+.job-lookup div { display: flex; gap: 10px; flex-wrap: wrap; }
+.job-lookup input { flex: 1; min-width: 220px; padding: 9px 12px; background: var(--panel); border: 1.5px solid var(--line); border-radius: 6px; }
