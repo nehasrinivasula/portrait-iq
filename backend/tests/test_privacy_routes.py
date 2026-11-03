@@ -95,9 +95,10 @@ def test_mask_applies_to_the_unified_view_too(env):
 
 def test_search_filters_on_flags(env):
     client, _ = env
-    assert [e["source_line"] for e in items(client, flagged=True)] == [2, 3]
-    assert [e["source_line"] for e in items(client, flagged=False)] == [1]
-    assert [e["source_line"] for e in items(client, flag_category="ssn")] == [3]
+    # source_line counts the file's lines and line 1 is the header, so the three messages are lines 2-4.
+    assert [e["source_line"] for e in items(client, flagged=True)] == [3, 4]
+    assert [e["source_line"] for e in items(client, flagged=False)] == [2]
+    assert [e["source_line"] for e in items(client, flag_category="ssn")] == [4]
     assert client.get("/api/logs/events", params={"flag_category": "nope"}).status_code == 400
 
 

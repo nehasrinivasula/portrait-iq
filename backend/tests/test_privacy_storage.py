@@ -143,24 +143,26 @@ def test_report_for_an_empty_collection_is_all_zero(db):
     assert (r.events, r.flagged_events, r.unscanned_events) == (0, 0, 0) and r.all_scanned
 
 
+# source_line counts the file's lines, and line 1 is the header: the four messages sit on lines 2-5
+# (quiet, name, billing, ping).
 def search(db, **kw):
     return [e.source_line for e in store.search_events(db, build_filter(**kw), order="asc").items]
 
 
 def test_filter_flagged_true_returns_only_flagged_events(ingested):
-    assert search(ingested, flagged=True) == [2, 3]
+    assert search(ingested, flagged=True) == [3, 4]
 
 
 def test_filter_flagged_false_returns_scanned_clean_events_only(ingested):
     ingested.add(EventRow(timestamp=datetime(2024, 6, 2, 5), source="portrait", severity="INFO",
                           message="never scanned", job_id="job-1", source_file="old.csv", source_line=9))
     ingested.commit()
-    assert search(ingested, flagged=False) == [1, 4]      # the unscanned row is not "clean"
+    assert search(ingested, flagged=False) == [2, 5]      # the unscanned row is not "clean"
 
 
 def test_filter_by_flag_category(ingested):
-    assert search(ingested, flag_categories=["ssn"]) == [3]
-    assert search(ingested, flag_categories=["person_name", "email"]) == [2, 3]
+    assert search(ingested, flag_categories=["ssn"]) == [4]
+    assert search(ingested, flag_categories=["person_name", "email"]) == [3, 4]
     assert search(ingested, flag_categories=["credit_card"]) == []
 
 
