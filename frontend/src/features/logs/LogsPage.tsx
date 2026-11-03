@@ -11,9 +11,14 @@ import { noPrivacyOptions, type PrivacyOptions } from "../privacy/privacyApi";
 
 const DEBOUNCE_MS = 300;
 
+// Keyed on the value's JSON: callers pass a new object each render, and
+// restarting the timer on identity alone re-ran the search every 300 ms,
+// so a search slower than that never finished ("Loading logs…" forever).
 function useDebounced<T>(value: T, ms: number): T {
+  const key = JSON.stringify(value);
   const [v, setV] = useState(value);
-  useEffect(() => { const t = window.setTimeout(() => setV(value), ms); return () => window.clearTimeout(t); }, [value, ms]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { const t = window.setTimeout(() => setV(value), ms); return () => window.clearTimeout(t); }, [key, ms]);
   return v;
 }
 
@@ -43,9 +48,9 @@ export default function LogsPage() {
   const optionScope = useDebounced({ ...emptyFilter(), ...range, jobId }, DEBOUNCE_MS);
   useEffect(() => {
     let live = true;
-    getFacets(optionScope).then((f) => live && setFacets(f)).catch(() => live && setFacets(null));
+    getFacets(optionScope, privacy.mask).then((f) => live && setFacets(f)).catch(() => live && setFacets(null));
     return () => { live = false; };
-  }, [optionScope, reloadKey]);
+  }, [optionScope, reloadKey, privacy.mask]);
 
   const active = activeFilters(frame, filter);
   const onRemove = (id: string) => {

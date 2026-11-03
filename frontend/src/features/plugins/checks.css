@@ -1,4 +1,0 @@
-.checks { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 6px; }
-.check { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 8px 12px; border-radius: 6px; border-left: 6px solid var(--ok); background: var(--ok-bg); }
-.check.fail { border-left-color: var(--error); background: var(--error-bg); }
-.check p { grid-column: 1 / -1; margin: 0; }

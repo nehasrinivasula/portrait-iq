@@ -36,6 +36,9 @@ NOT_CONFIGURED_DETAIL = "Demo authentication is not configured."
 class User:
     id: str
     name: str
+    # The signed token's ``jti`` identifies one login session. It is never
+    # returned by the public user endpoint or accepted from a client request.
+    session_id: str | None = None
 
 
 def _configured_demo_credentials() -> tuple[str, str, str] | None:
@@ -95,10 +98,14 @@ def create_access_token(user: User) -> tuple[str, int]:
 
     _, _, secret = configured
     expires_at = int(time.time()) + settings.auth_token_ttl_seconds
+    session_id = user.session_id or secrets.token_urlsafe(16)
+    # Keep it on the server-side request user so the login route can audit
+    # the session it just issued without re-parsing its own token.
+    user.session_id = session_id
     payload = {
         "sub": user.id,
         "exp": expires_at,
-        "jti": secrets.token_urlsafe(16),
+        "jti": session_id,
     }
     encoded_payload = _b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     return f"v1.{encoded_payload}.{_sign(encoded_payload, secret)}", expires_at
@@ -136,6 +143,8 @@ def get_current_user(
             or not isinstance(payload.get("sub"), str)
             or not hmac.compare_digest(payload["sub"], username)
             or not isinstance(payload.get("exp"), int)
+            or not isinstance(payload.get("jti"), str)
+            or not payload["jti"]
             or payload["exp"] < int(time.time())
         ):
             raise ValueError("invalid token")
@@ -144,7 +153,7 @@ def get_current_user(
     except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
         raise _unauthorized("Invalid or expired bearer token.", "token_invalid") from None
 
-    return User(id=username, name=username)
+    return User(id=username, name=username, session_id=payload["jti"])
 
 
 def touch_session(user_id: str) -> None:

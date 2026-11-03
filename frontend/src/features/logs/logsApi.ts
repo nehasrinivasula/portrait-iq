@@ -81,7 +81,12 @@ export function searchEvents(f: LogFilter, cursor: string | null, limit = 100, p
   return apiFetch<LogPage>(`/api/logs/events?${p}`);
 }
 
-export const getFacets = (f: LogFilter) => apiFetch<Facets>(`/api/logs/facets?${filterParams(f)}`);
+/** With mask on, the server leaves out device and category values that were flagged. */
+export function getFacets(f: LogFilter, mask = false) {
+  const p = filterParams(f);
+  if (mask) p.set("mask", "true");
+  return apiFetch<Facets>(`/api/logs/facets?${p}`);
+}
 
 export interface AcquisitionResult {
   run_id: string;

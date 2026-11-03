@@ -1,0 +1,17 @@
+.device-finder { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.finder-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.device-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.device { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 12px;
+  border: 1.5px solid var(--line); border-radius: 6px; background: var(--panel); }
+.device.selected { border-color: var(--primary); }
+.device-main { flex: 1; min-width: 220px; display: grid; gap: 2px; }
+.device-why { font-size: 15px; }
+.device-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.device-actions select { min-height: 44px; background: var(--bg); border: 1.5px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+.kind { min-width: 72px; text-align: center; padding: 2px 10px; border-radius: 999px; font-weight: 600;
+  border: 1.5px solid var(--line); }
+.kind-hub, .kind-viewer { border-color: var(--primary); color: var(--primary); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.sweep-option { display: flex; gap: 10px; align-items: flex-start; margin-top: 10px; font-weight: 600; }
+.sweep-option input { width: 20px; height: 20px; margin-top: 3px; flex: none; }
+.sweep-option .muted { display: block; font-weight: 400; font-size: 15px; }

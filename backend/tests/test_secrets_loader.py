@@ -274,6 +274,50 @@ def test_unformattable_log_message_does_not_leak_or_crash():
     assert "suppressed" in output
 
 
+def test_uvicorn_access_record_still_formats():
+    """uvicorn's access formatter unpacks record.args as a 5-tuple, so the
+    redacting factory must keep args (redacted) instead of clearing them."""
+    from uvicorn.logging import AccessFormatter
+
+    sl.register_for_redaction(FAKE, "X")
+    sl.install_log_redaction()
+    formatter = AccessFormatter('%(client_addr)s "%(request_line)s" %(status_code)s', use_colors=False)
+    logger = logging.getLogger("test.redaction.access")
+
+    def access_line(path):
+        # Same message and 5-tuple args as uvicorn.protocols.http; formatting
+        # directly raises the TypeError a handler would only print to stderr.
+        record = logger.makeRecord(
+            "uvicorn.access", logging.INFO, "f", 1,
+            '%s - "%s %s HTTP/%s" %d', ("10.0.0.5:5123", "GET", path, "1.1", 200), None,
+        )
+        return formatter.format(record)
+
+    assert access_line("/health") == '10.0.0.5:5123 "GET /health HTTP/1.1" 200 OK'
+    assert access_line(f"/x?token={FAKE}") == '10.0.0.5:5123 "GET /x?token=*** HTTP/1.1" 200 OK'
+
+
+def test_args_are_kept_and_redacted():
+    sl.register_for_redaction(FAKE, "X")
+    sl.install_log_redaction()
+    record = logging.getLogger("test.redaction.args").makeRecord(
+        "n", logging.INFO, "f", 1, "%s took %d ms", (FAKE, 12), None
+    )
+    assert record.args == ("***", 12)
+    assert record.getMessage() == "*** took 12 ms"
+
+
+def test_secret_split_across_arguments_is_still_masked():
+    sl.register_for_redaction(FAKE, "X")
+    sl.install_log_redaction()
+    logger, stream = make_logger("test.redaction.split")
+    half = len(FAKE) // 2
+    logger.info("%s%s", FAKE[:half], FAKE[half:])
+    output = stream.getvalue()
+    assert FAKE not in output
+    assert "***" in output
+
+
 def test_secret_loaded_with_load_secret_is_redacted_automatically(monkeypatch):
     monkeypatch.setenv("TEST_SECRET", FAKE)
     sl.load_secret("TEST_SECRET")

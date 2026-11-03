@@ -31,6 +31,13 @@ describe("validateChoices / buildOptions", () => {
     const c = defaultChoices();
     c.tshark.durationS = "901";
     expect(validateChoices(new Set(["tshark"]), c)["tshark.duration"]).toBeDefined();
+    c.tshark.durationS = "900";   // tshark takes up to 15 minutes
+    expect(validateChoices(new Set(["tshark"]), c)["tshark.duration"]).toBeUndefined();
+    for (const bad of ["9", "301", "900"]) {   // RTI only 10 to 300 s (rti.py)
+      c.rti.durationS = bad;
+      expect(validateChoices(new Set(["rti"]), c)["rti.duration"]).toBeDefined();
+    }
+    c.rti.durationS = "30";
     c.tshark.durationS = "60";
     expect(buildOptions(new Set(["tshark", "rti"]), c)).toEqual({
       tshark: { mode: "run", duration_s: 60, filter_preset: "rti_all" },

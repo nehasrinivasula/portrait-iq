@@ -49,7 +49,8 @@ spec:
           ports:
             - containerPort: 8000
           env:
-            - name: LOG_EXPORT_URL
+            # The Axone Log Export API, read by the backend's log source.
+            - name: AXONE_BASE_URL
               value: "__LOG_EXPORT_URL__"
             # Secrets are files, never env values (backend/SECRETS.md).
             # Login (SCRUM-32). Until `make secrets` creates these files,
@@ -70,6 +71,9 @@ spec:
               value: /data/jobs
             - name: UPLOAD_DIR
               value: /data/uploads
+            # Pulled and imported logs are staged here before ingestion (SCRUM-43).
+            - name: STAGING_DIR
+              value: /data/staging
             # tshark live capture (SCRUM-39): off unless TSHARK_LIVE_CAPTURE
             # = true in deploy/lab.mk, for a bench whose owners approved it.
             - name: TSHARK_LIVE_CAPTURE_ENABLED

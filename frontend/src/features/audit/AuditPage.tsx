@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { actionLabel, emptyAuditFilter, getAudit, latestOffset, PAGE_SIZE, shortSession, withRange, type AuditFilter, type AuditPage as Page } from "./auditApi";
+import { ACTION_OPTIONS, actionLabel, emptyAuditFilter, getAudit, latestOffset, PAGE_SIZE, shortSession, withRange, type AuditFilter, type AuditPage as Page } from "./auditApi";
 import "./audit.css";
 
 const time = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
@@ -8,14 +8,17 @@ const time = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle:
 export default function AuditPage() {
   const [draft, setDraft] = useState<AuditFilter>(emptyAuditFilter);
   const [filter, setFilter] = useState<AuditFilter>(emptyAuditFilter);
-  const [offset, setOffset] = useState<number | null>(null);   // null = the latest page
   const [page, setPage] = useState<Page | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
 
   const latest = useRef(0);
+  const shownFilter = useRef<AuditFilter | null>(null);     // the filter the rows on screen belong to
+  const lastRequest = useRef<{ f: AuditFilter; at: number | null }>({ f: emptyAuditFilter(), at: null });
 
   const load = useCallback(async (f: AuditFilter, at: number | null) => {
     const id = ++latest.current;
+    lastRequest.current = { f, at };                      // "Try again" repeats exactly this request
+    if (shownFilter.current !== f) setPage(null);   // never leave another filter's rows under an error
     setState("loading");
     try {
       let from = at;
@@ -26,8 +29,8 @@ export default function AuditPage() {
       }
       const next = await getAudit(f, PAGE_SIZE, from);
       if (id !== latest.current) return;
+      shownFilter.current = f;
       setPage(next);
-      setOffset(from);
       setState("ready");
     } catch {
       if (id === latest.current) setState("error");
@@ -56,8 +59,10 @@ export default function AuditPage() {
         </div>
         <div className="field">
           <label htmlFor="audit-action">Action</label>
-          <input id="audit-action" value={draft.action} autoComplete="off" placeholder="e.g. login"
-            onChange={(e) => set({ action: e.target.value })} />
+          <select id="audit-action" value={draft.action} onChange={(e) => set({ action: e.target.value })}>
+            <option value="">Any action</option>
+            {ACTION_OPTIONS.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+          </select>
         </div>
         <div className="field">
           <label htmlFor="audit-session">Session</label>
@@ -80,7 +85,7 @@ export default function AuditPage() {
         <div className="alert error" role="alert">
           <strong>Couldn't load the audit log</strong>
           Check the connection to the server, then try again.{" "}
-          <button className="btn ghost" onClick={() => load(filter, offset)}>Try again</button>
+          <button className="btn ghost" onClick={() => load(lastRequest.current.f, lastRequest.current.at)}>Try again</button>
         </div>
       )}
       {state === "loading" && !page && <p className="muted" role="status">Loading…</p>}

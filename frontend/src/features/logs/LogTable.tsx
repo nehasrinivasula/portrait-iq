@@ -17,9 +17,14 @@ function Message({ text }: { text: string }) {
 
 /** What the scan found in one event: kinds only, never the matched text. */
 function Flags({ e }: { e: LogEvent }) {
-  if (!e.privacy_scanned) return <span className="muted" title="Not scanned yet">not scanned</span>;
   const flags = e.sensitive ?? [];
-  if (flags.length === 0) return <span className="muted">—</span>;
+  // A flag the server could not mask is not "nothing found".
+  if (e.message.includes("[REDACTED:unreadable]"))
+    return <span className="flag-tag medium" title="The flagged text could not be read, so it was hidden">hidden: unreadable</span>;
+  // Flags win over the scanned marker: a masked row judged on the spot has flags but is not stored as scanned.
+  if (flags.length === 0)
+    return e.privacy_scanned ? <span className="muted" title="Scanned: nothing found">—</span>
+      : <span className="muted" title="Not scanned yet">not scanned</span>;
   const kinds = [...new Set(flags.map((f) => f.category))];
   return (
     <>
@@ -78,7 +83,9 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered, privacy
   if (rows.length === 0)
     return (
       <p className="muted" role="status">
-        {filtered ? "No logs match these filters. Loosen or clear them." : "No logs yet. Run diagnostics with logs included, or import log files."}
+        {privacy?.flaggedOnly
+          ? "No flagged events among the events scanned so far. Events that have not been scanned are not checked: see the scan panel above."
+          : filtered ? "No logs match these filters. Loosen or clear them." : "No logs yet. Run diagnostics with logs included, or import log files."}
       </p>
     );
 

@@ -7,8 +7,10 @@ export const validateTargetIp = (v: string): string | null =>
   : IPV4.test(v.trim()) ? null
   : "Enter a valid IPv4 address, for example 192.168.0.3.";
 
-/** Both live tools (tshark capture, RTI listen) take 5 to 900 seconds. */
-export const DURATION = { min: 5, max: 900 };
+/** Each live tool's length limits (tshark.py: 5 to 900 s; rti.py: 10 to 300 s). */
+export interface DurationLimits { min: number; max: number }
+export const TSHARK_DURATION: DurationLimits = { min: 5, max: 900 };
+export const RTI_DURATION: DurationLimits = { min: 10, max: 300 };
 export const DURATION_PRESETS = [
   { s: 30, label: "30 sec" },
   { s: 60, label: "1 min" },
@@ -55,11 +57,11 @@ export const defaultChoices = (): Choices => ({
   rti: { domain: RTI_DOMAINS[0], durationS: String(RTI_DEFAULT_S) },
 });
 
-const wholeSeconds = (v: string): string | null => {
+const wholeSeconds = (v: string, lim: DurationLimits): string | null => {
   const n = Number(v);
-  return v.trim() !== "" && Number.isInteger(n) && n >= DURATION.min && n <= DURATION.max
+  return v.trim() !== "" && Number.isInteger(n) && n >= lim.min && n <= lim.max
     ? null
-    : `Enter a whole number of seconds from ${DURATION.min} to ${DURATION.max}.`;
+    : `Enter a whole number of seconds from ${lim.min} to ${lim.max}.`;
 };
 
 const validPort = (v: string): boolean => {
@@ -72,7 +74,7 @@ export function validateChoices(selected: Set<string>, c: Choices): Record<strin
   const errs: Record<string, string> = {};
   if (selected.has("tshark")) {
     if (c.tshark.mode === "run") {
-      const e = wholeSeconds(c.tshark.durationS);
+      const e = wholeSeconds(c.tshark.durationS, TSHARK_DURATION);
       if (e) errs["tshark.duration"] = e;
       if (c.tshark.filterKind === "manual" && !validPort(c.tshark.port))
         errs["tshark.port"] = "Enter a port number from 1 to 65535.";
@@ -81,7 +83,7 @@ export function validateChoices(selected: Set<string>, c: Choices): Record<strin
     }
   }
   if (selected.has("rti")) {
-    const e = wholeSeconds(c.rti.durationS);
+    const e = wholeSeconds(c.rti.durationS, RTI_DURATION);
     if (e) errs["rti.duration"] = e;
   }
   return errs;

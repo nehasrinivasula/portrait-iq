@@ -92,7 +92,7 @@ load_images() {
         echo "== importing $(basename "$f")"
         out=$(gunzip -c "$f" | sh -c "$IMPORT_CMD") || die "importing $(basename "$f") failed: $out"
         printf '%s\n' "$out"
-        alias_images "$out"
+        alias_images "$f"
     done
     [ $found = 1 ] || die "no images in $HERE/images"
     rm -rf "$HERE/images"
@@ -100,10 +100,16 @@ load_images() {
 
 # A Palette webhook on the bench rewrites pod image names to its registry
 # (docker.io/library/portrait-iq:TAG -> PREFIX/library/portrait-iq:TAG). Pods
-# never pull, so give each imported image that second name too.
+# never pull, so give each imported image that second name too. The names
+# come from the archive's index.json: ctr's import output is a progress
+# display full of terminal control codes, so it can't be parsed.
 alias_images() {
     [ -n "${IMAGE_ALIAS_PREFIX:-}" ] || return 0
-    printf '%s\n' "$1" | grep -oE 'docker\.io/[^ (@]+:[^ (@]+' | sort -u | while read -r ref; do
+    command -v tar >/dev/null || die "tar is needed to read image names from $(basename "$1")"
+    refs=$(gunzip -c "$1" | tar -xOf - index.json 2>/dev/null \
+        | grep -oE '"io\.containerd\.image\.name": *"docker\.io/[^"]+"' | sed 's/.*"\(docker\.io\/[^"]*\)"$/\1/')
+    [ -n "$refs" ] || die "no image name in $(basename "$1"); tag it by hand with: $TAG_CMD <name> $IMAGE_ALIAS_PREFIX/<name without docker.io/>"
+    printf '%s\n' "$refs" | sort -u | while read -r ref; do
         alias="$IMAGE_ALIAS_PREFIX/${ref#docker.io/}"
         sh -c "$TAG_CMD \"$ref\" \"$alias\"" >/dev/null || die "could not tag $ref as $alias"
         echo "== also named $alias"

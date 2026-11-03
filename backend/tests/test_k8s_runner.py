@@ -101,7 +101,11 @@ def test_create_failure_says_why(runner, api):
 
 def test_wait_running(runner, api):
     api.pods["p"] = [pod("Pending"), pod("Pending"), pod("Running")]
-    runner.wait_running("p", 60)
+    assert runner.wait_running("p", 60) == ""
+    running = pod("Running")
+    running.status.host_ip = "192.0.2.3"
+    api.pods["q"] = [running]
+    assert runner.wait_running("q", 60) == "192.0.2.3"   # the node, for discovery
 
 
 def test_wait_running_reports_why_a_pod_is_stuck(runner, api):

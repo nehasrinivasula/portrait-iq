@@ -6,6 +6,7 @@ import HomePage from "./features/home/HomePage";
 import RunPage from "./features/plugins/RunPage";
 import LogsPage from "./features/logs/LogsPage";
 import AuditPage from "./features/audit/AuditPage";
+import JobResultsPage from "./features/jobs/JobResultsPage";
 import AppLayout from "./ui/AppLayout";
 import { Outlet } from "react-router-dom";
 
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="run" element={<RunPage />} />
             <Route path="logs" element={<LogsPage />} />
             <Route path="audit" element={<AuditPage />} />
+            <Route path="jobs/:jobId/results" element={<JobResultsPage />} />
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

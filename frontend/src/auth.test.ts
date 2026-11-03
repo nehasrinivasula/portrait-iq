@@ -38,7 +38,11 @@ describe("apiFetch 401 handling", () => {
 
 describe("apiFetch Content-Type", () => {
   const sent = () => (vi.mocked(fetch).mock.calls[0][1]!.headers as Headers).get("Content-Type");
-  beforeEach(() => vi.stubGlobal("sessionStorage", { getItem: () => null, setItem: () => {}, removeItem: () => {} }));
+  beforeEach(() => vi.stubGlobal("sessionStorage", {
+    getItem: () => null,
+    setItem: () => undefined,
+    removeItem: () => undefined,
+  }));
   afterEach(() => vi.unstubAllGlobals());
 
   it("labels JSON string bodies as JSON", async () => {

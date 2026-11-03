@@ -76,6 +76,9 @@ const ACTION_LABELS: Record<string, string> = {
   package_download: "Download package",
 };
 
+/** Every action the page can filter by, as [code, label], in label order. */
+export const ACTION_OPTIONS: [string, string][] = Object.entries(ACTION_LABELS).sort((a, b) => a[1].localeCompare(b[1]));
+
 /** Readable name for an action; unknown ones are shown as stored. */
 export const actionLabel = (a: string) => ACTION_LABELS[a] ?? a.replace(/_/g, " ");
 

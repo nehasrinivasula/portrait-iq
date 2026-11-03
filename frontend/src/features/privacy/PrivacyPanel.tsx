@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  ALL_LOGS, categoryLabel, loadPrivacy, privacyHeadline, scanAll,
+  ALL_LOGS, categoryLabel, loadPrivacy, privacyHeadline, privacyKind, scanScope,
   type PrivacyOptions, type PrivacyView,
 } from "./privacyApi";
 import "./privacy.css";
@@ -21,6 +21,9 @@ export default function PrivacyPanel({ jobId, options, onOptions, reloadKey, onS
   const [scan, setScan] = useState<"idle" | "running" | "error">("idle");
   const [localKey, setLocalKey] = useState(0);
 
+  // A scan error belongs to the run it happened on.
+  useEffect(() => { setScan("idle"); }, [jobId]);
+
   useEffect(() => {
     let live = true;
     setState("loading");
@@ -39,17 +42,19 @@ export default function PrivacyPanel({ jobId, options, onOptions, reloadKey, onS
   const runScan = useCallback(async () => {
     if (!current) return;
     setScan("running");
+    let failed = false;
     try {
-      await scanAll(current.toScan);
-      setScan("idle");
-      setLocalKey((k) => k + 1);
-      onScanned();
+      await scanScope(jobId);
     } catch {
-      setScan("error");
+      failed = true;
     }
-  }, [current, onScanned]);
+    // Even a partial scan changed the counts and the rows, so read both again.
+    setScan(failed ? "error" : "idle");
+    setLocalKey((k) => k + 1);
+    onScanned();
+  }, [current, jobId, onScanned]);
 
-  const kind = state === "error" ? "error" : !report ? "info" : !report.all_scanned || report.flagged_events > 0 ? "warn" : "ok";
+  const kind = state === "error" ? "error" : !report ? "info" : privacyKind(report);
 
   return (
     <section className="privacy" aria-label="PHI and PII scan">
@@ -100,12 +105,12 @@ export default function PrivacyPanel({ jobId, options, onOptions, reloadKey, onS
 
       <div className="privacy-switches">
         <label>
-          <input type="checkbox" checked={options.flaggedOnly} disabled={!ready}
+          <input type="checkbox" checked={options.flaggedOnly} disabled={!ready && !options.flaggedOnly}
             onChange={(e) => onOptions({ ...options, flaggedOnly: e.target.checked })} />
           Show flagged events only
         </label>
         <label>
-          <input type="checkbox" checked={options.mask} disabled={!ready}
+          <input type="checkbox" checked={options.mask} disabled={!ready && !options.mask}
             onChange={(e) => onOptions({ ...options, mask: e.target.checked })} />
           Hide flagged text (mask)
         </label>

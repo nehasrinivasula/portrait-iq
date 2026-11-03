@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionLabel, auditParams, emptyAuditFilter, latestOffset, shortSession, withRange } from "./auditApi";
+import { ACTION_OPTIONS, actionLabel, auditParams, emptyAuditFilter, latestOffset, shortSession, withRange } from "./auditApi";
 
 describe("auditParams", () => {
   const now = new Date("2026-11-03T12:00:00.000Z");
@@ -41,5 +41,13 @@ describe("labels", () => {
   it("shortens session ids", () => {
     expect(shortSession("abcdefghijklmnop")).toBe("abcdefgh");
     expect(shortSession(null)).toBe("—");
+  });
+});
+
+describe("ACTION_OPTIONS", () => {
+  it("offers every action by its readable name, with the stored code as the value", () => {
+    expect(ACTION_OPTIONS).toContainEqual(["login", "Sign in"]);
+    const labels = ACTION_OPTIONS.map(([, l]) => l);
+    expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
   });
 });
