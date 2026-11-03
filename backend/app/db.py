@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.config import settings
@@ -17,8 +17,35 @@ def init_db() -> None:
     migrations before this touches a database anyone else depends on."""
     from app import models  # noqa: F401  (import so tables register on Base)
     Base.metadata.create_all(bind=engine)
+    _apply_audit_compatibility_columns()
     _check_schema_is_current()
     _create_missing_indexes()
+
+
+def _apply_audit_compatibility_columns() -> None:
+    """Upgrade only SCRUM-36's nullable local-demo audit columns in place.
+
+    ``create_all`` creates tables but never changes existing ones. These three
+    columns are nullable metadata, so adding them preserves all existing local
+    SQLite rows. Other future schema changes still fail closed in
+    ``_check_schema_is_current`` until the project adopts migrations.
+    """
+    additions = (
+        ("audit_log", "session_id", "VARCHAR"),
+        ("jobs", "requested_by", "VARCHAR"),
+        ("jobs", "session_id", "VARCHAR"),
+    )
+    inspector = inspect(engine)
+    present = {
+        table: {column["name"] for column in inspector.get_columns(table)}
+        for table in {"audit_log", "jobs"}
+        if inspector.has_table(table)
+    }
+    with engine.begin() as connection:
+        for table, column, sql_type in additions:
+            if table in present and column not in present[table]:
+                # Table/column/type are module constants, not request data.
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
 
 
 def _create_missing_indexes() -> None:
@@ -32,7 +59,6 @@ def _create_missing_indexes() -> None:
 
 def _check_schema_is_current() -> None:
     """create_all never alters existing tables. Fail early and say what to do."""
-    from sqlalchemy import inspect
     insp, stale = inspect(engine), []
     for table in Base.metadata.sorted_tables:
         have = {c["name"] for c in insp.get_columns(table.name)}

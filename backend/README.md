@@ -190,6 +190,37 @@ curl http://localhost:8000/api/auth/me \
 invalid tokens return safe `401` responses. Tokens expire after
 `AUTH_TOKEN_TTL_SECONDS` (one hour by default).
 
+## Audit timeline (SCRUM-36)
+
+Portrait IQ records a UTC timestamp, authenticated actor, action, safe
+description, and (for browser work) the signed token's internal session ID for
+each audited action. This lets a reviewer reconstruct a chronological local
+demo session without recording passwords, bearer tokens, raw logs, file names,
+or log-search values.
+
+Use the protected reviewer endpoint to read a paginated timeline:
+
+```bash
+curl 'http://localhost:8000/api/audit?actor=your-demo-user&limit=100' \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
+```
+
+Optional filters are `session_id`, `actor`, `action`, `since`, `until`,
+`limit`, and `offset`. Times are ISO 8601 UTC; `since` is inclusive and
+`until` is exclusive. Results are ordered oldest-first so a reviewer can read
+the session as a timeline. Reading the audit timeline is itself recorded as an
+`audit_view` action, but its filter values are not saved.
+
+This is a local-demo authorization model with one authenticated role. A real
+identity provider and role/tenant authorization are required before a
+production reviewer can access another engineer's audit records.
+
+The audit timeline records server-side API actions. Browser-only logout, and
+the observation of a stateless token expiry, do not create server-side events;
+the existing idle-lock behavior is owned by the separate session-lock work.
+Before production, those lifecycle events need a server-managed session and a
+retention/rate-limiting policy for high-frequency views.
+
 ## Log sources (SCRUM-43)
 
 Every way of getting raw logs into the tool is a `LogSource`

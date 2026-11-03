@@ -15,7 +15,7 @@ Working end to end for logs, in progress for the rest. What exists today:
 
 | Area | State |
 |---|---|
-| Login and session handling | Working. Local demo login (not GE SSO), signed tokens, 5-minute idle lock, audit log |
+| Login and session handling | Working. Local demo login (not GE SSO), signed tokens, 5-minute idle lock, and an [auditable session timeline](backend/README.md#audit-timeline-scrum-36) |
 | Connectivity preflight | Working. Bounded TCP checks against a target before diagnostics start |
 | Log acquisition | Working. Local files/folders/ZIPs and uploads; Box (tested against a mock); the Axone log export API (tested on the lab system). Exact time frames, device selection, only-new-files, size and time limits |
 | Common log format | Working. Portrait CSV and Kubernetes pod logs convert to one event shape; every row is either stored or counted as rejected |

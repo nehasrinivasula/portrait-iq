@@ -36,7 +36,15 @@ STEPS = [
     "package",
 ]
 
-def create_job(db: Session, mode: str, tools: list[str], limits: ResourceLimits) -> Job:
+def create_job(
+    db: Session,
+    mode: str,
+    tools: list[str],
+    limits: ResourceLimits,
+    *,
+    requested_by: str | None = None,
+    session_id: str | None = None,
+) -> Job:
     job = Job(
         mode=mode,
         status="queued",
@@ -44,6 +52,8 @@ def create_job(db: Session, mode: str, tools: list[str], limits: ResourceLimits)
         cpu_limit_pct=limits.cpu_pct,
         mem_limit_mb=limits.mem_mb,
         max_output_mb=limits.max_output_mb,
+        requested_by=requested_by,
+        session_id=session_id,
     )
     db.add(job)
     db.commit()
@@ -75,6 +85,7 @@ def run_job(
     """
     job.status = "running"
     db.commit()
+    _audit_job(db, job, "job_status", "status=running")
 
     limits = ResourceLimits(job.cpu_limit_pct, job.mem_limit_mb, job.max_output_mb)
     tools = json.loads(job.tools or "[]")
@@ -90,6 +101,7 @@ def run_job(
         for step in STEPS:
             job.current_step = step
             db.commit()
+            _audit_job(db, job, "job_step", f"step={step}")
 
             if step == "deploy_tools":
                 for plugin in plugins:
@@ -181,6 +193,13 @@ def _finish(db: Session, job: Job, status: str) -> None:
     job.status = status
     job.finished_at = datetime.utcnow()
     db.commit()
+    _audit_job(db, job, "job_status", f"status={status}")
+
+
+def _audit_job(db: Session, job: Job, action: str, detail: str) -> None:
+    """Record background state changes under the request that started it."""
+    actor = job.requested_by or "system"
+    log_action(db, actor, action, detail=f"job={job.id} {detail}", session_id=job.session_id)
 
 
 def _cleanup_all(db: Session, job: Job, started: list[Collector]) -> bool:
@@ -198,8 +217,9 @@ def _cleanup_all(db: Session, job: Job, started: list[Collector]) -> bool:
             log.exception("job %s: cleanup of plugin %s failed", job.id, plugin.name)
             try:
                 log_action(
-                    db, "system", "plugin_cleanup_failed",
+                    db, job.requested_by or "system", "plugin_cleanup_failed",
                     detail=f"job={job.id} plugin={plugin.name} error={type(e).__name__}",
+                    session_id=job.session_id,
                 )
             except Exception:  # an audit write error must not stop the remaining cleanups
                 log.exception("job %s: could not audit the failed cleanup", job.id)

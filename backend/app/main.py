@@ -4,9 +4,12 @@ from fastapi import Depends, FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
+from app.audit import log_action
+from app.audit_routes import router as audit_router
 from app.config import settings
-from app.db import SessionLocal, init_db
+from app.db import SessionLocal, get_db, init_db
 from app.auth import AuthError, User, authenticate_demo_user, create_access_token, get_current_user, touch_session
 from app.orchestrator.jobs import recover_interrupted_jobs
 from app.orchestrator.routes import router as orchestrator_router
@@ -22,6 +25,7 @@ app = FastAPI(title=settings.app_name)
 app.include_router(orchestrator_router, prefix="/api")
 app.include_router(sources_router, prefix="/api/sources")
 app.include_router(logs_router, prefix="/api/logs")
+app.include_router(audit_router, prefix="/api/audit", tags=["audit"])
 
 
 @app.exception_handler(AuthError)
@@ -43,9 +47,12 @@ async def _validation_error_handler(_: Request, exc: RequestValidationError) -> 
 
 
 @app.post("/api/auth/login", response_model=TokenResponse)
-def login(credentials: LoginRequest):
+def login(credentials: LoginRequest, db: Session = Depends(get_db)):
     user = authenticate_demo_user(credentials.username, credentials.password)
     if user is None:
+        # Do not include the submitted username or password: either might be
+        # sensitive, but the failed authentication attempt is still auditable.
+        log_action(db, "anonymous", "login", detail="outcome=failed")
         raise AuthError(
             status.HTTP_401_UNAUTHORIZED,
             "Invalid username or password.",
@@ -54,6 +61,7 @@ def login(credentials: LoginRequest):
         )
     touch_session(user.id)
     token, expires_at = create_access_token(user)
+    log_action(db, user.id, "login", detail="outcome=success", session_id=user.session_id)
     return TokenResponse(
         access_token=token,
         expires_in=max(0, expires_at - int(time.time())),
@@ -61,7 +69,8 @@ def login(credentials: LoginRequest):
 
 
 @app.get("/api/auth/me", response_model=CurrentUserOut)
-def current_user(user: User = Depends(get_current_user)):
+def current_user(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    log_action(db, user.id, "session_check", detail="outcome=active", session_id=user.session_id)
     return CurrentUserOut(username=user.id, name=user.name)
 
 
