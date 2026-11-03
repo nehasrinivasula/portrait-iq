@@ -3,6 +3,7 @@ HTTP surface for the central event store. Mounted at /api/logs.
 
   GET /api/logs/events                           search every stored event, any source or device
   GET /api/logs/facets                           counts per source/severity/category/device
+  GET /api/logs/sequences                        request/reply sequences: answered, nak, unanswered
   GET /api/logs/collections                      every collection and how many events it holds
   GET /api/logs/collections/{id}                 is this collection complete? what is missing?
   GET /api/logs/collections/{id}/events          unified log view: all of its entries, in time order
@@ -24,10 +25,11 @@ from app.auth import User, get_current_user, is_locked, touch_session
 from app.db import get_db
 from app.models import Job
 from app.storage import events as store
+from app.storage import sequences
 from app.storage.filters import DEFAULT_LIMIT, MAX_LIMIT, UNASSIGNED, EventFilter, FilterError, build_filter
 from app.storage.schemas import (
-    CollectionOut, CollectionSummaryOut, FacetsOut, FacetValueOut, FileSummaryOut, IssueOut,
-    LogEventOut, LogPageOut,
+    CollectionOut, CollectionSummaryOut, CommandStatsOut, FacetsOut, FacetValueOut, FileSummaryOut, IssueOut,
+    LogEventOut, LogPageOut, SequenceOut, SequencePageOut,
 )
 
 router = APIRouter()
@@ -52,12 +54,16 @@ def _filter(
     process: Optional[str] = None,
     source_file: Optional[str] = None,
     q: Optional[str] = Query(None, description="Case-insensitive text to find in the message."),
+    message_kind: list[str] = Query([], description="request, reply, response, publish or timeout; repeat for several."),
+    component: list[str] = Query([], description="Class from sourceInfo, e.g. ConfigMessageProcessor; repeat for several."),
+    correlation_id: Optional[str] = Query(None, description="Show one whole exchange: the request and its reply."),
 ) -> EventFilter:
     try:
         return build_filter(
             since=since, until=until, devices=device, sources=source, categories=category,
             severities=severity, min_severity=min_severity, process=process,
-            source_file=source_file, text=q,
+            source_file=source_file, text=q, message_kinds=message_kind, components=component,
+            correlation_id=correlation_id,
         )
     except FilterError as e:
         raise HTTPException(400, str(e))
@@ -72,6 +78,8 @@ def _event_out(e) -> LogEventOut:
         id=e.id, timestamp=_utc(e.timestamp), device_id=e.device_id, source=e.source,
         category=e.category, severity=e.severity, process=e.process, message=e.message,
         source_file=e.source_file, source_line=e.source_line, job_id=e.job_id,
+        component=e.component, message_kind=e.message_kind, command=e.command,
+        correlation_id=e.correlation_id, status=e.status,
     )
 
 
@@ -132,7 +140,55 @@ def get_facets(
         total=r.total, first_timestamp=_utc(r.first_timestamp), last_timestamp=_utc(r.last_timestamp),
         sources=_facet_values(r.sources), severities=_facet_values(r.severities),
         categories=_facet_values(r.categories), devices=_facet_values(r.devices),
-        distinct_devices=r.distinct_devices,
+        distinct_devices=r.distinct_devices, message_kinds=_facet_values(r.message_kinds),
+    )
+
+
+@router.get("/sequences", response_model=SequencePageOut)
+def get_sequences(
+    f: EventFilter = Depends(_filter),
+    job_id: Optional[str] = Query(None, description="Limit to one collection, or 'unassigned'."),
+    state: list[str] = Query([], description="answered, nak, unanswered, pending or unexpected; repeat for several."),
+    command: Optional[str] = Query(None, description="e.g. ChangeConfigCmd or cmd://cmd/util/ping"),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(_active_user),
+):
+    """Request/reply sequences rebuilt from the logs: which requests were
+    answered and how fast, refused (nak), never answered, or still pending.
+    Counts and per-command stats cover the whole search; items are one page,
+    newest first. Uses the same time/device/component filters as /events."""
+    bad = [s for s in state if s not in sequences.STATES]
+    if bad:
+        raise HTTPException(400, f"Unknown state '{bad[0]}'. Use one of: {', '.join(sequences.STATES)}.")
+    f = replace(f, job_id=job_id.strip() or None) if job_id else f
+    window_end = f.until or datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        seqs = sequences.find_sequences(db, f, now=window_end)
+    except FilterError as e:
+        raise HTTPException(400, str(e))
+    counts, stats = sequences.summarize(seqs)
+    picked = [s for s in seqs if (not state or s.state in state) and (command is None or s.command == command)]
+    picked.reverse()   # newest first
+    log_action(
+        db, user.id, "logs_sequences_view",
+        detail=f"filters={f.used_fields()} state={bool(state)} command={command is not None} matched={len(picked)}",
+        session_id=user.session_id,
+    )
+    return SequencePageOut(
+        counts=counts,
+        by_command=[CommandStatsOut(**vars(c)) for c in stats],
+        total=len(picked),
+        items=[
+            SequenceOut(
+                state=s.state, component=s.component, command=s.command, device_id=s.device_id,
+                correlation_id=s.correlation_id, request_event_id=s.request_event_id,
+                request_at=_utc(s.request_at), reply_event_id=s.reply_event_id, reply_at=_utc(s.reply_at),
+                latency_ms=s.latency_ms, status=s.status,
+            )
+            for s in picked[offset:offset + limit]
+        ],
     )
 
 

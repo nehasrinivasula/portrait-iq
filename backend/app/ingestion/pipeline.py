@@ -125,6 +125,11 @@ def ingest_file(
                     "message": event.message,
                     "source_file": label,
                     "source_line": event.source_line,
+                    "component": event.component,
+                    "message_kind": event.message_kind,
+                    "command": event.command,
+                    "correlation_id": event.correlation_id,
+                    "status": event.status,
                 }
             )
             if len(batch) >= batch_size:

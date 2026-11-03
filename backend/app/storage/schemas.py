@@ -18,6 +18,12 @@ class LogEventOut(BaseModel):
     source_file: Optional[str]
     source_line: Optional[int]
     job_id: Optional[str]
+    # Parsed from free-text messages; null for ordinary lines.
+    component: Optional[str] = None
+    message_kind: Optional[str] = None
+    command: Optional[str] = None
+    correlation_id: Optional[str] = None
+    status: Optional[str] = None
 
 
 class LogPageOut(BaseModel):
@@ -40,6 +46,7 @@ class FacetsOut(BaseModel):
     categories: list[FacetValueOut]
     devices: list[FacetValueOut]     # the 200 busiest
     distinct_devices: int
+    message_kinds: list[FacetValueOut] = []   # request / reply / ... ; null = ordinary lines
 
 
 class CollectionOut(BaseModel):
@@ -85,3 +92,36 @@ class CollectionSummaryOut(BaseModel):
     by_severity: list[FacetValueOut]
     files: list[FileSummaryOut]
     issues: list[IssueOut]
+
+
+class SequenceOut(BaseModel):
+    """One request and its reply (either side may be missing)."""
+    state: str                       # answered | nak | unanswered | pending | unexpected
+    component: Optional[str]
+    command: Optional[str]
+    device_id: Optional[str]
+    correlation_id: Optional[str]
+    request_event_id: Optional[int]  # look either line up in /api/logs/events
+    request_at: Optional[datetime]
+    reply_event_id: Optional[int]
+    reply_at: Optional[datetime]
+    latency_ms: Optional[int]
+    status: Optional[str]
+
+
+class CommandStatsOut(BaseModel):
+    component: Optional[str]
+    command: Optional[str]
+    total: int
+    answered: int
+    nak: int
+    unanswered: int
+    median_latency_ms: Optional[int]
+    max_latency_ms: Optional[int]
+
+
+class SequencePageOut(BaseModel):
+    counts: dict[str, int]           # sequences per state, over the whole search (not just this page)
+    by_command: list[CommandStatsOut]
+    total: int                       # sequences matching every filter, including state/command
+    items: list[SequenceOut]

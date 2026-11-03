@@ -62,6 +62,12 @@ def _conditions(f: EventFilter) -> list:
         conds.append(E.source_file == f.source_file)
     if f.text is not None:
         conds.append(E.message.ilike(_like_pattern(f.text), escape="\\"))
+    if f.message_kinds:
+        conds.append(E.message_kind.in_(f.message_kinds))
+    if f.components:
+        conds.append(E.component.in_(f.components))
+    if f.correlation_id is not None:
+        conds.append(E.correlation_id == f.correlation_id)
     return conds
 
 
@@ -137,6 +143,7 @@ class Facets:
     categories: list[tuple[Optional[str], int]]
     devices: list[tuple[Optional[str], int]]
     distinct_devices: int
+    message_kinds: list[tuple[Optional[str], int]] = field(default_factory=list)
 
 
 def facets(db: Session, f: EventFilter) -> Facets:
@@ -157,6 +164,7 @@ def facets(db: Session, f: EventFilter) -> Facets:
         total=total, first_timestamp=first, last_timestamp=last,
         sources=grouped(E.source), severities=grouped(E.severity), categories=grouped(E.category),
         devices=grouped(E.device_id, FACET_LIMIT), distinct_devices=distinct,
+        message_kinds=grouped(E.message_kind),
     )
 
 
