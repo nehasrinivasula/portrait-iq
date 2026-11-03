@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { searchEvents, type LogEvent, type LogFilter } from "./logsApi";
+import { categoryLabel, type PrivacyOptions } from "../privacy/privacyApi";
+import "../privacy/privacy.css";
 
 const time = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
 
@@ -13,9 +15,25 @@ function Message({ text }: { text: string }) {
   );
 }
 
+/** What the scan found in one event: kinds only, never the matched text. */
+function Flags({ e }: { e: LogEvent }) {
+  if (e.privacy_scanned === false) return <span className="muted" title="Not scanned yet">not scanned</span>;
+  const flags = e.sensitive ?? [];
+  if (flags.length === 0) return <span className="muted">—</span>;
+  const kinds = [...new Set(flags.map((f) => f.category))];
+  return (
+    <>
+      {kinds.map((k) => {
+        const conf = flags.find((f) => f.category === k)?.confidence ?? "medium";
+        return <span key={k} className={`flag-tag ${conf}`} title={`${conf} confidence`}>{categoryLabel(k)}</span>;
+      })}
+    </>
+  );
+}
+
 /** The scrolling part of the logs page. Filters change -> first page again. */
-export default function LogTable({ filter, reloadKey, onTotal, filtered }: {
-  filter: LogFilter; reloadKey: number; onTotal: (n: number | null) => void; filtered: boolean;
+export default function LogTable({ filter, reloadKey, onTotal, filtered, privacy }: {
+  filter: LogFilter; reloadKey: number; onTotal: (n: number | null) => void; filtered: boolean; privacy?: PrivacyOptions;
 }) {
   const [rows, setRows] = useState<LogEvent[]>([]);
   const [total, setTotal] = useState<number | null>(null);
@@ -29,7 +47,7 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered }: {
     const id = ++latest.current;
     next ? setMore(true) : setState("loading");
     try {
-      const page = await searchEvents(filter, next);
+      const page = await searchEvents(filter, next, 100, privacy);
       if (id !== latest.current) return; // a newer search replaced this one
       setRows((r) => (next ? [...r, ...page.items] : page.items));
       if (page.total !== null) { setTotal(page.total); onTotal(page.total); }
@@ -41,7 +59,7 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered }: {
     } finally {
       if (id === latest.current) setMore(false);
     }
-  }, [filter, onTotal]);
+  }, [filter, onTotal, privacy]);
 
   useEffect(() => { load(null); }, [load, reloadKey]);
 
@@ -65,7 +83,7 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered }: {
     <div className="table-wrap" ref={scroller} tabIndex={0} aria-label="Log events">
       <table className="log-table">
         <thead>
-          <tr><th scope="col">Time</th><th scope="col">Level</th><th scope="col">Device</th><th scope="col">Source</th><th scope="col">Process</th><th scope="col">Message</th></tr>
+          <tr><th scope="col">Time</th><th scope="col">Level</th><th scope="col">Device</th><th scope="col">Source</th><th scope="col">Process</th><th scope="col">Message</th><th scope="col">PHI/PII</th></tr>
         </thead>
         <tbody>
           {rows.map((e) => (
@@ -76,6 +94,7 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered }: {
               <td>{e.source}</td>
               <td>{e.process ?? "—"}</td>
               <td><Message text={e.message} /></td>
+              <td className="flag-col"><Flags e={e} /></td>
             </tr>
           ))}
         </tbody>

@@ -1,5 +1,7 @@
 import { Link } from "react-router-dom";
 import { isFinished } from "./api";
+import { checkSummary } from "./checks";
+import "./checks.css";
 import { useJobs } from "../jobs/JobsContext";
 
 const STEP_LABEL: Record<string, string> = {
@@ -60,6 +62,20 @@ export default function JobPanel() {
               ) : (
                 <>
                   <p>{r.summary}</p>
+                  {r.checks && r.checks.length > 0 && (
+                    <>
+                      <p className="muted">{checkSummary(r.checks)}</p>
+                      <ul className="checks" aria-label={`${r.tool} checks`}>
+                        {r.checks.map((c, i) => (
+                          <li key={`${i}-${c.label}`} className={`check ${c.status}`}>
+                            <span>{c.label}</span>
+                            <strong>{c.status === "pass" ? "✓ Pass" : "✗ Fail"}</strong>
+                            {c.status === "fail" && c.reason && <p>{c.reason}</p>}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
                   {r.warnings.map((w) => <div key={w} className="alert warn" role="status">{w}</div>)}
                 </>
               )}

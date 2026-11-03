@@ -1,4 +1,5 @@
 import { apiFetch } from "../../api";
+import type { CheckOutcome } from "./checks";
 
 // Contract: docs/plugins-api.md (SCRUM-39).
 
@@ -27,7 +28,7 @@ export interface Job {
 }
 
 export type ToolResult =
-  | { tool: string; summary: string; warnings: string[]; artifact_paths: string[] }
+  | { tool: string; summary: string; warnings: string[]; artifact_paths: string[]; checks?: CheckOutcome[] }
   | { tool: string; error: string };
 
 export const listPlugins = () => apiFetch<PluginList>("/api/plugins");
