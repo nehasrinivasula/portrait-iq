@@ -221,13 +221,13 @@ def test_rescan_fills_in_both_flag_columns(ingested):
 
 
 def test_flagged_false_excludes_events_judged_by_an_older_scanner(ingested):
-    assert search(ingested, flagged=False) == [2]
-    first = rows(ingested)[0]                                  # the one clean event
+    assert search(ingested, flagged=False) == [2, 5]           # "all quiet" and the ping line
+    first = rows(ingested)[0]                                  # line 2, a clean event
     first.privacy_scan_version = scanner.SCANNER_VERSION - 1
     ingested.commit()
     # The report counts it as unscanned, so the filter must not call it clean either.
     assert service.privacy_report(ingested, "job-1").unscanned_events == 1
-    assert search(ingested, flagged=False) == []
+    assert search(ingested, flagged=False) == [5]
 
 
 def test_report_and_rescan_can_cover_every_collection(ingested):
