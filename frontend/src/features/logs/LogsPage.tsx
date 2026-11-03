@@ -9,9 +9,14 @@ import { defaultTimeFrame, filterRange, type TimeFrameChoice } from "./timeframe
 
 const DEBOUNCE_MS = 300;
 
+// Keyed on the value's JSON: callers pass a new object each render, and
+// restarting the timer on identity alone re-ran the search every 300 ms,
+// so a search slower than that never finished ("Loading logs…" forever).
 function useDebounced<T>(value: T, ms: number): T {
+  const key = JSON.stringify(value);
   const [v, setV] = useState(value);
-  useEffect(() => { const t = window.setTimeout(() => setV(value), ms); return () => window.clearTimeout(t); }, [value, ms]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { const t = window.setTimeout(() => setV(value), ms); return () => window.clearTimeout(t); }, [key, ms]);
   return v;
 }
 

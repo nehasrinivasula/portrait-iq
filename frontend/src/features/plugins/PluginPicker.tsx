@@ -8,6 +8,8 @@ import { defaultTimeFrame, resolveTimeFrame, toApi } from "../logs/timeframe";
 import { listPlugins, startJob, uploadPcap, type Job, type Plugin } from "./api";
 import { RtiOptions, TsharkOptions } from "./ToolOptions";
 import { buildOptions, defaultChoices, validateChoices, validateTargetIp } from "./options";
+import { useJobs } from "../jobs/JobsContext";
+import DeviceFinder from "../devices/DeviceFinder";
 import "./plugins.css";
 
 // Not offered here: hub_import is only a demo path, and lives on the Logs page.
@@ -39,7 +41,7 @@ export default function PluginPicker({ onStarted, locked }: {
   const [skipped, setSkipped] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [choices, setChoices] = useState(defaultChoices);
-  const [targetIp, setTargetIp] = useState("");
+  const { targetIp, setTargetIp } = useJobs();   // kept when the engineer leaves this page
   const [logsOn, setLogsOn] = useState(true);
   const [logsReason, setLogsReason] = useState<string | null>(null); // why logs can't be collected here
   const [frame, setFrame] = useState(defaultTimeFrame);
@@ -130,8 +132,9 @@ export default function PluginPicker({ onStarted, locked }: {
             aria-describedby={submitted && ipError ? `${uid}-ip-err` : `${uid}-ip-hint`}
             onChange={(e) => setTargetIp(e.target.value)} />
           {submitted && ipError ? <div className="error-text" id={`${uid}-ip-err`} role="alert">{ipError}</div>
-            : <div className="hint" id={`${uid}-ip-hint`}>For example 192.168.0.3.</div>}
+            : <div className="hint" id={`${uid}-ip-hint`}>For example 192.168.0.3, or pick a device below.</div>}
         </div>
+        <DeviceFinder selectedIp={targetIp} onUse={setTargetIp} />
       </section>
 
       <section aria-labelledby={`${uid}-logs`}>
