@@ -43,6 +43,10 @@ NODE_PORT            = 30080
 # RTI_IMAGE is the name it was saved under. Default: false.
 # RTI                  = true
 # RTI_IMAGE            = axone-umf-rtitools:temp
+# The QoS file in that image with the AxoneNetQoSLibrary profiles (GE's
+# Admin Console uses this one). Without it rtiddsspy prints "QoS profile ...
+# was not found", skips DDS security and sees no devices.
+# RTI_QOS_FILE         = /opt/axone-tools/qos/MDH-tools-RTIAdminConsole.xml
 
 # Absolute path to a folder outside the repo, e.g. $(HOME)/portrait-iq-secrets
 SECRETS_DIR          =

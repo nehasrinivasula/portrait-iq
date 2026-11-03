@@ -34,6 +34,7 @@ NODE_PORT     ?= 30080
 TSHARK_LIVE_CAPTURE ?= false
 RTI ?= false
 RTI_IMAGE ?= docker-axone-all/axone-umf-rtitools:branch-latest
+RTI_QOS_FILE ?=
 LOG_EXPORT_URL ?= http://$(LOG_EXPORT_SERVICE).$(LOG_EXPORT_NAMESPACE).svc.cluster.local:9200
 SECRETS_DIR   ?=#   folder OUTSIDE the repo, one file per secret (backend/SECRETS.md)
 API_CHECK_HOUR ?=#  optional, YYYY-MM-DDTHH; default is the last full hour on the node
@@ -142,7 +143,7 @@ render:
 		sed -e "s|__IMAGE__|$$image|" -e "s|__LOG_EXPORT_URL__|$(LOG_EXPORT_URL)|" \
 		    -e "s|__NODE_PORT__|$(NODE_PORT)|" -e "s|__NAMESPACE__|$(NAMESPACE)|" \
 		    -e "s|__TSHARK_LIVE_CAPTURE__|$(TSHARK_LIVE_CAPTURE)|" \
-		    -e "s|__RTI__|$(RTI)|" -e "s|__RTI_IMAGE__|$(RTI_IMAGE)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
+		    -e "s|__RTI__|$(RTI)|" -e "s|__RTI_IMAGE__|$(RTI_IMAGE)|" -e "s|__RTI_QOS_FILE__|$(RTI_QOS_FILE)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
 	done
 
 bundle: render
