@@ -44,6 +44,10 @@ class Job(Base):
     mem_limit_mb = Column(Integer, nullable=True)
     max_output_mb = Column(Integer, nullable=True)
     tools = Column(Text, nullable=True)              # JSON list, e.g. ["netshoot","rti"]
+    # The request that started this background job. The job can finish after
+    # the browser request ends, so these fields preserve its audit ownership.
+    requested_by = Column(String, nullable=True)
+    session_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
 
@@ -183,5 +187,9 @@ class AuditLogEntry(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
     actor = Column(String, nullable=False)     # user id — real once auth.py is real
+    # JWT ``jti`` for user-initiated work. System/background work has no
+    # browser session, so it remains null. This lets a reviewer reconstruct
+    # one login session without inferring it from timestamps alone.
+    session_id = Column(String, nullable=True, index=True)
     action = Column(String, nullable=False)
     detail = Column(Text, nullable=True)
