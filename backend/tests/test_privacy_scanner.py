@@ -268,4 +268,43 @@ def test_the_wider_rules_do_not_flag_ordinary_log_text():
 
 
 def test_a_change_to_the_rules_bumps_the_scanner_version():
-    assert SCANNER_VERSION >= 2
+    assert SCANNER_VERSION >= 3
+
+
+def test_a_card_after_a_short_number_is_found():
+    assert _masked("12:00:01 4111 1111 1111 1111 ok") == "12:00:01 [REDACTED:credit_card] ok"
+    assert _masked("qty 2 4111111111111111 total") == "qty 2 [REDACTED:credit_card] total"
+    assert _masked("paid 4111 1111 1111 1111 12 items") == "paid [REDACTED:credit_card] 12 items"
+
+
+def test_more_common_keys_are_found():
+    cases = {
+        "patientMRN=123456": "record_identifier",
+        "patient_mrn: 123456": "record_identifier",
+        "patientSSN=123-45-6789": "ssn",
+        "phone=608-555-0142": "phone",
+        "tel: (608) 555-0142": "phone",
+    }
+    for text, category in cases.items():
+        assert [f.category for f in scan_text(text)] == [category], text
+    assert scan_text("phone=none") == () and scan_text("tel=12") == ()
+
+
+def test_hl7_is_found_after_a_comma_or_bracket():
+    for prefix in ("a=1,", "(", "[", "{", "x;"):
+        assert [f.category for f in scan_text(prefix + "PID|1||12345^^^MRN||DOE^JOHN")] == ["hl7_patient_segment"], prefix
+
+
+def test_values_are_masked_whole():
+    assert _masked("patientName=Jean de la Cruz admitted") == "patientName=[REDACTED:person_name] admitted"
+    assert _masked("patientName=Ludwig van Beethoven ok") == "patientName=[REDACTED:person_name] ok"
+    assert _masked("patientName=José Núñez ok") == "patientName=[REDACTED:person_name] ok"
+    assert _masked("patientName=李 明 ok") == "patientName=[REDACTED:person_name] ok"
+    assert _masked("mrn=1234 5678 ok") == "mrn=[REDACTED:record_identifier] ok"
+    assert _masked("dob=01 02 1980 ok") == "dob=[REDACTED:date_of_birth] ok"
+    assert _masked("dob=1980 02 01 ok") == "dob=[REDACTED:date_of_birth] ok"
+
+
+def test_two_labelled_values_joined_by_a_comma_are_both_found():
+    cats = [f.category for f in scan_text("mrn=123456,ssn=123-45-6789")]
+    assert cats == ["record_identifier", "ssn"]

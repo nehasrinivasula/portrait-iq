@@ -28,8 +28,9 @@ from app.privacy.scanner import SCANNER_VERSION, category_group, scan_event_fiel
 
 
 def _shape(text: str) -> str:
-    """Hide the characters, keep the form: digits -> 9, letters -> a / A."""
-    return "".join("9" if c.isdigit() else ("a" if c.islower() else ("A" if c.isupper() else c)) for c in text)
+    """Hide the characters, keep the form: digits -> 9, letters -> a / A (a letter with no case, as in
+    Chinese or Hebrew, is shown as a). Only spaces and punctuation are printed as they are."""
+    return "".join("9" if c.isdigit() else ("A" if c.isupper() else ("a" if c.isalpha() else c)) for c in text)
 
 
 def scan_file(path: Path, examples: Optional[Counter] = None) -> Optional[tuple[int, int, Counter, Counter]]:

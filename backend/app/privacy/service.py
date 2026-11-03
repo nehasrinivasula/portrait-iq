@@ -125,12 +125,16 @@ def rescan(db: Session, job_id: Optional[str] = None) -> int:
     if job_id is not None:
         conds.append(_in_collection(job_id))
     done = 0
+    last_id = 0
     while True:
+        # Page by id, so each batch starts where the last ended instead of walking past scanned rows again.
         rows = db.execute(
-            select(E.id, E.message, E.device_id, E.process, E.category).where(and_(*conds)).limit(RESCAN_BATCH)
+            select(E.id, E.message, E.device_id, E.process, E.category)
+            .where(and_(E.id > last_id, *conds)).order_by(E.id).limit(RESCAN_BATCH)
         ).all()
         if not rows:
             return done
+        last_id = rows[-1].id
         db.execute(update(E), [
             {"id": r.id, **scan_columns(message=r.message, device_id=r.device_id,
                                          process=r.process, category=r.category)}

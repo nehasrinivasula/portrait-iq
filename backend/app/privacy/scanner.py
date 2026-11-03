@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Callable, Optional
 
-SCANNER_VERSION = 2
+SCANNER_VERSION = 3
 
 # Fields of a log event that are scanned. `message` is where nearly all of it is.
 FIELDS = ("message", "device_id", "process", "category")
@@ -121,17 +121,17 @@ _MAC = re.compile(r"(?<![\w:-])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![\w:-])
 # HL7 v2 segments that carry patient data. The segment ends at a carriage
 # return, a newline, or their escaped two-character forms (\r, \n) as they
 # appear inside single-line log messages.
-_HL7 = re.compile(r"(?:^|(?<=[\s\"'|=:])|(?<=\\r)|(?<=\\n))(?:PID|NK1|GT1|IN1)\|[^\r\n]*?(?=\\r|\\n|\r|\n|$)")
+_HL7 = re.compile(r"(?:^|(?<=[\s\"'|=:,(\[{;])|(?<=\\r)|(?<=\\n))(?:PID|NK1|GT1|IN1)\|[^\r\n]*?(?=\\r|\\n|\r|\n|$)")
 
 # label -> category. The value after the label is what gets flagged.
 _SEP = r"[_ .-]?"          # "patient_name", "patient name", "patient.name", "patient-name", "patientName"
 _LABELS = {
     "person_name": rf"patient{_SEP}(?:first|last|middle|given|family|full)?{_SEP}name|pt{_SEP}name|first{_SEP}name|last{_SEP}name|given{_SEP}name|family{_SEP}name|surname|full{_SEP}name|guarantor{_SEP}name|next{_SEP}of{_SEP}kin",
-    "record_identifier": rf"patient{_SEP}id|patient{_SEP}number|mrn|medical{_SEP}record(?:{_SEP}(?:number|no|id))?|account{_SEP}(?:number|no|id)|insurance{_SEP}(?:id|number)|member{_SEP}id|policy{_SEP}(?:id|number)|visit{_SEP}(?:id|number)|encounter{_SEP}(?:id|number)",
+    "record_identifier": rf"patient{_SEP}mrn|patient{_SEP}id|patient{_SEP}number|mrn|medical{_SEP}record(?:{_SEP}(?:number|no|id))?|account{_SEP}(?:number|no|id)|insurance{_SEP}(?:id|number)|member{_SEP}id|policy{_SEP}(?:id|number)|visit{_SEP}(?:id|number)|encounter{_SEP}(?:id|number)",
     "date_of_birth": rf"patient{_SEP}dob|patient{_SEP}birth{_SEP}date|dob|date{_SEP}of{_SEP}birth|birth{_SEP}date|birthday",
     "street_address": rf"home{_SEP}address|street{_SEP}address|mailing{_SEP}address|patient{_SEP}address",
-    "ssn": rf"ssn|social{_SEP}security(?:{_SEP}(?:number|no))?",
-    "phone": rf"patient{_SEP}phone|home{_SEP}phone|mobile{_SEP}phone|phone{_SEP}number",
+    "ssn": rf"patient{_SEP}ssn|ssn|social{_SEP}security(?:{_SEP}(?:number|no))?",
+    "phone": rf"patient{_SEP}phone|home{_SEP}phone|mobile{_SEP}phone|phone{_SEP}number|phone|tel(?:ephone)?",
     "email": rf"patient{_SEP}email|e-?mail",
 }
 _LABEL_NAMES = [(cat, f"lbl_{i}") for i, cat in enumerate(_LABELS)]
@@ -142,7 +142,7 @@ _LABELED = re.compile(
     + r")(?![A-Za-z0-9])(?:\\?[\"']|#)*\s*(?:=>|:|=)\s*"
     # The value: quoted (possibly JSON-escaped) or bare. A bare value starts as one run of non-space text;
     # _extend() widens it for the kinds that span spaces (names, dates, addresses).
-    r"(?:\\?\"(?P<dq>[^\"\\]{1,80})\\?\"|'(?P<sq>[^']{1,80})'|(?P<bare>[^\s;|\"}\])]+))",
+    r"(?:\\?\"(?P<dq>[^\"\\]{1,80})\\?\"|'(?P<sq>[^']{1,80})'|(?P<bare>[^\s,;|\"}\])]+))",
     re.IGNORECASE,
 )
 # "DOB 01/02/1980": a date of birth labelled with a space instead of = or :.
@@ -210,16 +210,23 @@ def _hits_card(text: str) -> list[_Hit]:
     for m in _CARD.finditer(text):
         # The match is greedy and can swallow a number that follows the card ("4111 1111 1111 1111 123").
         # Try the whole run first, then drop trailing groups until one is a real card number.
+        # It can just as well start with a short number before the card ("12:00:01 4111 ...", "qty 2 4111 ...").
         groups = [(g.group(), g.start()) for g in re.finditer(r"\d+", m.group())]
-        for k in range(len(groups), 0, -1):
-            digits = "".join(g for g, _ in groups[:k])
-            if len(digits) < 15 or not (_card_issuer_ok(digits) and _luhn_ok(digits)):
-                continue
-            end = m.start() + groups[k - 1][1] + len(groups[k - 1][0])
-            if end < len(text) and text[end] == "." and text[end + 1:end + 2].isdigit():
-                break                                           # the start of a decimal number
-            out.append(_Hit("credit_card", MEDIUM, m.start(), end))
-            break
+        found = False
+        for first in range(len(groups)):
+            for last in range(len(groups), first, -1):
+                digits = "".join(g for g, _ in groups[first:last])
+                if len(digits) < 15 or not (_card_issuer_ok(digits) and _luhn_ok(digits)):
+                    continue
+                start = m.start() + groups[first][1]
+                end = m.start() + groups[last - 1][1] + len(groups[last - 1][0])
+                if end < len(text) and text[end] == "." and text[end + 1:end + 2].isdigit():
+                    continue                                    # the start of a decimal number
+                out.append(_Hit("credit_card", MEDIUM, start, end))
+                found = True
+                break
+            if found:
+                break
     return out
 
 
@@ -246,13 +253,17 @@ def _hits_hl7(text: str) -> list[_Hit]:
 
 _NAME_STOP = frozenset({"a", "an", "and", "at", "by", "for", "from", "has", "had", "in", "is", "of", "on", "or",
                         "the", "to", "was", "were", "with", "not", "no"})
-_NAME_NEXT = re.compile(r"[ ]*,?[ ]+([A-Za-z][A-Za-z'\u2019.-]*)(?![=:\w])")
+_NAME_NEXT = re.compile(r"[ ]*,?[ ]+([^\W\d_](?:[^\W\d_]|['\u2019.-])*)(?![=:\w])")
+_NAME_PARTICLES = frozenset({"van", "von", "de", "del", "della", "der", "den", "di", "da", "du", "la", "le", "bin", "ibn",
+                             "al", "el", "st", "mc", "mac", "ter", "ten", "af"})
 _SSN_VALUE = re.compile(r"\d{3}[ -]\d{2}[ -]\d{4}")
 _PHONE_VALUE = re.compile(r"(?:\+?1[ .-])?(?:\(\d{3}\)[ ]?|\d{3}[ .-])\d{3}[ .-]\d{4}")
 _DOB_VALUES = (
     re.compile(r"[A-Za-z]{3,9}\.?[ ]\d{1,2}(?:st|nd|rd|th)?,?[ ]\d{4}"),     # January 5, 1980
     re.compile(r"\d{1,2}[ ][A-Za-z]{3,9}\.?,?[ ]\d{4}"),                      # 5 January 1980
+    re.compile(r"\d{1,2}[ ]\d{1,2}[ ]\d{2,4}|\d{4}[ ]\d{1,2}[ ]\d{1,2}"),       # 01 02 1980
 )
+_ID_VALUE = re.compile(r"\d[\w-]*(?:[ ]\d[\w-]*){0,3}")                        # 1234 5678
 _ADDRESS_VALUE = re.compile(r"[^;|\"\r\n]{1,80}")
 
 
@@ -262,13 +273,20 @@ def _extend(category: str, text: str, start: int, end: int) -> int:
     end = start + len(text[start:end].rstrip(",.;:"))
     if category == "person_name":
         allow_lower = text[start:start + 1].islower()           # "john smith" is all lower case; "John Smith was" is not
-        for _ in range(2):
+        words = 0
+        for _ in range(5):
             m = _NAME_NEXT.match(text, end)
             if m is None:
                 break
             word = m.group(1)
-            if word.lower().strip(".'-") in _NAME_STOP or not (word[0].isupper() or allow_lower):
+            low = word.lower().strip(".'-")
+            particle = low in _NAME_PARTICLES                    # "van Beethoven", "de la Cruz": part of the name
+            if low in _NAME_STOP or not (particle or allow_lower or not word[0].islower()):
                 break
+            if not particle:
+                words += 1
+                if words > 2:
+                    break
             end = m.end()
         return start + len(text[start:end].rstrip(",.;:"))
     if category == "street_address":
@@ -280,6 +298,8 @@ def _extend(category: str, text: str, start: int, end: int) -> int:
         m = _PHONE_VALUE.match(text, start)
     elif category == "date_of_birth":
         m = next((r.match(text, start) for r in _DOB_VALUES if r.match(text, start)), None)
+    elif category == "record_identifier":
+        m = _ID_VALUE.match(text, start)
     else:
         m = None
     return m.end() if m is not None else end
@@ -306,6 +326,8 @@ def _hits_labeled(text: str) -> list[_Hit]:
             end = _extend(category, text, start, end)
             if end <= start or text[start:end].lower() in _PLACEHOLDERS:
                 continue
+        if category == "phone" and sum(c.isdigit() for c in text[start:end]) < 7:
+            continue
         out.append(_Hit(category, HIGH, start, end))
     return out
 

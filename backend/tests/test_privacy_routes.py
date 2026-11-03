@@ -239,15 +239,30 @@ def test_facets_withhold_device_and_category_values_when_masking(env):
     assert masked["total"] == plain["total"] and masked["sources"] == plain["sources"]
 
 
-def test_report_and_scan_cover_every_collection(env):
+def test_report_and_scan_cover_every_collection(env, monkeypatch):
     client, db = env
     _legacy(db, f"legacy {SSN}")
     body = client.get("/api/logs/privacy").json()
     assert (body["job_id"], body["events"], body["unscanned_events"], body["all_scanned"]) == ("all", 4, 1, False)
-    assert body["ingest_complete"] is None and body["complete_for_packaging"] is False
+    assert body["complete_for_packaging"] is False
     assert client.post("/api/logs/privacy/scan").json() == {"scanned": 1}
     after = client.get("/api/logs/privacy").json()
-    assert after["all_scanned"] and after["flagged_events"] == 3 and after["complete_for_packaging"] is True
+    assert after["all_scanned"] and after["flagged_events"] == 3
+    # "all" is complete only when every collection is; it never reads as complete by default.
+    per_collection = [client.get(f"/api/logs/collections/{c['job_id']}/privacy").json()["ingest_complete"]
+                      for c in client.get("/api/logs/collections").json()]
+    assert after["ingest_complete"] is all(per_collection) and after["complete_for_packaging"] is all(per_collection)
+
+    import app.storage.routes as routes
+    real = routes.store.collection_summary
+
+    def complete(db, job_id):
+        summary = real(db, job_id)
+        summary.complete = True
+        return summary
+
+    monkeypatch.setattr(routes.store, "collection_summary", complete)
+    assert client.get("/api/logs/privacy").json()["complete_for_packaging"] is True
 
 
 def test_an_empty_collection_is_not_reported_as_scanned(env):

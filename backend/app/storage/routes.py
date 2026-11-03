@@ -270,12 +270,12 @@ def privacy_categories(user: User = Depends(_active_user)):
     return [PrivacyCategoryOut(category=k, description=v, group=category_group(k)) for k, v in CATEGORY_LABELS.items()]
 
 
-def _privacy_out(r, ingest_complete: Optional[bool]) -> PrivacyReportOut:
+def _privacy_out(r, ingest_complete: bool) -> PrivacyReportOut:
     return PrivacyReportOut(
         job_id=r.job_id, scanner_version=r.scanner_version, events=r.events,
         scanned_events=r.scanned_events, unscanned_events=r.unscanned_events, all_scanned=r.all_scanned,
         ingest_complete=ingest_complete,
-        complete_for_packaging=r.all_scanned and ingest_complete is not False,
+        complete_for_packaging=r.all_scanned and ingest_complete,
         flagged_events=r.flagged_events, network_identifier_events=r.network_events,
         network_by_category=_counts(r.network_by_category), by_category=_counts(r.flags_by_category),
         by_confidence=_counts(r.flags_by_confidence), by_field=_counts(r.flags_by_field),
@@ -286,14 +286,21 @@ def _privacy_out(r, ingest_complete: Optional[bool]) -> PrivacyReportOut:
     )
 
 
+def _ingest_complete(db: Session, scope: Optional[str]) -> bool:
+    """Did everything that was pulled in actually get stored? One collection, logs tied to no collection, or
+    (scope None) every collection. A missing answer counts as not complete: this feeds a check that must fail closed."""
+    if scope is not None:
+        summary = store.collection_summary(db, scope)
+        return summary is not None and summary.complete
+    scopes = [c.job_id for c in store.list_collections(db, 200)]
+    return bool(scopes) and all(_ingest_complete(db, s) for s in scopes)
+
+
 def _report(db: Session, user: User, scope: Optional[str]) -> PrivacyReportOut:
     """scope: a job id, UNASSIGNED, or None for every event."""
-    complete: Optional[bool] = None
-    if scope not in (None, UNASSIGNED):
-        if db.get(Job, scope) is None:
-            raise HTTPException(404, "collection not found")
-        summary = store.collection_summary(db, scope)
-        complete = summary.complete if summary is not None else None
+    if scope not in (None, UNASSIGNED) and db.get(Job, scope) is None:
+        raise HTTPException(404, "collection not found")
+    complete = _ingest_complete(db, scope)
     r = privacy.privacy_report(db, scope)
     log_action(db, user.id, "logs_privacy_report",
                detail=f"job={scope or 'all'} flagged={r.flagged_events} unscanned={r.unscanned_events}",
