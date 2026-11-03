@@ -121,3 +121,11 @@ def test_bad_target_is_refused_before_any_pod(tmp_path, monkeypatch, enabled):
 def test_summary_ignores_unknown_lines():
     assert summarize("nothing useful\n")["topics"] == {}
     assert summarize(SPY_OUTPUT)["hosts"] == ["192.0.2.21", "192.0.2.30"]
+
+
+def test_configured_peer_replaces_the_target(tmp_path, monkeypatch, enabled):
+    monkeypatch.setattr(settings, "rti_peer", "udpv4://router.example.svc.cluster.local")
+    runner = FakeRunner()
+    configured(tmp_path, monkeypatch, runner).run("192.0.2.10")
+    argv = runner.execs[0]
+    assert argv[argv.index("-peer") + 1] == "udpv4://router.example.svc.cluster.local"

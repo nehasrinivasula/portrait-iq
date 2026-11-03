@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     # in /opt/axone-tools/qos/ in the image; empty uses the image's default.
     rti_qos_file: str = ""
     rti_qos_profile: str = "AxoneNetQoSLibrary::umfgeneral_qos"
+    # Discovery peer for rtiddsspy instead of the job's target IP. GE's
+    # profile turns multicast off, so the spy must be pointed at a domain
+    # participant, e.g. the router's headless service on the bench:
+    # udpv4://axone-router-1.pm.svc.cluster.local
+    rti_peer: str = ""
     # Where tshark and editcap are on the machine running the backend, when
     # they are not on PATH (the Windows installer does not add them), e.g.
     # C:\Program Files\Wireshark

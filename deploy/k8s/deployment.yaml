@@ -88,6 +88,9 @@ spec:
             # means rtiddsspy runs without GE's security and sees nothing.
             - name: RTI_QOS_FILE
               value: "__RTI_QOS_FILE__"
+            # Who rtiddsspy asks for discovery; empty uses the job's target IP.
+            - name: RTI_PEER
+              value: "__RTI_PEER__"
           # The pod shares the MiniEdge with the Portrait software and must
           # not starve it. Raise only after watching real usage.
           resources:

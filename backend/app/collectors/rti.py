@@ -86,7 +86,7 @@ class RtiCollector(Collector):
 
     def spy_argv(self, target_ip: str) -> list[str]:
         argv = ["timeout", str(self.duration_s), "rtiddsspy", "-domainId", str(self.domain),
-                "-peer", target_ip]
+                "-peer", settings.rti_peer or target_ip]
         if settings.rti_qos_file:
             argv += ["-qosFile", settings.rti_qos_file]
         if settings.rti_qos_profile:
