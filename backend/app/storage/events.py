@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AcquiredFileRecord, IngestedFile, Job
 from app.models import NormalizedEvent as E
+from app.privacy.scanner import SCANNER_VERSION
 from app.storage.completeness import FileLedger, Issue, ManifestEntry, assess, is_complete
 from app.storage.filters import (
     DEFAULT_LIMIT, MAX_LIMIT, UNASSIGNED, EventFilter, decode_cursor, encode_cursor,
@@ -62,6 +63,16 @@ def _conditions(f: EventFilter) -> list:
         conds.append(E.source_file == f.source_file)
     if f.text is not None:
         conds.append(E.message.ilike(_like_pattern(f.text), escape="\\"))
+    if f.flagged is True:
+        conds.append(E.sensitive_flags.is_not(None))
+    elif f.flagged is False:
+        conds.append(E.sensitive_flags.is_(None))
+        conds.append(E.privacy_scan_version >= SCANNER_VERSION)   # "clean" means judged by the current rules, nothing found
+    if f.flag_categories:
+        # The stored JSON holds only field names, kinds and numbers, so a quoted kind matches only a kind.
+        # Personal kinds live in sensitive_flags, IP and MAC kinds in network_flags.
+        conds.append(or_(*[col.like(f'%"{k}"%') for k in f.flag_categories
+                           for col in (E.sensitive_flags, E.network_flags)]))
     return conds
 
 

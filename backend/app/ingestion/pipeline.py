@@ -18,6 +18,9 @@ top of it):
   * Receipted. Each stored file also gets one IngestedFile row (rows read,
     events stored, rows rejected) in the same transaction, so the unified log
     view can prove nothing was lost after ingest.
+  * Scanned. Every stored event is checked for PHI/PII patterns as it is
+    written (app/privacy) and carries the scanner version and its flags, so
+    nothing reaches the event store unjudged.
   * UTC only. Timestamps are stored as naive UTC. SQLite discards timezone
     info, so storing anything other than UTC would silently shift times.
 """
@@ -34,6 +37,7 @@ from sqlalchemy.orm import Session
 from app.ingestion.parsers.base import LogParser, ParseReport, UnrecognizedLogFormat
 from app.ingestion.registry import detect_parser, iter_events
 from app.models import IngestedFile
+from app.privacy.scanner import scan_columns
 from app.models import NormalizedEvent as EventRow
 
 DEFAULT_PATTERNS = ("*.csv", "*.log")
@@ -125,6 +129,8 @@ def ingest_file(
                     "message": event.message,
                     "source_file": label,
                     "source_line": event.source_line,
+                    **scan_columns(message=event.message, device_id=event.device_id,
+                                   process=event.process, category=event.category),
                 }
             )
             if len(batch) >= batch_size:

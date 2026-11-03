@@ -57,6 +57,8 @@ class EventFilter:
     process: Optional[str] = None
     source_file: Optional[str] = None
     text: Optional[str] = None                # case-insensitive substring of the message
+    flagged: Optional[bool] = None            # True: has PHI/PII flags; False: scanned, none found
+    flag_categories: tuple[str, ...] = ()     # only events flagged with one of these kinds
 
     @property
     def effective_severities(self) -> Optional[tuple[str, ...]]:
@@ -77,6 +79,7 @@ class EventFilter:
             "device": self.devices, "source": self.sources, "category": self.categories,
             "severity": self.severities, "min_severity": self.min_severity,
             "process": self.process, "source_file": self.source_file, "text": self.text,
+            "flagged": self.flagged is not None, "flag_category": self.flag_categories,
         }
         return [name for name, value in names.items() if value]
 
@@ -94,6 +97,8 @@ def build_filter(
     process: Optional[str] = None,
     source_file: Optional[str] = None,
     text: Optional[str] = None,
+    flagged: Optional[bool] = None,
+    flag_categories: Optional[Iterable[str]] = None,
 ) -> EventFilter:
     """Validate and normalise raw search parameters. Raises FilterError."""
     since = to_naive_utc(since) if since else None
@@ -117,6 +122,12 @@ def build_filter(
     if text and len(text) > MAX_TEXT_LENGTH:
         raise FilterError(f"Search text is limited to {MAX_TEXT_LENGTH} characters.")
 
+    kinds = _clean(flag_categories)
+    from app.privacy.scanner import CATEGORY_LABELS
+    unknown = [k for k in kinds if k not in CATEGORY_LABELS]
+    if unknown:
+        raise FilterError(f"Unknown flag category '{unknown[0]}'. Use one of: {', '.join(CATEGORY_LABELS)}.")
+
     return EventFilter(
         since=since,
         until=until,
@@ -129,6 +140,8 @@ def build_filter(
         process=(process or "").strip() or None,
         source_file=(source_file or "").strip() or None,
         text=text,
+        flagged=flagged,
+        flag_categories=kinds,
     )
 
 

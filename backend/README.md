@@ -443,6 +443,61 @@ Limits to know about:
   that. The standalone `device_id` index is gone because `(device_id, timestamp)`
   covers it; a database created earlier keeps the old one, which is harmless.
 
+## PHI/PII flagging (S-3)
+
+Every event is scanned for known patterns of protected health information and
+personal data **as it is ingested**, and the result is stored with the event.
+Nothing reaches the event store unjudged: each event carries the scanner
+version that checked it (`privacy_scan_version`), and a flag list
+(`sensitive_flags`) that is empty when nothing was found.
+
+What it looks for (`GET /api/logs/privacy/categories` lists these live):
+labelled values (`patientName=`, `mrn=`, `dob=`, `patient_id`, insurance and
+account numbers), HL7 patient segments (`PID`, `NK1`, `GT1`, `IN1`), SSNs,
+emails, US phone numbers, payment card numbers (real card-network prefix and
+Luhn-checked), and street addresses (including `123 N Main St` and `123 MAIN ST` forms). The `message`, `device_id`, `process` and
+`category` fields are all scanned. Each flag has a kind, a confidence
+(`high`, `medium`, `low`) and a character range.
+
+**A flag stores where the data is, never what it is.** The stored value is
+`[["message","ssn","high",12,23]]`-shaped; the matched text is not copied into
+flags, reports or the audit log.
+
+What it cannot do: a name written in a plain sentence ("John Smith left bed 4")
+has no pattern and is not detected; a name after a label is. IP and MAC
+addresses are recorded separately as **network identifiers** (`network_flags`,
+`network_identifiers` in the API, `network_identifier_events` in the report):
+they identify equipment, which this tool exists to read (on the real sample set
+58% of events have a MAC-style device name), so they never make an event count
+as "flagged" and `mask=true` leaves them alone. Treat the scan as a safety net for known patterns, not
+as proof a log is clean. Flagging marks text; it removes nothing unless the
+caller asks for `mask=true`.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/logs/events`, `GET /api/logs/collections/{id}/events` | Each event now has `privacy_scanned`, `sensitive` (flags) and `masked`. Add `mask=true` to get `[REDACTED:<kind>]` in place of flagged text (positions are then omitted, for network identifiers too). An event the current scanner has not judged is scanned on the spot for that response, and an event whose stored flags cannot be read is withheld entirely (`[REDACTED:unreadable]`), so `mask=true` never returns unchecked text. Filters: `flagged=true/false` (`false` means judged clean by the *current* scanner), `flag_category=ssn` (repeatable) |
+| `GET /api/logs/facets?mask=true` | Withholds the `devices` and `categories` lists: those are log fields that can hold flagged text, and the table masks them |
+| `GET /api/logs/collections/{id}/privacy`, `GET /api/logs/privacy` | Report for one collection, or for every event (what the Logs page shows with no run chosen): events, how many were scanned by the current scanner (`all_scanned`), flagged events, flags by kind, confidence and field, and per file. Counts only. `all_scanned` is false for a collection with no events. `ingest_complete` is true only when everything pulled in was stored (no rejected rows or failed files; for "all", true for every collection) and is false when that cannot be told. **The packaging step should include the report and refuse to call a package scanned unless `complete_for_packaging` is true** (`all_scanned` and `ingest_complete`) |
+| `POST /api/logs/collections/{id}/privacy/scan`, `POST /api/logs/privacy/scan` | Scans events the current scanner has not judged yet (older data, or after a rule change). Safe to repeat. Audited when it starts (`logs_privacy_scan_start`) and when it ends or fails (`logs_privacy_scan`). A very large scan runs inside the request; running it in the background is a follow-up |
+| `GET /api/logs/privacy/categories` | The kinds and what they mean |
+
+Changing a rule: edit `app/privacy/scanner.py`, add a test case, and **bump
+`SCANNER_VERSION`**. Existing events then count as unscanned in the report
+until `POST .../privacy/scan` re-judges them.
+
+Try it on real logs without a database. It prints counts and timing only,
+never log text:
+
+```bash
+python -m app.privacy.scan_samples path/to/samples.zip
+```
+
+Upgrading: this adds three nullable columns to `normalized_events`
+(`privacy_scan_version`, `sensitive_flags`, `network_flags`). They are added in
+place at startup (as for the audit columns), so existing events are kept. They
+have no scan version, so the report shows them as unscanned until
+`POST /api/logs/privacy/scan` judges them. Nothing needs deleting.
+
 ## Tool plugins (SCRUM-39)
 
 Start a job with `POST /api/jobs?target_ip=...`. It returns at once with
@@ -510,6 +565,9 @@ adds sample data for testing, put it in a gitignored folder (e.g. `data/`)
 and share it through Google Drive, Slack, or whatever your team already
 uses for GE-provided files instead.
 
+Collected logs are scanned for PHI/PII patterns on ingest; see
+[PHI/PII flagging](#phipii-flagging-s-3) for what is and is not detected.
+
 ## Deliberately not built yet
 
 - GE SSO / production identity-provider integration (the current auth is local-demo only)
@@ -520,7 +578,9 @@ uses for GE-provided files instead.
 - Downloading a whole collection as CSV/NDJSON (the unified view pages through it; an export route would reuse `storage.events.iter_events`)
 - Full-text search index, and reconciled device ids / category names across sources
 - Analytics endpoints (`analytics/service.py` has no route pointing to it)
-- Packaging the final zip artifact (`orchestrator/routes.py::package` is a stub)
+- Packaging the final zip artifact (`orchestrator/routes.py::package` is a stub). When it is built it must include the PHI/PII report for each collection (`privacy.service.privacy_report`), refuse to call the package scanned unless `complete_for_packaging` is true, and run `privacy.scanner.scan_text` over the netshoot and tshark text it adds (only log events are scanned today)
+- Masking in a CSV/NDJSON export: reuse `privacy.scanner.mask_text` so an export honours the same `mask` option as the API
+- PHI/PII flags on analysis findings and in the audit log are not needed today (neither stores log text), but any new field that copies log text must be scanned too
 
 Each of these is a natural next PR and doesn't require touching the others —
 that separation is the whole point of the layering.
