@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Callable, Optional
 
-SCANNER_VERSION = 1
+SCANNER_VERSION = 2
 
 # Fields of a log event that are scanned. `message` is where nearly all of it is.
 FIELDS = ("message", "device_id", "process", "category")
@@ -109,9 +109,11 @@ _EMAIL = re.compile(r"(?<![\w.+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9
 # likely to be a counter or an id than a phone number.
 _PHONE = re.compile(r"(?<![\w.-])(?:\+?1[ .-])?(?:\(\d{3}\)\s?|\d{3}[ .-])\d{3}[ .-]\d{4}(?![\w-])")
 _CARD = re.compile(r"(?<![\w.-])(?:\d[ -]?){12,18}\d(?![\w-])")
+# "123 Main St", "123 N Main St", "456 W 5th Ave", "123 MAIN ST". Name words are capitalised (a single
+# letter such as a direction counts) or ordinals; the street type may be in any case.
 _STREET = re.compile(
-    r"\b\d{1,5}\s+(?:[A-Z][a-z]+\.?\s){1,3}"
-    r"(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Way|Place|Pl)\b\.?"
+    r"\b\d{1,5}\s+(?:(?:[A-Z][A-Za-z']*|\d{1,3}(?:st|nd|rd|th))\.?\s+){1,3}"
+    r"(?i:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct|Way|Place|Pl)\b\.?"
 )
 _IPV4 = re.compile(r"(?<![\w.])((?:\d{1,3}\.){3}\d{1,3})(?![\w]|\.\d)")
 _MAC = re.compile(r"(?<![\w:-])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![\w:-])")
@@ -119,24 +121,33 @@ _MAC = re.compile(r"(?<![\w:-])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![\w:-])
 # HL7 v2 segments that carry patient data. The segment ends at a carriage
 # return, a newline, or their escaped two-character forms (\r, \n) as they
 # appear inside single-line log messages.
-_HL7 = re.compile(r"(?:^|(?<=[\s\"'|])|(?<=\\r)|(?<=\\n))(?:PID|NK1|GT1|IN1)\|[^\r\n]*?(?=\\r|\\n|\r|\n|$)")
+_HL7 = re.compile(r"(?:^|(?<=[\s\"'|=:])|(?<=\\r)|(?<=\\n))(?:PID|NK1|GT1|IN1)\|[^\r\n]*?(?=\\r|\\n|\r|\n|$)")
 
 # label -> category. The value after the label is what gets flagged.
+_SEP = r"[_ .-]?"          # "patient_name", "patient name", "patient.name", "patient-name", "patientName"
 _LABELS = {
-    "person_name": r"patient[_ ]?name|pt[_ ]?name|first[_ ]?name|last[_ ]?name|given[_ ]?name|family[_ ]?name|surname|full[_ ]?name|guarantor[_ ]?name|next[_ ]?of[_ ]?kin",
-    "record_identifier": r"patient[_ ]?id|patient[_ ]?number|mrn|medical[_ ]?record(?:[_ ]?(?:number|no|id))?|account[_ ]?(?:number|no|id)|insurance[_ ]?(?:id|number)|member[_ ]?id|policy[_ ]?(?:id|number)|visit[_ ]?(?:id|number)|encounter[_ ]?(?:id|number)",
-    "date_of_birth": r"dob|date[_ ]?of[_ ]?birth|birth[_ ]?date|birthday",
-    "street_address": r"home[_ ]?address|street[_ ]?address|mailing[_ ]?address|patient[_ ]?address",
-    "ssn": r"ssn|social[_ ]?security(?:[_ ]?(?:number|no))?",
-    "phone": r"patient[_ ]?phone|home[_ ]?phone|mobile[_ ]?phone|phone[_ ]?number",
-    "email": r"patient[_ ]?email|e-?mail",
+    "person_name": rf"patient{_SEP}(?:first|last|middle|given|family|full)?{_SEP}name|pt{_SEP}name|first{_SEP}name|last{_SEP}name|given{_SEP}name|family{_SEP}name|surname|full{_SEP}name|guarantor{_SEP}name|next{_SEP}of{_SEP}kin",
+    "record_identifier": rf"patient{_SEP}id|patient{_SEP}number|mrn|medical{_SEP}record(?:{_SEP}(?:number|no|id))?|account{_SEP}(?:number|no|id)|insurance{_SEP}(?:id|number)|member{_SEP}id|policy{_SEP}(?:id|number)|visit{_SEP}(?:id|number)|encounter{_SEP}(?:id|number)",
+    "date_of_birth": rf"patient{_SEP}dob|patient{_SEP}birth{_SEP}date|dob|date{_SEP}of{_SEP}birth|birth{_SEP}date|birthday",
+    "street_address": rf"home{_SEP}address|street{_SEP}address|mailing{_SEP}address|patient{_SEP}address",
+    "ssn": rf"ssn|social{_SEP}security(?:{_SEP}(?:number|no))?",
+    "phone": rf"patient{_SEP}phone|home{_SEP}phone|mobile{_SEP}phone|phone{_SEP}number",
+    "email": rf"patient{_SEP}email|e-?mail",
 }
 _LABEL_NAMES = [(cat, f"lbl_{i}") for i, cat in enumerate(_LABELS)]
 _LABELED = re.compile(
     r"(?<![A-Za-z0-9])(?:"
     + "|".join(f"(?P<{g}>{_LABELS[c]})" for c, g in _LABEL_NAMES)
-    + r")(?![A-Za-z0-9])[\"']?\s*(?:=>|:|=)\s*"
-    r"(?:\"(?P<dq>[^\"]{1,80})\"|'(?P<sq>[^']{1,80})'|(?P<bare>[^\s,;|\"'}\])]+(?:[ ](?-i:[A-Z][A-Za-z'.-]*)){0,2}))",   # extra words only if capitalised: a name, not a sentence
+    # After the label: a closing quote (possibly JSON-escaped, \\"), "#" as in "MRN#:", then = : or =>.
+    + r")(?![A-Za-z0-9])(?:\\?[\"']|#)*\s*(?:=>|:|=)\s*"
+    # The value: quoted (possibly JSON-escaped) or bare. A bare value starts as one run of non-space text;
+    # _extend() widens it for the kinds that span spaces (names, dates, addresses).
+    r"(?:\\?\"(?P<dq>[^\"\\]{1,80})\\?\"|'(?P<sq>[^']{1,80})'|(?P<bare>[^\s;|\"}\])]+))",
+    re.IGNORECASE,
+)
+# "DOB 01/02/1980": a date of birth labelled with a space instead of = or :.
+_DOB_SPACED = re.compile(
+    r"(?<![A-Za-z0-9])(?:dob|date[_ ]of[_ ]birth|birth[_ ]?date)[ ]+(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2})(?![\w])",
     re.IGNORECASE,
 )
 # Cheap pre-filters. A label rule needs one of these words; a plain `in` test on lower-cased text is
@@ -153,7 +164,7 @@ def _may_have_label(text: str) -> bool:
 # The SSN, phone and card rules each need a run of digits in one of a few shapes. One search for any
 # of those shapes decides whether to run all three; most log lines have none.
 _NUMBER_SHAPES = re.compile(
-    r"\d{3}-\d{2}-\d{4}|\(\d{3}\)|\d{3}[ .-]\d{3}[ .-]\d{4}|\d{4,6}[ -]\d{4,6}[ -]\d{3,6}|(?<!\d)[3-6]\d{14,18}"
+    r"\d{3}-\d{2}-\d{4}|\(\d{3}\)|\d{3}[ .-]\d{3}[ .-]\d{4}|\d{4,6}[ -]\d{4,6}[ -]\d{3,6}|(?<!\d)[2-6]\d{14,18}"
 ).search
 _PLACEHOLDERS = {"", "null", "none", "nil", "n/a", "na", "unknown", "undefined", "empty",
                  "redacted", "masked", "-", "--", "?", "true", "false", "0", "<empty>", "[redacted]"}
@@ -197,11 +208,18 @@ def _card_issuer_ok(d: str) -> bool:
 def _hits_card(text: str) -> list[_Hit]:
     out = []
     for m in _CARD.finditer(text):
-        digits = re.sub(r"[ -]", "", m.group())
-        if m.end() < len(text) and text[m.end()] == "." and text[m.end() + 1:m.end() + 2].isdigit():
-            continue                                            # the start of a decimal number
-        if len(digits) >= 15 and _card_issuer_ok(digits) and _luhn_ok(digits):
-            out.append(_Hit("credit_card", MEDIUM, m.start(), m.end()))
+        # The match is greedy and can swallow a number that follows the card ("4111 1111 1111 1111 123").
+        # Try the whole run first, then drop trailing groups until one is a real card number.
+        groups = [(g.group(), g.start()) for g in re.finditer(r"\d+", m.group())]
+        for k in range(len(groups), 0, -1):
+            digits = "".join(g for g, _ in groups[:k])
+            if len(digits) < 15 or not (_card_issuer_ok(digits) and _luhn_ok(digits)):
+                continue
+            end = m.start() + groups[k - 1][1] + len(groups[k - 1][0])
+            if end < len(text) and text[end] == "." and text[end + 1:end + 2].isdigit():
+                break                                           # the start of a decimal number
+            out.append(_Hit("credit_card", MEDIUM, m.start(), end))
+            break
     return out
 
 
@@ -226,34 +244,81 @@ def _hits_hl7(text: str) -> list[_Hit]:
     return [_Hit("hl7_patient_segment", HIGH, m.start(), m.end()) for m in _HL7.finditer(text)]
 
 
+_NAME_STOP = frozenset({"a", "an", "and", "at", "by", "for", "from", "has", "had", "in", "is", "of", "on", "or",
+                        "the", "to", "was", "were", "with", "not", "no"})
+_NAME_NEXT = re.compile(r"[ ]*,?[ ]+([A-Za-z][A-Za-z'\u2019.-]*)(?![=:\w])")
+_SSN_VALUE = re.compile(r"\d{3}[ -]\d{2}[ -]\d{4}")
+_PHONE_VALUE = re.compile(r"(?:\+?1[ .-])?(?:\(\d{3}\)[ ]?|\d{3}[ .-])\d{3}[ .-]\d{4}")
+_DOB_VALUES = (
+    re.compile(r"[A-Za-z]{3,9}\.?[ ]\d{1,2}(?:st|nd|rd|th)?,?[ ]\d{4}"),     # January 5, 1980
+    re.compile(r"\d{1,2}[ ][A-Za-z]{3,9}\.?,?[ ]\d{4}"),                      # 5 January 1980
+)
+_ADDRESS_VALUE = re.compile(r"[^;|\"\r\n]{1,80}")
+
+
+def _extend(category: str, text: str, start: int, end: int) -> int:
+    """End of a bare labelled value. The first run of non-space text is the least it can be; kinds that
+    normally contain spaces take the rest: a name's other words, a date, a phone or SSN, an address."""
+    end = start + len(text[start:end].rstrip(",.;:"))
+    if category == "person_name":
+        allow_lower = text[start:start + 1].islower()           # "john smith" is all lower case; "John Smith was" is not
+        for _ in range(2):
+            m = _NAME_NEXT.match(text, end)
+            if m is None:
+                break
+            word = m.group(1)
+            if word.lower().strip(".'-") in _NAME_STOP or not (word[0].isupper() or allow_lower):
+                break
+            end = m.end()
+        return start + len(text[start:end].rstrip(",.;:"))
+    if category == "street_address":
+        m = _ADDRESS_VALUE.match(text, start)
+        return start + len(m.group().rstrip(" ,.:")) if m is not None else end
+    if category == "ssn":
+        m = _SSN_VALUE.match(text, start)
+    elif category == "phone":
+        m = _PHONE_VALUE.match(text, start)
+    elif category == "date_of_birth":
+        m = next((r.match(text, start) for r in _DOB_VALUES if r.match(text, start)), None)
+    else:
+        m = None
+    return m.end() if m is not None else end
+
+
 def _hits_labeled(text: str) -> list[_Hit]:
     out = []
     for m in _LABELED.finditer(text):
         category = next((c for c, g in _LABEL_NAMES if m.group(g)), None)
         for group in ("dq", "sq", "bare"):
-            value = m.group(group)
-            if value is not None:
+            if m.group(group) is not None:
                 start, end = m.start(group), m.end(group)
                 break
         else:
             continue
-        stripped = value.strip()
-        if stripped.lower() in _PLACEHOLDERS:
+        # Trim spaces at both ends (a quoted value can start or end with one) so the range is exactly the value.
+        while start < end and text[start].isspace():
+            start += 1
+        while end > start and text[end - 1].isspace():
+            end -= 1
+        if end <= start or text[start:end].lower() in _PLACEHOLDERS:
             continue
-        if category != "person_name":
-            # Only names run on across spaces; stop other values at the first space.
-            value = stripped.split(" ")[0]
-            end = start + len(value)
-            if value.lower() in _PLACEHOLDERS:
+        if group == "bare":
+            end = _extend(category, text, start, end)
+            if end <= start or text[start:end].lower() in _PLACEHOLDERS:
                 continue
         out.append(_Hit(category, HIGH, start, end))
     return out
+
+
+def _hits_dob_spaced(text: str) -> list[_Hit]:
+    return [_Hit("date_of_birth", HIGH, m.start(1), m.end(1)) for m in _DOB_SPACED.finditer(text)]
 
 
 # (cheap test that must be true for the rule to possibly match, rule)
 _RULES: list[tuple[Callable[[str], bool], Callable[[str], list[_Hit]]]] = [
     (lambda t: "|" in t, _hits_hl7),
     (lambda t: (":" in t or "=" in t) and _may_have_label(t), _hits_labeled),
+    (lambda t: _may_have_label(t), _hits_dob_spaced),
     (lambda t: "@" in t, _hits_email),
     (lambda t: " " in t, _hits_street),
     (lambda t: "." in t, _hits_ip),
@@ -262,15 +327,26 @@ _RULES: list[tuple[Callable[[str], bool], Callable[[str], list[_Hit]]]] = [
 
 
 def _resolve_overlaps(hits: list[_Hit]) -> list[_Hit]:
-    """Two rules can claim the same text (a labeled phone number is also a
-    phone number). Keep the most confident, then the longest; drop the rest so
-    masking never works on overlapping ranges."""
-    ordered = sorted(hits, key=lambda h: (-_RANK[h.confidence], -(h.end - h.start), h.start))
-    kept: list[_Hit] = []
-    for h in ordered:
-        if all(h.end <= k.start or h.start >= k.end for k in kept):
-            kept.append(h)
-    return sorted(kept, key=lambda h: h.start)
+    """Two rules can claim overlapping text (a labelled street address is also a street address, and the
+    label rule may stop earlier than the full-shape rule). Overlapping spans of the same group (personal or
+    network) are merged into one that covers all of them, so masking never leaves a piece behind and never
+    works on overlapping ranges. The merged span takes the kind of its most confident, longest member."""
+    merged: list[_Hit] = []
+    for network in (False, True):
+        part = sorted((h for h in hits if (h.category in NETWORK_CATEGORIES) == network), key=lambda h: (h.start, h.end))
+        cur: Optional[_Hit] = None
+        for h in part:
+            if cur is not None and h.start < cur.end:
+                best = max((cur, h), key=lambda x: (_RANK[x.confidence], x.end - x.start))
+                top = max((cur, h), key=lambda x: _RANK[x.confidence]).confidence
+                cur = _Hit(best.category, top, min(cur.start, h.start), max(cur.end, h.end))
+            else:
+                if cur is not None:
+                    merged.append(cur)
+                cur = h
+        if cur is not None:
+            merged.append(cur)
+    return sorted(merged, key=lambda h: (h.start, h.end))
 
 
 def scan_text(text: Optional[str], field: str = "message") -> tuple[Flag, ...]:

@@ -192,3 +192,98 @@ def test_events_list_network_identifiers_apart_and_mask_leaves_them(env):
     assert report["network_identifier_events"] == 1
     assert {c["value"] for c in report["network_by_category"]} == {"ip_address", "mac_address"}
     assert {c["category"]: c["group"] for c in client.get("/api/logs/privacy/categories").json()}["mac_address"] == "network"
+
+
+def _legacy(db, message, **extra):
+    """An event stored before flagging existed: never scanned."""
+    db.add(EventRow(timestamp=db.scalars(select(EventRow.timestamp)).first(), source="portrait", severity="INFO",
+                    message=message, job_id="job-1", source_file="old.csv", source_line=1, **extra))
+    db.commit()
+
+
+def test_mask_judges_unscanned_events_on_the_spot_instead_of_returning_raw_text(env):
+    client, db = env
+    _legacy(db, f"legacy {SSN}")
+    plain = [e for e in items(client) if e["source_file"] == "old.csv"][0]
+    assert SSN in plain["message"] and plain["privacy_scanned"] is False
+    masked = [e for e in items(client, mask=True) if e["source_file"] == "old.csv"][0]
+    assert SSN not in masked["message"] and "[REDACTED:ssn]" in masked["message"]
+    assert masked["masked"] is True and masked["privacy_scanned"] is False
+
+
+def test_mask_withholds_text_when_the_stored_flags_cannot_be_read(env):
+    client, db = env
+    from app.privacy.scanner import SCANNER_VERSION
+    _legacy(db, f"damaged {SSN}", device_id="host-x", privacy_scan_version=SCANNER_VERSION, sensitive_flags="not json")
+    masked = [e for e in items(client, mask=True) if e["source_file"] == "old.csv"][0]
+    assert masked["message"] == "[REDACTED:unreadable]" and masked["device_id"] == "[REDACTED:unreadable]"
+    assert masked["process"] is None and masked["masked"] is True
+    assert SSN not in client.get("/api/logs/events", params={"mask": True}).text
+
+
+def test_mask_hides_network_identifier_positions_too(env):
+    client, db = env
+    _legacy(db, "peer 10.0.0.5", **scan_columns(message="peer 10.0.0.5"))
+    plain = [e for e in items(client) if e["source_file"] == "old.csv"][0]
+    masked = [e for e in items(client, mask=True) if e["source_file"] == "old.csv"][0]
+    assert plain["network_identifiers"][0]["start"] is not None
+    assert masked["network_identifiers"][0]["start"] is None and masked["network_identifiers"][0]["end"] is None
+
+
+def test_facets_withhold_device_and_category_values_when_masking(env):
+    client, _ = env
+    plain = client.get("/api/logs/facets").json()
+    masked = client.get("/api/logs/facets", params={"mask": True}).json()
+    assert plain["categories"] and plain["devices"]
+    assert masked["categories"] == [] and masked["devices"] == []
+    assert masked["total"] == plain["total"] and masked["sources"] == plain["sources"]
+
+
+def test_report_and_scan_cover_every_collection(env):
+    client, db = env
+    _legacy(db, f"legacy {SSN}")
+    body = client.get("/api/logs/privacy").json()
+    assert (body["job_id"], body["events"], body["unscanned_events"], body["all_scanned"]) == ("all", 4, 1, False)
+    assert body["ingest_complete"] is None and body["complete_for_packaging"] is False
+    assert client.post("/api/logs/privacy/scan").json() == {"scanned": 1}
+    after = client.get("/api/logs/privacy").json()
+    assert after["all_scanned"] and after["flagged_events"] == 3 and after["complete_for_packaging"] is True
+
+
+def test_an_empty_collection_is_not_reported_as_scanned(env):
+    client, db = env
+    db.add(Job(id="job-empty", mode="live", status="failed"))
+    db.commit()
+    body = client.get("/api/logs/collections/job-empty/privacy").json()
+    assert body["events"] == 0 and body["all_scanned"] is False and body["complete_for_packaging"] is False
+
+
+def test_a_collection_known_to_be_incomplete_cannot_be_certified(env, monkeypatch):
+    client, _ = env
+    import app.storage.routes as routes
+    real = routes.store.collection_summary
+
+    def incomplete(db, job_id):
+        summary = real(db, job_id)
+        summary.complete = False
+        return summary
+
+    monkeypatch.setattr(routes.store, "collection_summary", incomplete)
+    body = client.get("/api/logs/collections/job-1/privacy").json()
+    assert body["all_scanned"] is True and body["ingest_complete"] is False and body["complete_for_packaging"] is False
+
+
+def test_a_scan_is_audited_when_it_starts_and_when_it_fails(env, monkeypatch):
+    client, db = env
+    import app.storage.routes as routes
+
+    def boom(_db, _scope):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(routes.privacy, "rescan", boom)
+    with pytest.raises(RuntimeError):
+        client.post("/api/logs/collections/job-1/privacy/scan")
+    entries = [(e.action, e.detail) for e in db.scalars(select(AuditLogEntry).order_by(AuditLogEntry.id))]
+    assert ("logs_privacy_scan_start", "job=job-1") in entries
+    assert ("logs_privacy_scan", "job=job-1 failed error=RuntimeError") in entries
+    assert "disk full" not in repr(entries)

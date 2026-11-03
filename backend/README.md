@@ -455,7 +455,7 @@ What it looks for (`GET /api/logs/privacy/categories` lists these live):
 labelled values (`patientName=`, `mrn=`, `dob=`, `patient_id`, insurance and
 account numbers), HL7 patient segments (`PID`, `NK1`, `GT1`, `IN1`), SSNs,
 emails, US phone numbers, payment card numbers (real card-network prefix and
-Luhn-checked), and street addresses. The `message`, `device_id`, `process` and
+Luhn-checked), and street addresses (including `123 N Main St` and `123 MAIN ST` forms). The `message`, `device_id`, `process` and
 `category` fields are all scanned. Each flag has a kind, a confidence
 (`high`, `medium`, `low`) and a character range.
 
@@ -475,9 +475,10 @@ caller asks for `mask=true`.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/logs/events`, `GET /api/logs/collections/{id}/events` | Each event now has `privacy_scanned`, `sensitive` (flags) and `masked`. Add `mask=true` to get `[REDACTED:<kind>]` in place of flagged text (positions are then omitted). Filters: `flagged=true/false`, `flag_category=ssn` (repeatable) |
-| `GET /api/logs/collections/{id}/privacy` | Report for one collection: events, how many were scanned by the current scanner (`all_scanned`), flagged events, flags by kind, confidence and field, and per file. Counts only. The packaging step should include it and refuse to call a package scanned unless `all_scanned` is true |
-| `POST /api/logs/collections/{id}/privacy/scan` | Scans events the current scanner has not judged yet (older data, or after a rule change). Safe to repeat |
+| `GET /api/logs/events`, `GET /api/logs/collections/{id}/events` | Each event now has `privacy_scanned`, `sensitive` (flags) and `masked`. Add `mask=true` to get `[REDACTED:<kind>]` in place of flagged text (positions are then omitted, for network identifiers too). An event the current scanner has not judged is scanned on the spot for that response, and an event whose stored flags cannot be read is withheld entirely (`[REDACTED:unreadable]`), so `mask=true` never returns unchecked text. Filters: `flagged=true/false` (`false` means judged clean by the *current* scanner), `flag_category=ssn` (repeatable) |
+| `GET /api/logs/facets?mask=true` | Withholds the `devices` and `categories` lists: those are log fields that can hold flagged text, and the table masks them |
+| `GET /api/logs/collections/{id}/privacy`, `GET /api/logs/privacy` | Report for one collection, or for every event (what the Logs page shows with no run chosen): events, how many were scanned by the current scanner (`all_scanned`), flagged events, flags by kind, confidence and field, and per file. Counts only. `all_scanned` is false for a collection with no events. `ingest_complete` is the collection's completeness (rejected rows, failed files; null for "all" and "unassigned"). **The packaging step should include the report and refuse to call a package scanned unless `complete_for_packaging` is true** (all scanned and not known to be incomplete) |
+| `POST /api/logs/collections/{id}/privacy/scan`, `POST /api/logs/privacy/scan` | Scans events the current scanner has not judged yet (older data, or after a rule change). Safe to repeat. Audited when it starts (`logs_privacy_scan_start`) and when it ends or fails (`logs_privacy_scan`). A very large scan runs inside the request; running it in the background is a follow-up |
 | `GET /api/logs/privacy/categories` | The kinds and what they mean |
 
 Changing a rule: edit `app/privacy/scanner.py`, add a test case, and **bump
@@ -491,8 +492,11 @@ never log text:
 python -m app.privacy.scan_samples path/to/samples.zip
 ```
 
-This adds two columns to `normalized_events`, so delete `portrait_iq.db` and
-restart after pulling it.
+Upgrading: this adds three nullable columns to `normalized_events`
+(`privacy_scan_version`, `sensitive_flags`, `network_flags`). They are added in
+place at startup (as for the audit columns), so existing events are kept. They
+have no scan version, so the report shows them as unscanned until
+`POST /api/logs/privacy/scan` judges them. Nothing needs deleting.
 
 ## Tool plugins (SCRUM-39)
 

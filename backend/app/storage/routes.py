@@ -8,6 +8,8 @@ HTTP surface for the central event store. Mounted at /api/logs.
   GET /api/logs/collections/{id}/events          unified log view: all of its entries, in time order
   GET /api/logs/collections/{id}/privacy         PHI/PII scan report: was everything scanned, what was flagged
   POST /api/logs/collections/{id}/privacy/scan   scan events not yet judged by the current scanner
+  GET /api/logs/privacy                          the same report for every event (what the Logs page shows with no run chosen)
+  POST /api/logs/privacy/scan                    scan every event not yet judged
   GET /api/logs/privacy/categories               the kinds of PHI/PII the scanner looks for
 
 {id} is a job id, or "unassigned" for logs that were ingested without one.
@@ -27,7 +29,9 @@ from app.auth import User, get_current_user, is_locked, touch_session
 from app.db import get_db
 from app.models import Job
 from app.privacy import service as privacy
-from app.privacy.scanner import CATEGORY_LABELS, SCANNER_VERSION, category_group, decode_flags, mask_text
+from app.privacy.scanner import (
+    CATEGORY_LABELS, SCANNER_VERSION, category_group, decode_flags, mask_text, scan_columns,
+)
 from app.storage import events as store
 from app.storage.filters import DEFAULT_LIMIT, MAX_LIMIT, UNASSIGNED, EventFilter, FilterError, build_filter
 from app.storage.schemas import (
@@ -76,26 +80,42 @@ def _utc(ts: Optional[datetime]) -> Optional[datetime]:
     return ts.replace(tzinfo=timezone.utc) if ts is not None else None   # stored as naive UTC
 
 
+UNREADABLE = "[REDACTED:unreadable]"
+
+
 def _event_out(e, mask: bool = False) -> LogEventOut:
     flags = decode_flags(e.sensitive_flags)
     network = decode_flags(e.network_flags)
+    scanned = (e.privacy_scan_version or 0) >= SCANNER_VERSION
     out = dict(device_id=e.device_id, category=e.category, process=e.process, message=e.message)
-    if mask and flags:
-        out = {name: mask_text(value, flags, name) for name, value in out.items()}
+    damaged = False
+    if mask:
+        if not scanned:
+            # Never judged by the current rules: judge it now, for this response only, rather than
+            # return text nobody has checked.
+            cols = scan_columns(message=e.message, device_id=e.device_id, process=e.process, category=e.category)
+            flags = decode_flags(cols["sensitive_flags"])
+        elif e.sensitive_flags and not flags:
+            damaged = True           # flagged, but the flags cannot be read: withhold the text
+        if damaged:
+            out = {name: (UNREADABLE if value else value) for name, value in out.items()}
+        elif flags:
+            out = {name: mask_text(value, flags, name) for name, value in out.items()}
     return LogEventOut(
         id=e.id, timestamp=_utc(e.timestamp), source=e.source, severity=e.severity,
         source_file=e.source_file, source_line=e.source_line, job_id=e.job_id,
-        privacy_scanned=(e.privacy_scan_version or 0) >= SCANNER_VERSION,
+        privacy_scanned=scanned,
         sensitive=[
             SensitiveFlagOut(field=f.field, category=f.category, confidence=f.confidence,
                              start=None if mask else f.start, end=None if mask else f.end)
             for f in flags
         ],
         network_identifiers=[
-            SensitiveFlagOut(field=f.field, category=f.category, confidence=f.confidence, start=f.start, end=f.end)
+            SensitiveFlagOut(field=f.field, category=f.category, confidence=f.confidence,
+                             start=None if mask else f.start, end=None if mask else f.end)
             for f in network
         ],
-        masked=bool(mask and flags),
+        masked=bool(mask and (flags or damaged)),
         **out,
     )
 
@@ -144,6 +164,8 @@ def search_events(
 def get_facets(
     f: EventFilter = Depends(_filter),
     job_id: Optional[str] = Query(None),
+    mask: bool = Query(False, description="Withhold the device and category values: they are log fields that can "
+                                          "hold flagged text, and the table masks them."),
     db: Session = Depends(get_db),
     user: User = Depends(_active_user),
 ):
@@ -151,13 +173,13 @@ def get_facets(
     r = store.facets(db, f)
     log_action(
         db, user.id, "logs_facets_view",
-        detail=f"filters={f.used_fields()} job_selected={bool(job_id)}",
+        detail=f"filters={f.used_fields()} job_selected={bool(job_id)} masked={mask}",
         session_id=user.session_id,
     )
     return FacetsOut(
         total=r.total, first_timestamp=_utc(r.first_timestamp), last_timestamp=_utc(r.last_timestamp),
         sources=_facet_values(r.sources), severities=_facet_values(r.severities),
-        categories=_facet_values(r.categories), devices=_facet_values(r.devices),
+        categories=[] if mask else _facet_values(r.categories), devices=[] if mask else _facet_values(r.devices),
         distinct_devices=r.distinct_devices,
     )
 
@@ -248,19 +270,12 @@ def privacy_categories(user: User = Depends(_active_user)):
     return [PrivacyCategoryOut(category=k, description=v, group=category_group(k)) for k, v in CATEGORY_LABELS.items()]
 
 
-@router.get("/collections/{job_id}/privacy", response_model=PrivacyReportOut)
-def collection_privacy(job_id: str, db: Session = Depends(get_db), user: User = Depends(_active_user)):
-    """PHI/PII scan report for one collection: whether every event was scanned
-    by the current scanner, and how many flags of each kind were found."""
-    if job_id != UNASSIGNED and db.get(Job, job_id) is None:
-        raise HTTPException(404, "collection not found")
-    r = privacy.privacy_report(db, job_id)
-    log_action(db, user.id, "logs_privacy_report",
-               detail=f"job={job_id} flagged={r.flagged_events} unscanned={r.unscanned_events}",
-               session_id=user.session_id)
+def _privacy_out(r, ingest_complete: Optional[bool]) -> PrivacyReportOut:
     return PrivacyReportOut(
         job_id=r.job_id, scanner_version=r.scanner_version, events=r.events,
         scanned_events=r.scanned_events, unscanned_events=r.unscanned_events, all_scanned=r.all_scanned,
+        ingest_complete=ingest_complete,
+        complete_for_packaging=r.all_scanned and ingest_complete is not False,
         flagged_events=r.flagged_events, network_identifier_events=r.network_events,
         network_by_category=_counts(r.network_by_category), by_category=_counts(r.flags_by_category),
         by_confidence=_counts(r.flags_by_confidence), by_field=_counts(r.flags_by_field),
@@ -271,13 +286,61 @@ def collection_privacy(job_id: str, db: Session = Depends(get_db), user: User = 
     )
 
 
+def _report(db: Session, user: User, scope: Optional[str]) -> PrivacyReportOut:
+    """scope: a job id, UNASSIGNED, or None for every event."""
+    complete: Optional[bool] = None
+    if scope not in (None, UNASSIGNED):
+        if db.get(Job, scope) is None:
+            raise HTTPException(404, "collection not found")
+        summary = store.collection_summary(db, scope)
+        complete = summary.complete if summary is not None else None
+    r = privacy.privacy_report(db, scope)
+    log_action(db, user.id, "logs_privacy_report",
+               detail=f"job={scope or 'all'} flagged={r.flagged_events} unscanned={r.unscanned_events}",
+               session_id=user.session_id)
+    return _privacy_out(r, complete)
+
+
+def _scan(db: Session, user: User, scope: Optional[str]) -> RescanOut:
+    label = scope or "all"
+    if scope not in (None, UNASSIGNED) and db.get(Job, scope) is None:
+        raise HTTPException(404, "collection not found")
+    # Each batch is committed as it goes, so a scan that stops partway has already changed events.
+    # Record that it started, and how it ended.
+    log_action(db, user.id, "logs_privacy_scan_start", detail=f"job={label}", session_id=user.session_id)
+    try:
+        n = privacy.rescan(db, scope)
+    except Exception as e:
+        db.rollback()
+        log_action(db, user.id, "logs_privacy_scan", detail=f"job={label} failed error={type(e).__name__}",
+                   session_id=user.session_id)
+        raise
+    log_action(db, user.id, "logs_privacy_scan", detail=f"job={label} scanned={n}", session_id=user.session_id)
+    return RescanOut(scanned=n)
+
+
+@router.get("/privacy", response_model=PrivacyReportOut)
+def all_privacy(db: Session = Depends(get_db), user: User = Depends(_active_user)):
+    """PHI/PII scan report across every stored event, whichever collection it belongs to."""
+    return _report(db, user, None)
+
+
+@router.post("/privacy/scan", response_model=RescanOut)
+def scan_all(db: Session = Depends(get_db), user: User = Depends(_active_user)):
+    """Scan every event the current scanner has not judged yet. Safe to repeat."""
+    return _scan(db, user, None)
+
+
+@router.get("/collections/{job_id}/privacy", response_model=PrivacyReportOut)
+def collection_privacy(job_id: str, db: Session = Depends(get_db), user: User = Depends(_active_user)):
+    """PHI/PII scan report for one collection: whether every event was scanned
+    by the current scanner, and how many flags of each kind were found."""
+    return _report(db, user, job_id)
+
+
 @router.post("/collections/{job_id}/privacy/scan", response_model=RescanOut)
 def scan_collection(job_id: str, db: Session = Depends(get_db), user: User = Depends(_active_user)):
     """Scan the events of this collection that the current scanner has not
     judged yet (logs stored before PHI/PII flagging existed, or scanned by an
     older rule set). Safe to repeat."""
-    if job_id != UNASSIGNED and db.get(Job, job_id) is None:
-        raise HTTPException(404, "collection not found")
-    n = privacy.rescan(db, job_id)
-    log_action(db, user.id, "logs_privacy_scan", detail=f"job={job_id} scanned={n}", session_id=user.session_id)
-    return RescanOut(scanned=n)
+    return _scan(db, user, job_id)

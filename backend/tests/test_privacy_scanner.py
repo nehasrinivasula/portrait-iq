@@ -187,3 +187,85 @@ def test_scan_columns_keeps_network_addresses_out_of_the_personal_flags():
 def test_long_counters_and_epoch_times_are_not_cards():
     for text in ["t 1700000000000", "count 4111111111111111111111", "id 9000000000000001"]:
         assert all(c != "credit_card" for c, _ in found(text)), text
+
+
+# --- review round: values that were only partly masked, and shapes that were missed ---------------------------
+
+def _masked(text):
+    """The text as a masked view would show it (personal kinds only)."""
+    personal, _ = split_flags(list(scan_text(text)))
+    return mask_text(text, personal)
+
+
+def test_labelled_values_are_masked_whole_not_cut_at_the_first_space():
+    assert _masked("home_address=123 Main St, Springfield") == "home_address=[REDACTED:street_address]"
+    assert _masked('dob="January 5, 1980"') == 'dob="[REDACTED:date_of_birth]"'
+    assert _masked("ssn: 123 45 6789") == "ssn: [REDACTED:ssn]"
+    assert _masked("phone number: (555) 123-4567 ok") == "phone number: [REDACTED:phone] ok"
+    assert _masked("dob=5 January 1980 end") == "dob=[REDACTED:date_of_birth] end"
+
+
+def test_a_quoted_value_with_a_leading_space_is_masked_to_its_last_character():
+    assert _masked('ssn=" 123-45-6789"') == 'ssn=" [REDACTED:ssn]"'
+
+
+def test_overlapping_hits_merge_into_one_span_instead_of_leaving_a_piece_behind():
+    flags = scan_text("home_address=123 Main St, Springfield")
+    assert len(flags) == 1 and flags[0].start == len("home_address=")
+
+
+def test_names_with_apostrophes_commas_and_lower_case_are_masked_whole():
+    assert _masked("patientName=O'Brien") == "patientName=[REDACTED:person_name]"
+    assert _masked("patientName=Smith, John") == "patientName=[REDACTED:person_name]"
+    assert _masked("patientName: john smith") == "patientName: [REDACTED:person_name]"
+
+
+def test_a_name_does_not_swallow_the_rest_of_the_sentence_or_the_next_field():
+    assert _masked("patientName=John Smith was admitted") == "patientName=[REDACTED:person_name] was admitted"
+    assert _masked("patientName=John, age=30") == "patientName=[REDACTED:person_name], age=30"
+    assert _masked("patientName=John Smith admitted") == "patientName=[REDACTED:person_name] admitted"
+
+
+def test_a_card_followed_by_another_number_is_still_found():
+    assert _masked("card 4111 1111 1111 1111 123 ok") == "card [REDACTED:credit_card] 123 ok"
+    assert _masked("card 4111 1111 1111 1111 12/26") == "card [REDACTED:credit_card] 12/26"
+
+
+def test_mastercard_2_series_is_found_with_and_without_separators():
+    assert _masked("paid 2223000048400011 today") == "paid [REDACTED:credit_card] today"
+    assert _masked("paid 2223 0000 4840 0011 today") == "paid [REDACTED:credit_card] today"
+
+
+def test_hl7_segments_are_found_after_equals_and_colon():
+    for prefix in ("msg=", "hl7:", "payload: "):
+        flags = scan_text(prefix + "PID|1||12345^^^MRN||DOE^JOHN")
+        assert [f.category for f in flags] == ["hl7_patient_segment"], prefix
+
+
+def test_common_label_spellings_are_found():
+    cases = {
+        r'{\"patientName\":\"John Smith\"}': "person_name",
+        "patientFirstName=John": "person_name",
+        "patientDOB=01/02/1980": "date_of_birth",
+        "patient.name=John": "person_name",
+        "patient-id=12345": "record_identifier",
+        "MRN#: 123456": "record_identifier",
+        "DOB 01/02/1980": "date_of_birth",
+    }
+    for text, category in cases.items():
+        assert [f.category for f in scan_text(text)] == [category], text
+
+
+def test_more_street_address_forms_are_found():
+    for text in ("lives at 123 N Main St today", "456 W 5th Ave", "123 MAIN ST", "9 Oak Street."):
+        assert [f.category for f in scan_text(text)] == ["street_address"], text
+
+
+def test_the_wider_rules_do_not_flag_ordinary_log_text():
+    for text in ("processed 1234 items in 56 ms", "retry 3 of 5 for Main St service", "request id 4111111111111112 rejected",
+                 "patientName= null", "name=Widget status=ok", "dob unknown today", "count 2223000048400012 total"):
+        assert scan_text(text) == (), text
+
+
+def test_a_change_to_the_rules_bumps_the_scanner_version():
+    assert SCANNER_VERSION >= 2

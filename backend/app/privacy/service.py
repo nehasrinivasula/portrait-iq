@@ -13,7 +13,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, true, update
 from sqlalchemy.orm import Session
 
 from app.models import NormalizedEvent as E
@@ -23,7 +23,13 @@ from app.storage.filters import UNASSIGNED
 RESCAN_BATCH = 2000
 
 
-def _in_collection(job_id: str):
+ALL_LOGS = "all"
+
+
+def _in_collection(job_id: Optional[str]):
+    """One collection, logs tied to no collection, or (None) every event."""
+    if job_id is None or job_id == ALL_LOGS:
+        return true()
     return E.job_id.is_(None) if job_id == UNASSIGNED else E.job_id == job_id
 
 
@@ -57,10 +63,14 @@ class PrivacyReport:
 
     @property
     def all_scanned(self) -> bool:
-        return self.unscanned_events == 0
+        """True only when there are events and the current scanner judged every one. An empty collection
+        (nothing ingested, or every file failed) has nothing scanned, so it never passes as scanned."""
+        return self.events > 0 and self.unscanned_events == 0
 
 
-def privacy_report(db: Session, job_id: str) -> PrivacyReport:
+def privacy_report(db: Session, job_id: Optional[str]) -> PrivacyReport:
+    """job_id: a collection, UNASSIGNED, or None / ALL_LOGS for every event."""
+    job_id = ALL_LOGS if job_id is None else job_id
     scope = _in_collection(job_id)
     total = db.scalar(select(func.count()).select_from(E).where(scope)) or 0
     unscanned = db.scalar(select(func.count()).select_from(E).where(scope, _needs_scan())) or 0

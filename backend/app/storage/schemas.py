@@ -120,7 +120,9 @@ class PrivacyReportOut(BaseModel):
     events: int
     scanned_events: int
     unscanned_events: int            # not judged by the current scanner version
-    all_scanned: bool                # true only when unscanned_events is 0
+    all_scanned: bool                # events exist and every one was judged by the current scanner
+    ingest_complete: Optional[bool] = None   # the collection's completeness (rejected rows, failed files); null for "all" and "unassigned"
+    complete_for_packaging: bool = False     # all_scanned and not known to be incomplete: the check a package must pass
     flagged_events: int              # events with personal-data flags (IP and MAC addresses excluded)
     network_identifier_events: int   # events with IP or MAC addresses, counted apart
     network_by_category: list[FlagCountOut]

@@ -23,22 +23,28 @@ def init_db() -> None:
 
 
 def _apply_audit_compatibility_columns() -> None:
-    """Upgrade only SCRUM-36's nullable local-demo audit columns in place.
+    """Upgrade only known nullable metadata columns in place: SCRUM-36's audit
+    columns and S-3's PHI/PII scan columns on stored events.
 
-    ``create_all`` creates tables but never changes existing ones. These three
-    columns are nullable metadata, so adding them preserves all existing local
-    SQLite rows. Other future schema changes still fail closed in
-    ``_check_schema_is_current`` until the project adopts migrations.
+    ``create_all`` creates tables but never changes existing ones. These
+    columns are nullable, so adding them preserves all existing local SQLite
+    rows. Events that predate the scan columns have no scan version, so the
+    privacy report counts them as unscanned until a rescan judges them. Other
+    future schema changes still fail closed in ``_check_schema_is_current``
+    until the project adopts migrations.
     """
     additions = (
         ("audit_log", "session_id", "VARCHAR"),
         ("jobs", "requested_by", "VARCHAR"),
         ("jobs", "session_id", "VARCHAR"),
+        ("normalized_events", "privacy_scan_version", "INTEGER"),
+        ("normalized_events", "sensitive_flags", "TEXT"),
+        ("normalized_events", "network_flags", "TEXT"),
     )
     inspector = inspect(engine)
     present = {
         table: {column["name"] for column in inspector.get_columns(table)}
-        for table in {"audit_log", "jobs"}
+        for table in {"audit_log", "jobs", "normalized_events"}
         if inspector.has_table(table)
     }
     with engine.begin() as connection:

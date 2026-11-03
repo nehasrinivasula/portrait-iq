@@ -140,7 +140,8 @@ def test_rescan_with_a_collection_leaves_other_collections_alone(ingested):
 
 def test_report_for_an_empty_collection_is_all_zero(db):
     r = service.privacy_report(db, "nothing-here")
-    assert (r.events, r.flagged_events, r.unscanned_events) == (0, 0, 0) and r.all_scanned
+    # Nothing was scanned, so it must not pass as "all scanned": a package built from it would carry no evidence.
+    assert (r.events, r.flagged_events, r.unscanned_events) == (0, 0, 0) and not r.all_scanned
 
 
 # source_line counts the file's lines, and line 1 is the header: the four messages sit on lines 2-5
@@ -217,3 +218,54 @@ def test_rescan_fills_in_both_flag_columns(ingested):
     r = [e for e in rows(ingested) if e.source_file == "old.csv"][0]
     assert [f.category for f in scanner.decode_flags(r.sensitive_flags)] == ["ssn"]
     assert [f.category for f in scanner.decode_flags(r.network_flags)] == ["ip_address"]
+
+
+def test_flagged_false_excludes_events_judged_by_an_older_scanner(ingested):
+    assert search(ingested, flagged=False) == [2]
+    first = rows(ingested)[0]                                  # the one clean event
+    first.privacy_scan_version = scanner.SCANNER_VERSION - 1
+    ingested.commit()
+    # The report counts it as unscanned, so the filter must not call it clean either.
+    assert service.privacy_report(ingested, "job-1").unscanned_events == 1
+    assert search(ingested, flagged=False) == []
+
+
+def test_report_and_rescan_can_cover_every_collection(ingested):
+    ingested.add(EventRow(timestamp=datetime(2024, 6, 2, 5), source="portrait", severity="INFO",
+                          message=f"adhoc {SSN}", job_id=None, source_file="adhoc.csv", source_line=1))
+    ingested.commit()
+    r = service.privacy_report(ingested, None)
+    assert (r.job_id, r.events, r.unscanned_events, r.all_scanned) == ("all", 5, 1, False)
+    assert service.rescan(ingested, None) == 1
+    r = service.privacy_report(ingested, None)
+    assert r.all_scanned and r.flagged_events == 3
+
+
+def test_upgrading_an_older_database_keeps_its_events_and_leaves_them_to_rescan(tmp_path, monkeypatch):
+    """Databases created before flagging existed get the three columns added in place; their events then
+    count as unscanned and a rescan judges them. Nothing needs deleting."""
+    from sqlalchemy import inspect, text
+    from app import db as dbmodule
+
+    old_engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    Base.metadata.create_all(old_engine)
+    with old_engine.begin() as connection:
+        for column in ("privacy_scan_version", "sensitive_flags", "network_flags"):
+            connection.execute(text(f"ALTER TABLE normalized_events DROP COLUMN {column}"))
+        connection.execute(text(
+            "INSERT INTO normalized_events (timestamp, source, severity, message) "
+            f"VALUES ('2024-06-02 04:00:00', 'portrait', 'INFO', 'old row {SSN}')"))
+
+    monkeypatch.setattr(dbmodule, "engine", old_engine)
+    dbmodule.init_db()
+
+    names = {c["name"] for c in inspect(old_engine).get_columns("normalized_events")}
+    assert {"privacy_scan_version", "sensitive_flags", "network_flags"} <= names
+    session = sessionmaker(bind=old_engine)()
+    try:
+        report = service.privacy_report(session, None)
+        assert (report.events, report.unscanned_events) == (1, 1)
+        assert service.rescan(session, None) == 1
+        assert service.privacy_report(session, None).flagged_events == 1
+    finally:
+        session.close()
