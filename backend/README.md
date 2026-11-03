@@ -348,7 +348,8 @@ need a signed-in, unlocked session.
 
 ```
 GET /api/logs/events                        search everything, newest first
-GET /api/logs/facets                        counts per source / severity / category / device
+GET /api/logs/facets                        counts per source / severity / category / device / message kind
+GET /api/logs/sequences                     request/reply sequences: answered, nak, unanswered, latency
 GET /api/logs/collections                   every collection (job) and how many events it holds
 GET /api/logs/collections/{id}              is this collection complete? what is missing?
 GET /api/logs/collections/{id}/events       unified log view: all its entries, oldest first
@@ -360,11 +361,41 @@ GET /api/logs/collections/{id}/events       unified log view: all its entries, o
 combine (AND): `since` (inclusive) / `until` (exclusive) as ISO times (no
 timezone means UTC), `device`, `source`, `category`, `severity` (each can be
 repeated), `min_severity` (e.g. `WARN` = WARN and ERROR), `process`,
-`source_file`, `job_id`, and `q` (case-insensitive text in the message).
+`source_file`, `job_id`, `q` (case-insensitive text in the message), and the
+parsed exchange fields `message_kind`, `component` (each repeatable) and
+`correlation_id` (one whole exchange: a request and its reply).
 `order=asc|desc` and `limit` (1-1000, default 100). Paging uses a cursor:
 send the previous page's `next_cursor` back as `cursor`. The cursor is
 stable when new logs arrive between pages, which `offset` is not. `total`
 is returned on the first page only.
+
+**Sequences.** `GET /api/logs/sequences` rebuilds request/reply pairs from the
+parsed messages (see `docs/common_log_format.md`) with the same filters, plus
+`state` (`answered`, `nak`, `unanswered`, `pending`, `unexpected`) and
+`command`. It returns counts per state and per-command stats (median and max
+latency) for the whole search, and a page of sequences, newest first. Requests
+pair by correlation id, or (HL7 health check, which logs none) with the next
+reply from the same device within 60 s. Components that never log replies are
+left out instead of being reported as unanswered. On the 35-file sample:
+16,099 sequences, 2,081 naks (2,080 "active profile already exists"), 1,260
+unexpected ping responses, none unanswered. When a reply is logged before its
+request (two devices whose clocks disagree), the sequence has `clock_skew: true`
+and no latency, and it is left out of the latency stats. `mask=true` masks
+PHI/PII in the command, status, component, device and correlation id.
+
+The parsed fields never hold free text: `command` is a command name or a
+`cmd://` route without digits, and `status` is one word or an HTTP code. Paths,
+response bodies and patient ids on a line are not copied (see
+`docs/common_log_format.md`). With `mask=true`, `/events` masks these fields
+too.
+
+Upgrading: these fields are five nullable columns on `normalized_events`
+(`component`, `message_kind`, `command`, `correlation_id`, `status`), added in
+place at startup with their indexes, so existing events and the audit log are
+kept. Do not delete `portrait_iq.db` for this. Events stored before the
+upgrade keep these fields empty and cannot be filled in afterwards
+(`component` comes from `sourceInfo`, which is not stored), so pull those logs
+again to get sequences for them.
 
 ```bash
 # everything at WARN or above, from any device, since a given time
