@@ -156,9 +156,10 @@ class PodRunner:
         except ApiException as e:
             raise PluginError(f"could not create the {tool} pod: {_api_message(e)}") from None
 
-    def wait_running(self, name: str, timeout_s: int) -> None:
+    def wait_running(self, name: str, timeout_s: int) -> str:
         """Wait for the pod to run, or fail with why it is still pending
-        (e.g. 'Unschedulable: ... Too many pods' or 'ErrImageNeverPull')."""
+        (e.g. 'Unschedulable: ... Too many pods' or 'ErrImageNeverPull').
+        Returns the IP of the node it runs on ('' if not reported)."""
         deadline = time.monotonic() + timeout_s
         while True:
             try:
@@ -167,7 +168,7 @@ class PodRunner:
                 raise PluginError(f"could not read pod {name}: {_api_message(e)}") from None
             phase = pod.status.phase
             if phase == "Running":
-                return
+                return getattr(pod.status, "host_ip", None) or ""
             if phase in ("Succeeded", "Failed"):
                 raise PluginError(f"pod {name} stopped before the tool ran ({phase})")
             if time.monotonic() >= deadline:

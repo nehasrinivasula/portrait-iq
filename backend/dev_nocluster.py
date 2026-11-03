@@ -42,6 +42,8 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{_data / 'dev.db'}")
 os.environ.setdefault("JOB_OUTPUT_DIR", str(_data / "jobs"))
 os.environ.setdefault("UPLOAD_DIR", str(_data / "uploads"))
 os.environ.setdefault("STAGING_DIR", str(_data / "staging"))
+# Fake pods: live capture costs nothing here, and device discovery uses it.
+os.environ.setdefault("TSHARK_LIVE_CAPTURE_ENABLED", "true")
 os.environ["SWEEP_TOOL_PODS_ON_STARTUP"] = "false"   # no cluster to sweep
 
 import time  # noqa: E402
@@ -49,6 +51,22 @@ import time  # noqa: E402
 import uvicorn  # noqa: E402
 
 from app.collectors import k8s  # noqa: E402
+
+
+# Documentation addresses (192.0.2.0/24), in the formats the bench prints.
+FAKE_NODE_IP = "192.0.2.3"
+FAKE_ARP = """IP address       HW type     Flags       HW address            Mask     Device
+192.0.2.100      0x1         0x2         02:00:00:00:00:64     *        eth0
+192.0.2.5        0x1         0x2         02:00:00:00:00:05     *        eth0
+192.0.2.4        0x1         0x2         02:00:00:00:00:04     *        eth0
+"""
+FAKE_CONVERSATIONS = """UDP Conversations
+192.0.2.100:10535          <-> 192.0.2.3:32013                6 6744 bytes     410 292 kB        416 299 kB
+192.0.2.100:9160           <-> 192.0.2.3:32007                2 900 bytes       40 20 kB          42 21 kB
+192.0.2.5:10700            <-> 192.0.2.3:32014                3 1000 bytes      90 50 kB          93 51 kB
+TCP Conversations
+192.0.2.4:51000            <-> 192.0.2.3:443                  5 2 kB            5 3 kB            10 5 kB
+"""
 
 
 class FakePodRunner:
@@ -61,9 +79,15 @@ class FakePodRunner:
 
     def wait_running(self, name, timeout_s):
         time.sleep(self.DELAY_S)
+        return FAKE_NODE_IP
 
     def exec(self, name, argv, timeout_s):
         time.sleep(self.DELAY_S / 2)
+        # Device discovery: a synthetic ARP table and conversation summary.
+        if argv[:2] == ["cat", "/proc/net/arp"]:
+            return k8s.ExecResult(0, FAKE_ARP, "")
+        if argv[0] == "tshark" and "-r" in argv:
+            return k8s.ExecResult(0, FAKE_CONVERSATIONS, "")
         if argv[0] == "traceroute":
             return k8s.ExecResult(1, "", "traceroute: simulated failure (dev_nocluster)")
         return k8s.ExecResult(0, f"{' '.join(argv)}: simulated ok\n", "")
