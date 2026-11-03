@@ -58,6 +58,16 @@ CATEGORY_LABELS = {
 }
 
 
+# IP and MAC addresses identify equipment, which is what this tool exists to read: device ids here
+# are often MAC-style, and peer lists are full of addresses. They are recorded, but apart from
+# the personal kinds, and they do not count as "flagged".
+NETWORK_CATEGORIES = frozenset({"ip_address", "mac_address"})
+
+
+def category_group(category: str) -> str:
+    return "network" if category in NETWORK_CATEGORIES else "personal"
+
+
 @dataclass(frozen=True, slots=True)
 class Flag:
     field: str
@@ -129,10 +139,22 @@ _LABELED = re.compile(
     r"(?:\"(?P<dq>[^\"]{1,80})\"|'(?P<sq>[^']{1,80})'|(?P<bare>[^\s,;|\"'}\])]+(?:[ ](?-i:[A-Z][A-Za-z'.-]*)){0,2}))",   # extra words only if capitalised: a name, not a sentence
     re.IGNORECASE,
 )
-# Cheap pre-filter: the label rule only runs on text that contains a word any label needs.
-_LABEL_WORDS = re.compile(
-    r"patient|pt[_ ]?name|mrn|name|surname|kin|record|account|insurance|member|policy|visit|encounter"
-    r"|dob|birth|ssn|social|phone|mail|address", re.IGNORECASE).search
+# Cheap pre-filters. A label rule needs one of these words; a plain `in` test on lower-cased text is
+# many times faster than running the label regex over every message.
+_LABEL_KEYS = ("name", "patient", "mrn", "record", "account", "insurance", "member", "policy", "visit",
+               "encounter", "dob", "birth", "ssn", "social", "phone", "mail", "address", "kin")
+
+
+def _may_have_label(text: str) -> bool:
+    low = text.lower()
+    return any(k in low for k in _LABEL_KEYS)
+
+
+# The SSN, phone and card rules each need a run of digits in one of a few shapes. One search for any
+# of those shapes decides whether to run all three; most log lines have none.
+_NUMBER_SHAPES = re.compile(
+    r"\d{3}-\d{2}-\d{4}|\(\d{3}\)|\d{3}[ .-]\d{3}[ .-]\d{4}|\d{4,6}[ -]\d{4,6}[ -]\d{3,6}|(?<!\d)[3-6]\d{14,18}"
+).search
 _PLACEHOLDERS = {"", "null", "none", "nil", "n/a", "na", "unknown", "undefined", "empty",
                  "redacted", "masked", "-", "--", "?", "true", "false", "0", "<empty>", "[redacted]"}
 
@@ -231,11 +253,8 @@ def _hits_labeled(text: str) -> list[_Hit]:
 # (cheap test that must be true for the rule to possibly match, rule)
 _RULES: list[tuple[Callable[[str], bool], Callable[[str], list[_Hit]]]] = [
     (lambda t: "|" in t, _hits_hl7),
-    (lambda t: (":" in t or "=" in t) and _LABEL_WORDS(t) is not None, _hits_labeled),
+    (lambda t: (":" in t or "=" in t) and _may_have_label(t), _hits_labeled),
     (lambda t: "@" in t, _hits_email),
-    (lambda t: "-" in t, _hits_ssn),
-    (lambda t: "-" in t or "." in t or " " in t or "(" in t, _hits_phone),
-    (lambda t: "-" in t or " " in t or len(t) >= 13, _hits_card),
     (lambda t: " " in t, _hits_street),
     (lambda t: "." in t, _hits_ip),
     (lambda t: ":" in t or "-" in t, _hits_mac),
@@ -268,6 +287,10 @@ def _scan_cached(text: str, field: str) -> tuple[Flag, ...]:
     for precheck, rule in _RULES:
         if precheck(text):
             hits.extend(rule(text))
+    if _NUMBER_SHAPES(text) is not None:
+        hits.extend(_hits_ssn(text))
+        hits.extend(_hits_phone(text))
+        hits.extend(_hits_card(text))
     return tuple(Flag(field, h.category, h.confidence, h.start, h.end) for h in _resolve_overlaps(hits))
 
 
@@ -278,6 +301,24 @@ def scan_event_fields(*, message: Optional[str], device_id: Optional[str] = None
     for name, value in (("device_id", device_id), ("process", process), ("category", category)):
         flags.extend(scan_text(value, name))
     return flags
+
+
+def split_flags(flags: list[Flag]) -> tuple[list[Flag], list[Flag]]:
+    """(personal, network) flags."""
+    personal = [f for f in flags if category_group(f.category) == "personal"]
+    return personal, [f for f in flags if category_group(f.category) == "network"]
+
+
+def scan_columns(*, message: Optional[str], device_id: Optional[str] = None,
+                 process: Optional[str] = None, category: Optional[str] = None) -> dict:
+    """What to store on an event row after scanning it: the scanner version and the two flag lists."""
+    personal, network = split_flags(scan_event_fields(
+        message=message, device_id=device_id, process=process, category=category))
+    return {
+        "privacy_scan_version": SCANNER_VERSION,
+        "sensitive_flags": encode_flags(personal),
+        "network_flags": encode_flags(network),
+    }
 
 
 # --- storing flags ------------------------------------------------------------

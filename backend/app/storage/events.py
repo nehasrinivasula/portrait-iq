@@ -69,7 +69,9 @@ def _conditions(f: EventFilter) -> list:
         conds.append(E.privacy_scan_version.is_not(None))   # "clean" means scanned and nothing found
     if f.flag_categories:
         # The stored JSON holds only field names, kinds and numbers, so a quoted kind matches only a kind.
-        conds.append(or_(*[E.sensitive_flags.like(f'%"{k}"%') for k in f.flag_categories]))
+        # Personal kinds live in sensitive_flags, IP and MAC kinds in network_flags.
+        conds.append(or_(*[col.like(f'%"{k}"%') for k in f.flag_categories
+                           for col in (E.sensitive_flags, E.network_flags)]))
     return conds
 
 

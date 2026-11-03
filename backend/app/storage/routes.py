@@ -27,7 +27,7 @@ from app.auth import User, get_current_user, is_locked, touch_session
 from app.db import get_db
 from app.models import Job
 from app.privacy import service as privacy
-from app.privacy.scanner import CATEGORY_LABELS, SCANNER_VERSION, decode_flags, mask_text
+from app.privacy.scanner import CATEGORY_LABELS, SCANNER_VERSION, category_group, decode_flags, mask_text
 from app.storage import events as store
 from app.storage.filters import DEFAULT_LIMIT, MAX_LIMIT, UNASSIGNED, EventFilter, FilterError, build_filter
 from app.storage.schemas import (
@@ -78,6 +78,7 @@ def _utc(ts: Optional[datetime]) -> Optional[datetime]:
 
 def _event_out(e, mask: bool = False) -> LogEventOut:
     flags = decode_flags(e.sensitive_flags)
+    network = decode_flags(e.network_flags)
     out = dict(device_id=e.device_id, category=e.category, process=e.process, message=e.message)
     if mask and flags:
         out = {name: mask_text(value, flags, name) for name, value in out.items()}
@@ -89,6 +90,10 @@ def _event_out(e, mask: bool = False) -> LogEventOut:
             SensitiveFlagOut(field=f.field, category=f.category, confidence=f.confidence,
                              start=None if mask else f.start, end=None if mask else f.end)
             for f in flags
+        ],
+        network_identifiers=[
+            SensitiveFlagOut(field=f.field, category=f.category, confidence=f.confidence, start=f.start, end=f.end)
+            for f in network
         ],
         masked=bool(mask and flags),
         **out,
@@ -212,9 +217,10 @@ def view_collection(
 
 SCAN_LIMITS = [
     "Finds known patterns only: labelled values (patientName=, mrn=, dob=), HL7 patient segments, "
-    "SSNs, emails, phone numbers, payment cards, street addresses, IP and MAC addresses.",
+    "SSNs, emails, phone numbers, payment cards and street addresses.",
     "Names, places and other identifiers written in plain sentences are not detected.",
-    "IP and MAC addresses are flagged at low confidence and often are ordinary network data.",
+    "IP and MAC addresses are recorded apart (network_identifier_events). They identify equipment, so "
+    "they never count as flagged and are not masked.",
     "Flags mark text for review; they do not remove it unless mask=true is requested.",
 ]
 
@@ -226,7 +232,7 @@ def _counts(counter: dict[str, int]) -> list[FlagCountOut]:
 @router.get("/privacy/categories", response_model=list[PrivacyCategoryOut])
 def privacy_categories(user: User = Depends(_active_user)):
     """The kinds of PHI/PII the scanner looks for, and what each one means."""
-    return [PrivacyCategoryOut(category=k, description=v) for k, v in CATEGORY_LABELS.items()]
+    return [PrivacyCategoryOut(category=k, description=v, group=category_group(k)) for k, v in CATEGORY_LABELS.items()]
 
 
 @router.get("/collections/{job_id}/privacy", response_model=PrivacyReportOut)
@@ -241,10 +247,12 @@ def collection_privacy(job_id: str, db: Session = Depends(get_db), user: User = 
     return PrivacyReportOut(
         job_id=r.job_id, scanner_version=r.scanner_version, events=r.events,
         scanned_events=r.scanned_events, unscanned_events=r.unscanned_events, all_scanned=r.all_scanned,
-        flagged_events=r.flagged_events, by_category=_counts(r.flags_by_category),
+        flagged_events=r.flagged_events, network_identifier_events=r.network_events,
+        network_by_category=_counts(r.network_by_category), by_category=_counts(r.flags_by_category),
         by_confidence=_counts(r.flags_by_confidence), by_field=_counts(r.flags_by_field),
         files=[PrivacyFileOut(source_file=f.source_file, events=f.events, flagged_events=f.flagged_events,
-                              unscanned_events=f.unscanned_events) for f in r.files],
+                              unscanned_events=f.unscanned_events,
+                              network_identifier_events=f.network_events) for f in r.files],
         limits=SCAN_LIMITS,
     )
 

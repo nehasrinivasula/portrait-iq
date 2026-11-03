@@ -17,6 +17,7 @@ from app.ingestion import pipeline
 from app.main import app
 from app.models import AuditLogEntry, Job
 from app.models import NormalizedEvent as EventRow
+from app.privacy.scanner import scan_columns
 
 HEADER = (
     "timeStampAndOffset,processCounter,concentrationCounter,logLevel,hostName,"
@@ -118,7 +119,9 @@ def test_privacy_report_for_a_collection(env):
     body = r.json()
     assert (body["events"], body["flagged_events"], body["unscanned_events"], body["all_scanned"]) == (3, 2, 0, True)
     assert {c["value"]: c["count"] for c in body["by_category"]} == {"person_name": 1, "ssn": 1}
-    assert body["files"] == [{"source_file": "a.csv", "events": 3, "flagged_events": 2, "unscanned_events": 0}]
+    assert body["files"] == [{"source_file": "a.csv", "events": 3, "flagged_events": 2, "unscanned_events": 0,
+                              "network_identifier_events": 0}]
+    assert body["network_identifier_events"] == 0 and body["network_by_category"] == []
     assert body["limits"]
     assert NAME not in r.text and SSN not in r.text
 
@@ -170,3 +173,22 @@ def test_a_locked_session_cannot_read_privacy_reports(env, monkeypatch):
     assert client.get("/api/logs/collections/job-1/privacy").status_code == 423
     assert client.post("/api/logs/collections/job-1/privacy/scan").status_code == 423
     assert client.get("/api/logs/privacy/categories").status_code == 423
+
+
+def test_events_list_network_identifiers_apart_and_mask_leaves_them(env):
+    client, db = env
+    db.add(EventRow(timestamp=db.scalars(select(EventRow.timestamp)).first(), source="portrait", severity="INFO",
+                    message=f"{SSN} peer 10.0.0.5", device_id="00:1A:2B:3C:4D:5E", job_id="job-1",
+                    source_file="net.csv", source_line=30, **scan_columns(
+                        message=f"{SSN} peer 10.0.0.5", device_id="00:1A:2B:3C:4D:5E")))
+    db.commit()
+    plain = [e for e in items(client) if e["source_file"] == "net.csv"][0]
+    assert [f["category"] for f in plain["sensitive"]] == ["ssn"]
+    assert {f["category"] for f in plain["network_identifiers"]} == {"ip_address", "mac_address"}
+    masked = [e for e in items(client, mask=True) if e["source_file"] == "net.csv"][0]
+    assert "10.0.0.5" in masked["message"] and SSN not in masked["message"]
+    assert masked["device_id"] == "00:1A:2B:3C:4D:5E"
+    report = client.get("/api/logs/collections/job-1/privacy").json()
+    assert report["network_identifier_events"] == 1
+    assert {c["value"] for c in report["network_by_category"]} == {"ip_address", "mac_address"}
+    assert {c["category"]: c["group"] for c in client.get("/api/logs/privacy/categories").json()}["mac_address"] == "network"

@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 from app.ingestion.parsers.base import LogParser, ParseReport, UnrecognizedLogFormat
 from app.ingestion.registry import detect_parser, iter_events
 from app.models import IngestedFile
-from app.privacy.scanner import SCANNER_VERSION, encode_flags, scan_event_fields
+from app.privacy.scanner import scan_columns
 from app.models import NormalizedEvent as EventRow
 
 DEFAULT_PATTERNS = ("*.csv", "*.log")
@@ -129,10 +129,8 @@ def ingest_file(
                     "message": event.message,
                     "source_file": label,
                     "source_line": event.source_line,
-                    "privacy_scan_version": SCANNER_VERSION,
-                    "sensitive_flags": encode_flags(scan_event_fields(
-                        message=event.message, device_id=event.device_id,
-                        process=event.process, category=event.category)),
+                    **scan_columns(message=event.message, device_id=event.device_id,
+                                   process=event.process, category=event.category),
                 }
             )
             if len(batch) >= batch_size:

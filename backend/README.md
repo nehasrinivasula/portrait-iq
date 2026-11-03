@@ -423,8 +423,8 @@ version that checked it (`privacy_scan_version`), and a flag list
 What it looks for (`GET /api/logs/privacy/categories` lists these live):
 labelled values (`patientName=`, `mrn=`, `dob=`, `patient_id`, insurance and
 account numbers), HL7 patient segments (`PID`, `NK1`, `GT1`, `IN1`), SSNs,
-emails, US phone numbers, payment card numbers (Luhn-checked), street
-addresses, and IP and MAC addresses. The `message`, `device_id`, `process` and
+emails, US phone numbers, payment card numbers (real card-network prefix and
+Luhn-checked), and street addresses. The `message`, `device_id`, `process` and
 `category` fields are all scanned. Each flag has a kind, a confidence
 (`high`, `medium`, `low`) and a character range.
 
@@ -434,9 +434,11 @@ flags, reports or the audit log.
 
 What it cannot do: a name written in a plain sentence ("John Smith left bed 4")
 has no pattern and is not detected; a name after a label is. IP and MAC
-addresses are flagged at `low` confidence because they are HIPAA identifiers
-but also the normal content of network logs (a four-part software version can
-look like an IP address). Treat the scan as a safety net for known patterns, not
+addresses are recorded separately as **network identifiers** (`network_flags`,
+`network_identifiers` in the API, `network_identifier_events` in the report):
+they identify equipment, which this tool exists to read (on the real sample set
+58% of events have a MAC-style device name), so they never make an event count
+as "flagged" and `mask=true` leaves them alone. Treat the scan as a safety net for known patterns, not
 as proof a log is clean. Flagging marks text; it removes nothing unless the
 caller asks for `mask=true`.
 

@@ -175,3 +175,45 @@ def test_audit_field_names_include_the_flag_filters_but_no_values():
     f = build_filter(flagged=True, flag_categories=["ssn"])
     assert f.used_fields() == ["flagged", "flag_category"]
     assert build_filter(flagged=False).used_fields() == ["flagged"]
+
+
+def add_network_event(db, line=20):
+    db.add(EventRow(timestamp=datetime(2024, 6, 2, 5), source="portrait", severity="INFO",
+                    message="timeout talking to 10.0.0.5", device_id="00:1A:2B:3C:4D:5E", job_id="job-1",
+                    source_file="net.csv", source_line=line, **scanner.scan_columns(
+                        message="timeout talking to 10.0.0.5", device_id="00:1A:2B:3C:4D:5E")))
+    db.commit()
+
+
+def test_ip_and_mac_addresses_are_stored_apart_and_do_not_count_as_flagged(ingested):
+    add_network_event(ingested)
+    r = [e for e in rows(ingested) if e.source_file == "net.csv"][0]
+    assert r.sensitive_flags is None
+    assert {f.category for f in scanner.decode_flags(r.network_flags)} == {"ip_address", "mac_address"}
+    assert 20 not in search(ingested, flagged=True)
+    assert 20 in search(ingested, flagged=False)          # scanned, no personal data
+
+
+def test_report_counts_network_identifiers_separately(ingested):
+    add_network_event(ingested)
+    r = service.privacy_report(ingested, "job-1")
+    assert r.flagged_events == 2 and r.network_events == 1
+    assert r.network_by_category == {"ip_address": 1, "mac_address": 1}
+    assert "ip_address" not in r.flags_by_category and "mac_address" not in r.flags_by_category
+    assert {f.source_file: f.network_events for f in r.files}["net.csv"] == 1
+
+
+def test_flag_category_filter_finds_network_kinds_too(ingested):
+    add_network_event(ingested)
+    assert search(ingested, flag_categories=["ip_address"]) == [20]
+    assert search(ingested, flag_categories=["mac_address", "ssn"]) == [4, 20]
+
+
+def test_rescan_fills_in_both_flag_columns(ingested):
+    ingested.add(EventRow(timestamp=datetime(2024, 6, 2, 6), source="portrait", severity="INFO",
+                          message=f"old {SSN} via 10.0.0.5", job_id="job-1", source_file="old.csv", source_line=1))
+    ingested.commit()
+    service.rescan(ingested, "job-1")
+    r = [e for e in rows(ingested) if e.source_file == "old.csv"][0]
+    assert [f.category for f in scanner.decode_flags(r.sensitive_flags)] == ["ssn"]
+    assert [f.category for f in scanner.decode_flags(r.network_flags)] == ["ip_address"]

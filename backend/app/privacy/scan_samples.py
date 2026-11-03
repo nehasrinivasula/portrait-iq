@@ -24,7 +24,7 @@ from typing import Optional
 from app.ingestion.parsers.base import ParseReport, UnrecognizedLogFormat
 from app.ingestion.registry import detect_parser, iter_events
 from app.ingestion.validate_samples import _collect_files
-from app.privacy.scanner import SCANNER_VERSION, scan_event_fields
+from app.privacy.scanner import SCANNER_VERSION, category_group, scan_event_fields
 
 
 def _shape(text: str) -> str:
@@ -43,13 +43,16 @@ def scan_file(path: Path, examples: Optional[Counter] = None) -> Optional[tuple[
         events += 1
         flags = scan_event_fields(message=e.message, device_id=e.device_id, process=e.process, category=e.category)
         if flags:
-            flagged += 1
+            if any(category_group(f.category) == "personal" for f in flags):
+                flagged += 1
             for f in flags:
                 kinds[f.category] += 1
                 confidences[f.confidence] += 1
-                if examples is not None and f.field == "message":
-                    before = e.message[max(0, f.start - 24):f.start]
-                    examples[(f.category, f"{_shape(before)}<{_shape(e.message[f.start:f.end])}>")] += 1
+                if examples is not None:
+                    value = {"message": e.message, "device_id": e.device_id,
+                             "process": e.process, "category": e.category}[f.field] or ""
+                    before = value[max(0, f.start - 24):f.start]
+                    examples[(f.category, f"{f.field}: {_shape(before)}<{_shape(value[f.start:f.end])}>")] += 1
     return events, flagged, kinds, confidences
 
 
@@ -94,9 +97,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     seconds = time.perf_counter() - start
 
     print(f"\n=== PHI/PII scan (scanner v{SCANNER_VERSION}) ===")
-    print(f"files={len(files)} events={total_events:,} flagged_events={total_flagged:,} seconds={seconds:.1f}")
+    print(f"files={len(files)} events={total_events:,} flagged_events={total_flagged:,} (personal data only) seconds={seconds:.1f}")
+    print("  personal-data flags (these make an event 'flagged'):")
     for kind, n in kinds.most_common():
-        print(f"  {kind}: {n:,}")
+        if category_group(kind) == "personal":
+            print(f"    {kind}: {n:,}")
+    print("  network identifiers (recorded apart, never 'flagged'):")
+    for kind, n in kinds.most_common():
+        if category_group(kind) == "network":
+            print(f"    {kind}: {n:,}")
     if confidences:
         print(f"  by confidence: {dict(confidences)}")
     if examples:

@@ -17,7 +17,7 @@ from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models import NormalizedEvent as E
-from app.privacy.scanner import SCANNER_VERSION, decode_flags, encode_flags, scan_event_fields
+from app.privacy.scanner import SCANNER_VERSION, decode_flags, scan_columns
 from app.storage.filters import UNASSIGNED
 
 RESCAN_BATCH = 2000
@@ -37,6 +37,7 @@ class FileFlagCount:
     events: int
     flagged_events: int
     unscanned_events: int
+    network_events: int = 0
 
 
 @dataclass
@@ -46,7 +47,9 @@ class PrivacyReport:
     events: int
     scanned_events: int
     unscanned_events: int          # never scanned, or scanned by an older scanner
-    flagged_events: int
+    flagged_events: int            # events with personal-data flags; IP and MAC addresses do not count
+    network_events: int = 0        # events with IP or MAC addresses (recorded apart from the personal kinds)
+    network_by_category: dict[str, int] = field(default_factory=dict)
     flags_by_category: dict[str, int] = field(default_factory=dict)
     flags_by_confidence: dict[str, int] = field(default_factory=dict)
     flags_by_field: dict[str, int] = field(default_factory=dict)
@@ -62,6 +65,12 @@ def privacy_report(db: Session, job_id: str) -> PrivacyReport:
     total = db.scalar(select(func.count()).select_from(E).where(scope)) or 0
     unscanned = db.scalar(select(func.count()).select_from(E).where(scope, _needs_scan())) or 0
     flagged = db.scalar(select(func.count()).select_from(E).where(scope, E.sensitive_flags.is_not(None))) or 0
+
+    network = db.scalar(select(func.count()).select_from(E).where(scope, E.network_flags.is_not(None))) or 0
+    net_cat: Counter = Counter()
+    for (raw,) in db.execute(select(E.network_flags).where(scope, E.network_flags.is_not(None))).yield_per(5000):
+        for f in decode_flags(raw):
+            net_cat[f.category] += 1
 
     by_cat: Counter = Counter()
     by_conf: Counter = Counter()
@@ -83,13 +92,15 @@ def privacy_report(db: Session, job_id: str) -> PrivacyReport:
             func.count(),
             func.sum(case((E.sensitive_flags.is_not(None), 1), else_=0)),
             func.sum(case((_needs_scan(), 1), else_=0)),
+            func.sum(case((E.network_flags.is_not(None), 1), else_=0)),
         ).where(scope).group_by(E.source_file).order_by(E.source_file)
     ).all()
-    files = [FileFlagCount(name, n, int(fl or 0), int(un or 0)) for name, n, fl, un in rows]
+    files = [FileFlagCount(name, n, int(fl or 0), int(un or 0), int(nw or 0)) for name, n, fl, un, nw in rows]
 
     return PrivacyReport(
         job_id=job_id, scanner_version=SCANNER_VERSION, events=total,
         scanned_events=total - unscanned, unscanned_events=unscanned, flagged_events=flagged,
+        network_events=network, network_by_category=dict(net_cat),
         flags_by_category=dict(by_cat), flags_by_confidence=dict(by_conf),
         flags_by_field=dict(by_field), files=files,
     )
@@ -111,12 +122,8 @@ def rescan(db: Session, job_id: Optional[str] = None) -> int:
         if not rows:
             return done
         db.execute(update(E), [
-            {
-                "id": r.id,
-                "privacy_scan_version": SCANNER_VERSION,
-                "sensitive_flags": encode_flags(scan_event_fields(
-                    message=r.message, device_id=r.device_id, process=r.process, category=r.category)),
-            }
+            {"id": r.id, **scan_columns(message=r.message, device_id=r.device_id,
+                                         process=r.process, category=r.category)}
             for r in rows
         ])
         db.commit()

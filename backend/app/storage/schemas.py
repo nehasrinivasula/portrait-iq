@@ -28,7 +28,8 @@ class LogEventOut(BaseModel):
     source_line: Optional[int]
     job_id: Optional[str]
     privacy_scanned: bool = False    # false = not yet judged by the current scanner; treat as unchecked
-    sensitive: list[SensitiveFlagOut] = []   # empty + privacy_scanned = nothing found
+    sensitive: list[SensitiveFlagOut] = []   # personal-data flags; empty + privacy_scanned = nothing found
+    network_identifiers: list[SensitiveFlagOut] = []   # IP and MAC addresses; never masked, never "flagged"
     masked: bool = False             # true = flagged spans were replaced with [REDACTED:<category>]
 
 
@@ -109,6 +110,7 @@ class PrivacyFileOut(BaseModel):
     events: int
     flagged_events: int
     unscanned_events: int
+    network_identifier_events: int = 0
 
 
 class PrivacyReportOut(BaseModel):
@@ -119,7 +121,9 @@ class PrivacyReportOut(BaseModel):
     scanned_events: int
     unscanned_events: int            # not judged by the current scanner version
     all_scanned: bool                # true only when unscanned_events is 0
-    flagged_events: int
+    flagged_events: int              # events with personal-data flags (IP and MAC addresses excluded)
+    network_identifier_events: int   # events with IP or MAC addresses, counted apart
+    network_by_category: list[FlagCountOut]
     by_category: list[FlagCountOut]
     by_confidence: list[FlagCountOut]
     by_field: list[FlagCountOut]
@@ -130,6 +134,7 @@ class PrivacyReportOut(BaseModel):
 class PrivacyCategoryOut(BaseModel):
     category: str
     description: str
+    group: Literal["personal", "network"]   # network kinds never make an event count as flagged
 
 
 class RescanOut(BaseModel):

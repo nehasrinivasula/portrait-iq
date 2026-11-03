@@ -71,8 +71,11 @@ class NormalizedEvent(Base):
     # version that judged this event, NULL if it never was. sensitive_flags is
     # a JSON list of [field, category, confidence, start, end] and is NULL when
     # the scan found nothing. Only positions are stored, never the matched text.
+    # network_flags holds IP and MAC addresses separately: they identify equipment, not people,
+    # so they never make an event count as "flagged".
     privacy_scan_version = Column(Integer, nullable=True)
     sensitive_flags = Column(Text, nullable=True)
+    network_flags = Column(Text, nullable=True)
 
     job = relationship("Job", back_populates="events")
 

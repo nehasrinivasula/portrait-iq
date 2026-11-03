@@ -2,7 +2,8 @@
 import json
 
 from app.privacy.scanner import (
-    CATEGORY_LABELS, SCANNER_VERSION, Flag, decode_flags, encode_flags, mask_text, scan_event_fields, scan_text,
+    CATEGORY_LABELS, NETWORK_CATEGORIES, SCANNER_VERSION, Flag, category_group, decode_flags, encode_flags,
+    mask_text, scan_columns, scan_event_fields, scan_text, split_flags,
 )
 
 
@@ -165,3 +166,24 @@ def test_mask_leaves_other_fields_and_bad_ranges_alone():
 def test_scanner_version_is_a_positive_int():
     assert isinstance(SCANNER_VERSION, int) and SCANNER_VERSION >= 1
     json.dumps({"v": SCANNER_VERSION})
+
+
+def test_ip_and_mac_addresses_are_network_identifiers_not_personal_data():
+    assert NETWORK_CATEGORIES == {"ip_address", "mac_address"}
+    assert category_group("mac_address") == "network" and category_group("ssn") == "personal"
+    personal, network = split_flags(list(scan_text("peer 10.0.0.5 ssn 123-45-6789")))
+    assert [f.category for f in personal] == ["ssn"] and [f.category for f in network] == ["ip_address"]
+
+
+def test_scan_columns_keeps_network_addresses_out_of_the_personal_flags():
+    cols = scan_columns(message="timeout to 10.0.0.5", device_id="00:1A:2B:3C:4D:5E", process="svc", category="General")
+    assert cols["sensitive_flags"] is None
+    assert {f.category for f in decode_flags(cols["network_flags"])} == {"ip_address", "mac_address"}
+    assert cols["privacy_scan_version"] == SCANNER_VERSION
+    both = scan_columns(message="ssn 123-45-6789 via 10.0.0.5")
+    assert [f.category for f in decode_flags(both["sensitive_flags"])] == ["ssn"]
+
+
+def test_long_counters_and_epoch_times_are_not_cards():
+    for text in ["t 1700000000000", "count 4111111111111111111111", "id 9000000000000001"]:
+        assert all(c != "credit_card" for c, _ in found(text)), text
