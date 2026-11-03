@@ -26,6 +26,24 @@ class CurrentUserOut(BaseModel):
     name: str
 
 
+class AuditLogEntryOut(BaseModel):
+    """Safe reviewer-facing form of one audit record."""
+
+    id: int
+    timestamp: datetime
+    actor: str
+    session_id: Optional[str]
+    action: str
+    description: str = ""
+
+
+class AuditLogPageOut(BaseModel):
+    items: list[AuditLogEntryOut]
+    total: int
+    limit: int
+    offset: int
+
+
 class ConnectRequest(BaseModel):
     mode: str = "live"          # "live" | "pre_install"
     ip_address: str

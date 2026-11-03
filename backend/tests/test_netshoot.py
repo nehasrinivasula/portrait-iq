@@ -14,6 +14,8 @@ from app.collectors.base import PluginConfigError, PluginError, ResourceLimits
 from app.collectors.netshoot import NetshootCollector, is_host
 from app.collectors.registry import PluginRegistry
 from app.db import Base
+from app.auth import User
+from app.orchestrator import routes
 from app.orchestrator.jobs import create_job, read_results, run_job
 
 LIMITS = ResourceLimits(cpu_pct=50, mem_mb=512, max_output_mb=100)
@@ -90,6 +92,11 @@ def test_run_deploys_checks_and_reports(plugin, runner, tmp_path):
 
     total = 3 + 2 + 2 + 3        # pod info, 2 DNS names, ping + traceroute, 3 ports
     assert result.summary == f"{total - 5} of {total} network checks passed against 192.0.2.10"
+    assert len(result.checks) == total
+    assert [check.status for check in result.checks].count("fail") == 5
+    assert next(c for c in result.checks if c.label == "TCP 192.0.2.10:22").reason == "Connection refused."
+    assert next(c for c in result.checks if c.label == "resolve kubernetes.default.svc.cluster.local").reason == "No answer returned."
+    assert all(c.reason is None for c in result.checks if c.status == "pass")
     assert "TCP 192.0.2.10:22 failed: nc: connect to 192.0.2.10 port 22 (tcp) failed: Connection refused" in result.warnings
     assert "resolve kubernetes.default.svc.cluster.local failed: no answer" in result.warnings
     records = json.loads((tmp_path / "netshoot.json").read_text())
@@ -107,6 +114,21 @@ def test_check_output_is_redacted(plugin, runner, monkeypatch):
     runner.results["cat"] = k8s.ExecResult(0, "search pm.svc hunter2\n", "")
     plugin.run("192.0.2.10")
     assert "hunter2" not in (plugin.output_dir / "netshoot.txt").read_text()
+
+
+def test_ui_check_reasons_never_expose_raw_output(plugin, runner):
+    runner.results["nc"] = k8s.ExecResult(2, "", "private patient name")
+    result = plugin.run("192.0.2.10")
+    failed = [check for check in result.checks if check.status == "fail"]
+    assert failed and all("patient" not in (check.reason or "") for check in failed)
+    assert all(check.reason == "Check exited with code 2." for check in failed)
+
+
+def test_timeout_is_a_failed_check_not_a_failed_plugin(plugin, runner):
+    runner.results["ping"] = k8s.ExecResult(None, "", "")
+    result = plugin.run("192.0.2.10")
+    ping = next(c for c in result.checks if c.label == "ping 192.0.2.10")
+    assert ping.status == "fail" and ping.reason == "Timed out or connection interrupted."
 
 
 def test_bad_target_fails_before_anything_is_deployed(plugin, runner):
@@ -135,3 +157,16 @@ def test_a_pod_that_never_starts_is_still_deleted(tmp_path, monkeypatch):
     assert read_results(job.id) == [{
         "tool": "netshoot", "error": "pod did not start within 120s: Unschedulable: Too many pods",
     }]
+
+
+def test_job_results_include_each_netshoot_check(db, runner):
+    reg = PluginRegistry()
+    reg.register(NetshootCollector)
+    runner.results["nc"] = k8s.ExecResult(1, "", "Connection refused")
+    job = run_job(db, create_job(db, "live", ["netshoot"], LIMITS), "192.0.2.10", registry=reg)
+    assert job.status == "done"  # failed network checks are findings, not a crashed plugin
+    result = read_results(job.id)[0]
+    assert len(result["checks"]) == 10
+    assert any(c["status"] == "fail" and c["label"] == "TCP 192.0.2.10:22" for c in result["checks"])
+    assert all(set(c) == {"label", "status", "reason"} for c in result["checks"])
+    assert routes.get_job_results(job.id, db=db, user=User("tester", "Tester"))[0]["checks"] == result["checks"]

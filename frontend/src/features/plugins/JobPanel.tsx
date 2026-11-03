@@ -60,6 +60,7 @@ export default function JobPanel() {
               ) : (
                 <>
                   <p>{r.summary}</p>
+                  {r.tool === "netshoot" && <Link to={`/jobs/${encodeURIComponent(job.id)}/results`}>View network checks</Link>}
                   {r.warnings.map((w) => <div key={w} className="alert warn" role="status">{w}</div>)}
                 </>
               )}

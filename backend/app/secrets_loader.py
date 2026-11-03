@@ -309,25 +309,43 @@ _STANDARD_RECORD_FIELDS = frozenset(
 ) | {"message", "asctime"}
 
 
+def _redact_value(value, what: str = "field"):
+    """Strings are always redacted; other values are replaced by their
+    redacted text only when it differs, so a number used with %d keeps working."""
+    if isinstance(value, str):
+        return redact(value)
+    try:
+        text = str(value)
+    except Exception:
+        return f"<log {what} suppressed: could not be formatted safely>"
+    masked = redact(text)
+    return masked if masked != text else value
+
+
 def _redact_extra_fields(record: logging.LogRecord) -> None:
     """Mask secrets in fields added with extra=, which a formatter or a
-    structured (e.g. JSON) handler may output. Strings are always redacted;
-    other values are replaced by their redacted text only when it differs,
-    so a number used with %(n)d keeps working."""
+    structured (e.g. JSON) handler may output."""
     for key, value in list(vars(record).items()):
         if key in _STANDARD_RECORD_FIELDS:
             continue
-        if isinstance(value, str):
-            setattr(record, key, redact(value))
-            continue
-        try:
-            text = str(value)
-        except Exception:
-            setattr(record, key, "<log field suppressed: could not be formatted safely>")
-            continue
-        masked = redact(text)
-        if masked != text:
-            setattr(record, key, masked)
+        setattr(record, key, _redact_value(value))
+
+
+def _redact_args(record: logging.LogRecord) -> None:
+    """Mask secrets in the message and its %-style arguments while keeping
+    record.args, which some formatters read directly (uvicorn's access
+    formatter unpacks it as a 5-tuple). If the formatted message still holds
+    a secret, e.g. one split across two arguments, fall back to the
+    pre-formatted, redacted message with no args."""
+    record.msg = _redact_value(record.msg, "message")
+    if isinstance(record.args, tuple):
+        record.args = tuple(_redact_value(arg, "argument") for arg in record.args)
+    elif isinstance(record.args, dict):
+        record.args = {k: _redact_value(v, "argument") for k, v in record.args.items()}
+    message = record.getMessage()
+    masked = redact(message)
+    if masked != message:
+        record.msg, record.args = masked, None
 
 
 def install_log_redaction() -> None:
@@ -346,11 +364,11 @@ def install_log_redaction() -> None:
     def factory(*args, **kwargs):
         record = current(*args, **kwargs)
         try:
-            record.msg = redact(record.getMessage())
+            _redact_args(record)
         except Exception:
             # logging would otherwise print the raw msg/args while reporting its own error
             record.msg = "<log message suppressed: could not be formatted safely>"
-        record.args = None
+            record.args = None
         if record.exc_info and record.exc_info[0] is not None:
             record.exc_text = redact(_format_exc(record.exc_info))
         if record.stack_info:
