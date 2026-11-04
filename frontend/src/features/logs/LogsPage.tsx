@@ -6,6 +6,8 @@ import LogTable from "./LogTable";
 import { activeFilters, removeFilter } from "./activeFilters";
 import { emptyFilter, getFacets, type Facets, type LogFilter } from "./logsApi";
 import { defaultTimeFrame, filterRange, type TimeFrameChoice } from "./timeframe";
+import PrivacyPanel from "../privacy/PrivacyPanel";
+import { noPrivacyOptions, type PrivacyOptions } from "../privacy/privacyApi";
 
 const DEBOUNCE_MS = 300;
 
@@ -30,6 +32,7 @@ export default function LogsPage() {
   const [facets, setFacets] = useState<Facets | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
+  const [privacy, setPrivacy] = useState<PrivacyOptions>(noPrivacyOptions);
 
   // A custom range that is half-typed or invalid keeps the last good one applied.
   const lastRange = useRef<{ since: string | null; until: string | null }>({ since: null, until: null });
@@ -45,9 +48,9 @@ export default function LogsPage() {
   const optionScope = useDebounced({ ...emptyFilter(), ...range, jobId }, DEBOUNCE_MS);
   useEffect(() => {
     let live = true;
-    getFacets(optionScope).then((f) => live && setFacets(f)).catch(() => live && setFacets(null));
+    getFacets(optionScope, privacy.mask).then((f) => live && setFacets(f)).catch(() => live && setFacets(null));
     return () => { live = false; };
-  }, [optionScope, reloadKey]);
+  }, [optionScope, reloadKey, privacy.mask]);
 
   const active = activeFilters(frame, filter);
   const onRemove = (id: string) => {
@@ -72,11 +75,15 @@ export default function LogsPage() {
         </p>
       )}
 
+      <PrivacyPanel jobId={jobId} options={privacy} onOptions={setPrivacy} reloadKey={reloadKey}
+        onScanned={() => setReloadKey((k) => k + 1)} />
+
       <LogFilters frame={frame} onFrame={setFrame} filter={filter} onFilter={setFilter}
-        facets={facets} active={active} onRemove={onRemove} onClear={onClear} />
+        facets={privacy.mask && facets ? { ...facets, devices: [], categories: [] } : facets} active={active} onRemove={onRemove} onClear={onClear} />
 
       <div className="logs-body">
-        <LogTable filter={applied} reloadKey={reloadKey} onTotal={onTotal} filtered={active.length > 0 || !!jobId} />
+        <LogTable filter={applied} reloadKey={reloadKey} onTotal={onTotal} privacy={privacy}
+          filtered={active.length > 0 || !!jobId || privacy.flaggedOnly} />
       </div>
     </div>
   );

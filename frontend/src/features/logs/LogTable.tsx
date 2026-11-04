@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { searchEvents, type LogEvent, type LogFilter } from "./logsApi";
+import { categoryLabel, type PrivacyOptions } from "../privacy/privacyApi";
+import "../privacy/privacy.css";
 
 const time = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
 
@@ -13,9 +15,30 @@ function Message({ text }: { text: string }) {
   );
 }
 
+/** What the scan found in one event: kinds only, never the matched text. */
+function Flags({ e }: { e: LogEvent }) {
+  const flags = e.sensitive ?? [];
+  // A flag the server could not mask is not "nothing found".
+  if (e.message.includes("[REDACTED:unreadable]"))
+    return <span className="flag-tag medium" title="The flagged text could not be read, so it was hidden">hidden: unreadable</span>;
+  // Flags win over the scanned marker: a masked row judged on the spot has flags but is not stored as scanned.
+  if (flags.length === 0)
+    return e.privacy_scanned ? <span className="muted" title="Scanned: nothing found">—</span>
+      : <span className="muted" title="Not scanned yet">not scanned</span>;
+  const kinds = [...new Set(flags.map((f) => f.category))];
+  return (
+    <>
+      {kinds.map((k) => {
+        const conf = flags.find((f) => f.category === k)?.confidence ?? "medium";
+        return <span key={k} className={`flag-tag ${conf}`} title={`${conf} confidence`}>{categoryLabel(k)}</span>;
+      })}
+    </>
+  );
+}
+
 /** The scrolling part of the logs page. Filters change -> first page again. */
-export default function LogTable({ filter, reloadKey, onTotal, filtered }: {
-  filter: LogFilter; reloadKey: number; onTotal: (n: number | null) => void; filtered: boolean;
+export default function LogTable({ filter, reloadKey, onTotal, filtered, privacy }: {
+  filter: LogFilter; reloadKey: number; onTotal: (n: number | null) => void; filtered: boolean; privacy?: PrivacyOptions;
 }) {
   const [rows, setRows] = useState<LogEvent[]>([]);
   const [total, setTotal] = useState<number | null>(null);
@@ -23,13 +46,16 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered }: {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [more, setMore] = useState(false);
   const latest = useRef(0);
+  const shownMask = useRef(!!privacy?.mask);
   const scroller = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async (next: string | null) => {
     const id = ++latest.current;
+    // Rows loaded with the other mask setting must not stay on screen if this load fails.
+    if (!next && shownMask.current !== !!privacy?.mask) { shownMask.current = !!privacy?.mask; setRows([]); setCursor(null); }
     next ? setMore(true) : setState("loading");
     try {
-      const page = await searchEvents(filter, next);
+      const page = await searchEvents(filter, next, 100, privacy);
       if (id !== latest.current) return; // a newer search replaced this one
       setRows((r) => (next ? [...r, ...page.items] : page.items));
       if (page.total !== null) { setTotal(page.total); onTotal(page.total); }
@@ -41,7 +67,7 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered }: {
     } finally {
       if (id === latest.current) setMore(false);
     }
-  }, [filter, onTotal]);
+  }, [filter, onTotal, privacy]);
 
   useEffect(() => { load(null); }, [load, reloadKey]);
 
@@ -57,7 +83,9 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered }: {
   if (rows.length === 0)
     return (
       <p className="muted" role="status">
-        {filtered ? "No logs match these filters. Loosen or clear them." : "No logs yet. Run diagnostics with logs included, or import log files."}
+        {privacy?.flaggedOnly
+          ? "No flagged events among the events scanned so far. Events that have not been scanned are not checked: see the scan panel above."
+          : filtered ? "No logs match these filters. Loosen or clear them." : "No logs yet. Run diagnostics with logs included, or import log files."}
       </p>
     );
 
@@ -65,7 +93,7 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered }: {
     <div className="table-wrap" ref={scroller} tabIndex={0} aria-label="Log events">
       <table className="log-table">
         <thead>
-          <tr><th scope="col">Time</th><th scope="col">Level</th><th scope="col">Device</th><th scope="col">Source</th><th scope="col">Process</th><th scope="col">Message</th></tr>
+          <tr><th scope="col">Time</th><th scope="col">Level</th><th scope="col">Device</th><th scope="col">Source</th><th scope="col">Process</th><th scope="col">Message</th><th scope="col">PHI/PII</th></tr>
         </thead>
         <tbody>
           {rows.map((e) => (
@@ -76,6 +104,7 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered }: {
               <td>{e.source}</td>
               <td>{e.process ?? "—"}</td>
               <td><Message text={e.message} /></td>
+              <td className="flag-col"><Flags e={e} /></td>
             </tr>
           ))}
         </tbody>

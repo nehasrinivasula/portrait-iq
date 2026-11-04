@@ -1,0 +1,5 @@
+.audit-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 16px 0; }
+.audit-form select, .audit-form input { min-height: 44px; }
+.audit-table td { vertical-align: top; }
+.audit-desc { word-break: break-word; max-width: 520px; }
+.audit-foot { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; }

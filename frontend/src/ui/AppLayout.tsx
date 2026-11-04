@@ -5,6 +5,7 @@ const links = [
   { to: "/", label: "Home", end: true },
   { to: "/run", label: "Run diagnostics" },
   { to: "/logs", label: "Logs" },
+  { to: "/audit", label: "Audit log" },
 ];
 
 export default function AppLayout() {

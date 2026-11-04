@@ -1,4 +1,5 @@
 import { apiFetch } from "../../api";
+import { privacyParams, type PrivacyOptions, type SensitiveFlag } from "../privacy/privacyApi";
 
 // Log search (PR #10): GET /api/logs/events, /facets. Times are UTC ISO.
 
@@ -16,6 +17,10 @@ export interface LogEvent {
   source_file: string | null;
   source_line: number | null;
   job_id: string | null;
+  // PHI/PII scan (S-3). Absent from older servers; flags carry kinds and positions, never the matched text.
+  privacy_scanned?: boolean;
+  sensitive?: SensitiveFlag[];
+  masked?: boolean;
 }
 
 export interface LogPage {
@@ -68,14 +73,20 @@ export function filterParams(f: LogFilter): URLSearchParams {
   return p;
 }
 
-export function searchEvents(f: LogFilter, cursor: string | null, limit = 100): Promise<LogPage> {
+export function searchEvents(f: LogFilter, cursor: string | null, limit = 100, privacy?: PrivacyOptions): Promise<LogPage> {
   const p = filterParams(f);
+  privacyParams(privacy).forEach((v, k) => p.set(k, v));
   p.set("limit", String(limit));
   if (cursor) p.set("cursor", cursor);
   return apiFetch<LogPage>(`/api/logs/events?${p}`);
 }
 
-export const getFacets = (f: LogFilter) => apiFetch<Facets>(`/api/logs/facets?${filterParams(f)}`);
+/** With mask on, the server leaves out device and category values that were flagged. */
+export function getFacets(f: LogFilter, mask = false) {
+  const p = filterParams(f);
+  if (mask) p.set("mask", "true");
+  return apiFetch<Facets>(`/api/logs/facets?${p}`);
+}
 
 export interface AcquisitionResult {
   run_id: string;
