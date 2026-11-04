@@ -153,7 +153,7 @@ _DOB_SPACED = re.compile(
 # Cheap pre-filters. A label rule needs one of these words; a plain `in` test on lower-cased text is
 # many times faster than running the label regex over every message.
 _LABEL_KEYS = ("name", "patient", "mrn", "record", "account", "insurance", "member", "policy", "visit",
-               "encounter", "dob", "birth", "ssn", "social", "phone", "mail", "address", "kin")
+               "encounter", "dob", "birth", "ssn", "social", "phone", "tel", "mail", "address", "kin")
 
 
 _PT_KEY = re.compile(r"(?<![a-z0-9])pt").search      # "ptMrn", "pt_id": "pt" alone is too common inside words
@@ -259,14 +259,15 @@ _NAME_STOP = frozenset({"a", "an", "and", "at", "by", "for", "from", "has", "had
 _NAME_NEXT = re.compile(r"[ ]*,?[ ]+([^\W\d_](?:[^\W\d_]|['\u2019.-])*)(?![=:\w])")
 _NAME_PARTICLES = frozenset({"van", "von", "de", "del", "della", "der", "den", "di", "da", "du", "la", "le", "bin", "ibn",
                              "al", "el", "st", "mc", "mac", "ter", "ten", "af"})
-_SSN_VALUE = re.compile(r"\d{3}[ -]\d{2}[ -]\d{4}")
+_SSN_VALUE = re.compile(r"\d{3}[ -]\d{2}[ -]\d{4}|\d{3}[ -]\d{6}|\d{5}[ -]\d{4}")
 _PHONE_VALUE = re.compile(r"(?:\+?1[ .-]?)?(?:\(\d{3}\)[ ]?|\d{3}[ .-])\d{3}[ .-]\d{4}")
+_PHONE_LOOSE = re.compile(r"\+?[\d(][\d ().-]{5,30}")     # "+44 20 7946 0958", "555 1234": when unsure where it ends, take more
 _DOB_VALUES = (
     re.compile(r"[A-Za-z]{3,9}\.?[ ]\d{1,2}(?:st|nd|rd|th)?,?[ ]\d{4}"),     # January 5, 1980
     re.compile(r"\d{1,2}[ ][A-Za-z]{3,9}\.?,?[ ]\d{4}"),                      # 5 January 1980
     re.compile(r"\d{1,2}[ ]\d{1,2}[ ]\d{2,4}|\d{4}[ ]\d{1,2}[ ]\d{1,2}"),       # 01 02 1980
 )
-_ID_VALUE = re.compile(r"\d[\w-]*(?:[ ]\d[\w-]*){0,3}")                        # 1234 5678
+_ID_VALUE = re.compile(r"[A-Za-z]{0,3}\d[\w.:/-]*(?:(?:[ ]|,(?=\d))\d[\w.:/-]*){0,3}")   # 1234 5678, A123 4567, 123,456, 12:34:56
 _ADDRESS_VALUE = re.compile(r"[^;|\"\r\n]{1,80}")
 
 
@@ -299,13 +300,17 @@ def _extend(category: str, text: str, start: int, end: int) -> int:
         m = _SSN_VALUE.match(text, start)
     elif category == "phone":
         m = _PHONE_VALUE.match(text, start)
+        if m is None:
+            m = _PHONE_LOOSE.match(text, start)
+            if m is not None:
+                return start + len(m.group().rstrip(" .-("))
     elif category == "date_of_birth":
         m = next((r.match(text, start) for r in _DOB_VALUES if r.match(text, start)), None)
     elif category == "record_identifier":
         m = _ID_VALUE.match(text, start)
     else:
         m = None
-    return m.end() if m is not None else end
+    return max(end, m.end()) if m is not None else end
 
 
 def _hits_labeled(text: str) -> list[_Hit]:

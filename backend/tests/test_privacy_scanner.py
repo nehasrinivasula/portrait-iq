@@ -336,3 +336,28 @@ def test_short_key_forms_are_found():
                            "ptSSN=123-45-6789": "ssn", "pt_phone=608-555-0142": "phone"}.items():
         assert [f.category for f in scan_text(text)] == [category], text
     assert scan_text("script accept opt: yes") == ()
+
+
+def test_labelled_ids_are_masked_whole():
+    for value in ("1234.5678", "123/456789", "12:34:56", "123,456", "A123 4567", "1234 5678"):
+        assert _masked(f"mrn={value} ok") == "mrn=[REDACTED:record_identifier] ok", value
+    assert _masked("patient_id=123/456789 ok") == "patient_id=[REDACTED:record_identifier] ok"
+    # a comma that starts the next field still ends the value
+    assert [f.category for f in scan_text("mrn=123456,ssn=123-45-6789")] == ["record_identifier", "ssn"]
+
+
+def test_phone_values_with_spaces_are_masked_whole():
+    for value in ("+44 20 7946 0958", "555 1234", "(608) 555-0142", "+1(555)123-4567"):
+        assert _masked(f"phone_number={value} ok") == "phone_number=[REDACTED:phone] ok", value
+    assert scan_text("phone=none") == () and scan_text("phone=12 34") == ()
+
+
+def test_bare_tel_is_flagged():
+    for text in ("tel=5551234567", "tel=5551234", "tel: 555 1234"):
+        assert [f.category for f in scan_text(text)] == ["phone"], text
+    assert scan_text("hotel=Hilton intel=ok") == ()
+
+
+def test_ssn_with_unusual_grouping_is_masked_whole():
+    assert _masked("ssn=123 456789 ok") == "ssn=[REDACTED:ssn] ok"
+    assert _masked("ssn=12345 6789 ok") == "ssn=[REDACTED:ssn] ok"
