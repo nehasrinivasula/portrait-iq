@@ -50,6 +50,14 @@ NODE_PORT            = 30080
 # GE's profile has multicast off, so point discovery at a domain participant
 # (the router's headless service) instead of the job's target IP:
 # RTI_PEER             = udpv4://axone-router-1.pm.svc.cluster.local
+# A Secret (in the tools namespace) with replacement DDS security files,
+# mounted over the image's set when the bench's certs were rotated and the
+# image's no longer authenticate. Create it yourself; its keys must be the
+# file names the image's QoS reads (Test.cert.pem, Test.key.pem,
+# Test_certsigner.cert.pem, TestGovernance.p7s, TestPermissions.p7s). Empty
+# keeps the image's own files. RTI_SDDS_DIR is where that QoS reads them.
+# RTI_SECURITY_SECRET  = rti-dds-security
+# RTI_SDDS_DIR         = /opt/axone-tools/sdds
 
 # Absolute path to a folder outside the repo, e.g. $(HOME)/portrait-iq-secrets
 SECRETS_DIR          =

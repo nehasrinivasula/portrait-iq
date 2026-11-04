@@ -91,6 +91,14 @@ spec:
             # Who rtiddsspy asks for discovery; empty uses the job's target IP.
             - name: RTI_PEER
               value: "__RTI_PEER__"
+            # A Secret in this namespace with replacement DDS security files,
+            # mounted read-only over RTI_SDDS_DIR in the tool pod (the dir the
+            # image's QoS reads). Empty keeps the image's own files. The
+            # Secret's keys must be the file names that QoS looks for there.
+            - name: RTI_SECURITY_SECRET
+              value: "__RTI_SECURITY_SECRET__"
+            - name: RTI_SDDS_DIR
+              value: "__RTI_SDDS_DIR__"
           # The pod shares the MiniEdge with the Portrait software and must
           # not starve it. Raise only after watching real usage.
           resources:
