@@ -32,6 +32,7 @@ from app.privacy import service as privacy
 from app.privacy.scanner import (
     CATEGORY_LABELS, SCANNER_VERSION, category_group, decode_flags, mask_text, scan_columns,
 )
+from app.storage.completeness import PROBLEM
 from app.storage import events as store
 from app.storage.filters import DEFAULT_LIMIT, MAX_LIMIT, UNASSIGNED, EventFilter, FilterError, build_filter
 from app.storage.schemas import (
@@ -286,14 +287,29 @@ def _privacy_out(r, ingest_complete: bool) -> PrivacyReportOut:
     )
 
 
+ALL_COLLECTIONS_LIMIT = 1_000_000   # every collection, not a page of them: a missing one must not read as complete
+
+
 def _ingest_complete(db: Session, scope: Optional[str]) -> bool:
     """Did everything that was pulled in actually get stored? One collection, logs tied to no collection, or
-    (scope None) every collection. A missing answer counts as not complete: this feeds a check that must fail closed."""
+    (scope None) every collection. A missing answer counts as not complete: this feeds a check that must fail closed.
+
+    In the all-collections view a finished run that simply holds no logs (a Netshoot-only run) says nothing about
+    the logs that were stored, so it does not count against the rest. A running or failed one still does."""
     if scope is not None:
         summary = store.collection_summary(db, scope)
         return summary is not None and summary.complete
-    scopes = [c.job_id for c in store.list_collections(db, 200)]
-    return bool(scopes) and all(_ingest_complete(db, s) for s in scopes)
+    rows = store.list_collections(db, ALL_COLLECTIONS_LIMIT)
+    if not rows:
+        return False
+    for row in rows:
+        summary = store.collection_summary(db, row.job_id)
+        if summary is None:
+            return False
+        if summary.complete or [i.kind for i in summary.issues if i.severity == PROBLEM] == ["no_logs"]:
+            continue
+        return False
+    return any(r.events > 0 for r in rows)
 
 
 def _report(db: Session, user: User, scope: Optional[str]) -> PrivacyReportOut:

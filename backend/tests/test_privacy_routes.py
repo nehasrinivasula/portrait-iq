@@ -302,3 +302,35 @@ def test_a_scan_is_audited_when_it_starts_and_when_it_fails(env, monkeypatch):
     assert ("logs_privacy_scan_start", "job=job-1") in entries
     assert ("logs_privacy_scan", "job=job-1 failed error=RuntimeError") in entries
     assert "disk full" not in repr(entries)
+
+
+def _stored_logs_complete(monkeypatch):
+    """Every run that holds logs counts as fully ingested; runs with no logs keep their real answer."""
+    import app.storage.routes as routes
+    real = routes.store.collection_summary
+
+    def summary(db, job_id):
+        s = real(db, job_id)
+        if s is not None and s.events_stored:
+            s.complete = True
+        return s
+
+    monkeypatch.setattr(routes.store, "collection_summary", summary)
+
+
+def test_a_finished_run_with_no_logs_does_not_block_the_all_logs_check(env, monkeypatch):
+    client, db = env
+    db.add(Job(id="job-netshoot-only", mode="live", status="done"))
+    db.commit()
+    _stored_logs_complete(monkeypatch)
+    body = client.get("/api/logs/privacy").json()
+    assert body["all_scanned"] is True and body["ingest_complete"] is True and body["complete_for_packaging"] is True
+
+
+def test_a_running_or_failed_run_still_blocks_the_all_logs_check(env, monkeypatch):
+    client, db = env
+    db.add(Job(id="job-running", mode="live", status="running"))
+    db.commit()
+    _stored_logs_complete(monkeypatch)
+    body = client.get("/api/logs/privacy").json()
+    assert body["ingest_complete"] is False and body["complete_for_packaging"] is False
