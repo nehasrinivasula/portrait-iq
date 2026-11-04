@@ -268,7 +268,7 @@ def test_the_wider_rules_do_not_flag_ordinary_log_text():
 
 
 def test_a_change_to_the_rules_bumps_the_scanner_version():
-    assert SCANNER_VERSION >= 3
+    assert SCANNER_VERSION >= 4
 
 
 def test_a_card_after_a_short_number_is_found():
@@ -308,3 +308,28 @@ def test_values_are_masked_whole():
 def test_two_labelled_values_joined_by_a_comma_are_both_found():
     cats = [f.category for f in scan_text("mrn=123456,ssn=123-45-6789")]
     assert cats == ["record_identifier", "ssn"]
+
+
+def test_a_phone_with_a_country_code_before_the_bracket_is_found():
+    assert _masked("phone_number=+1(555)123-4567 ok") == "phone_number=[REDACTED:phone] ok"
+    assert _masked("call +1(555)123-4567 now") == "call [REDACTED:phone] now"
+
+
+def test_escapes_inside_a_quoted_value_are_kept_in_the_value():
+    assert _masked('{"patientName":"Jos\\u00e9 Garcia"}') == '{"patientName":"[REDACTED:person_name]"}'
+    # \" still closes a JSON-escaped value, so the next field is left alone.
+    assert _masked('{\\"patientName\\":\\"John\\",\\"bed\\":\\"4\\"}') == '{\\"patientName\\":\\"[REDACTED:person_name]\\",\\"bed\\":\\"4\\"}'
+
+
+def test_a_four_word_name_is_masked_whole():
+    assert _masked("patientName=Maria Elena Garcia Lopez ok") == "patientName=[REDACTED:person_name] ok"
+    assert _masked("patientName=John Smith was admitted") == "patientName=[REDACTED:person_name] was admitted"
+
+
+def test_an_apostrophe_inside_single_quotes_stays_in_the_value():
+    assert _masked("patientName='O'Brien' ok") == "patientName='[REDACTED:person_name]' ok"
+    assert _masked("patientName='John' bed='4'") == "patientName='[REDACTED:person_name]' bed='4'"
+
+
+def test_the_short_mrn_key_is_found():
+    assert _masked("ptMrn: 42") == "ptMrn: [REDACTED:record_identifier]"

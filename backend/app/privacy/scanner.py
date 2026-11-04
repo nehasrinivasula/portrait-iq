@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Callable, Optional
 
-SCANNER_VERSION = 3
+SCANNER_VERSION = 4
 
 # Fields of a log event that are scanned. `message` is where nearly all of it is.
 FIELDS = ("message", "device_id", "process", "category")
@@ -107,7 +107,7 @@ _SSN = re.compile(r"(?<![\w-])(\d{3})-(\d{2})-(\d{4})(?![\w-])")
 _EMAIL = re.compile(r"(?<![\w.+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![\w-])")
 # Separators are required between the groups: a bare 10-digit run is far more
 # likely to be a counter or an id than a phone number.
-_PHONE = re.compile(r"(?<![\w.-])(?:\+?1[ .-])?(?:\(\d{3}\)\s?|\d{3}[ .-])\d{3}[ .-]\d{4}(?![\w-])")
+_PHONE = re.compile(r"(?<![\w.-])(?:\+?1[ .-]|\+?1(?=\())?(?:\(\d{3}\)\s?|\d{3}[ .-])\d{3}[ .-]\d{4}(?![\w-])")
 _CARD = re.compile(r"(?<![\w.-])(?:\d[ -]?){12,18}\d(?![\w-])")
 # "123 Main St", "123 N Main St", "456 W 5th Ave", "123 MAIN ST". Name words are capitalised (a single
 # letter such as a direction counts) or ordinals; the street type may be in any case.
@@ -127,7 +127,7 @@ _HL7 = re.compile(r"(?:^|(?<=[\s\"'|=:,(\[{;])|(?<=\\r)|(?<=\\n))(?:PID|NK1|GT1|
 _SEP = r"[_ .-]?"          # "patient_name", "patient name", "patient.name", "patient-name", "patientName"
 _LABELS = {
     "person_name": rf"patient{_SEP}(?:first|last|middle|given|family|full)?{_SEP}name|pt{_SEP}name|first{_SEP}name|last{_SEP}name|given{_SEP}name|family{_SEP}name|surname|full{_SEP}name|guarantor{_SEP}name|next{_SEP}of{_SEP}kin",
-    "record_identifier": rf"patient{_SEP}mrn|patient{_SEP}id|patient{_SEP}number|mrn|medical{_SEP}record(?:{_SEP}(?:number|no|id))?|account{_SEP}(?:number|no|id)|insurance{_SEP}(?:id|number)|member{_SEP}id|policy{_SEP}(?:id|number)|visit{_SEP}(?:id|number)|encounter{_SEP}(?:id|number)",
+    "record_identifier": rf"patient{_SEP}mrn|pt{_SEP}mrn|patient{_SEP}id|patient{_SEP}number|mrn|medical{_SEP}record(?:{_SEP}(?:number|no|id))?|account{_SEP}(?:number|no|id)|insurance{_SEP}(?:id|number)|member{_SEP}id|policy{_SEP}(?:id|number)|visit{_SEP}(?:id|number)|encounter{_SEP}(?:id|number)",
     "date_of_birth": rf"patient{_SEP}dob|patient{_SEP}birth{_SEP}date|dob|date{_SEP}of{_SEP}birth|birth{_SEP}date|birthday",
     "street_address": rf"home{_SEP}address|street{_SEP}address|mailing{_SEP}address|patient{_SEP}address",
     "ssn": rf"patient{_SEP}ssn|ssn|social{_SEP}security(?:{_SEP}(?:number|no))?",
@@ -142,7 +142,9 @@ _LABELED = re.compile(
     + r")(?![A-Za-z0-9])(?:\\?[\"']|#)*\s*(?:=>|:|=)\s*"
     # The value: quoted (possibly JSON-escaped) or bare. A bare value starts as one run of non-space text;
     # _extend() widens it for the kinds that span spaces (names, dates, addresses).
-    r"(?:\\?\"(?P<dq>[^\"\\]{1,80})\\?\"|'(?P<sq>[^']{1,80})'|(?P<bare>[^\s,;|\"}\])]+))",
+    # Double quotes may hold escapes such as é, but not \", which closes a JSON-escaped value.
+    # Single quotes may hold an apostrophe between letters, as in 'O'Brien'.
+    r"(?:\\?\"(?P<dq>(?:[^\"\\]|\\[^\"]){1,80})\\?\"|'(?P<sq>(?:[^']|(?<=\w)'(?=\w)){1,80})'|(?P<bare>[^\s,;|\"}\])]+))",
     re.IGNORECASE,
 )
 # "DOB 01/02/1980": a date of birth labelled with a space instead of = or :.
@@ -257,7 +259,7 @@ _NAME_NEXT = re.compile(r"[ ]*,?[ ]+([^\W\d_](?:[^\W\d_]|['\u2019.-])*)(?![=:\w]
 _NAME_PARTICLES = frozenset({"van", "von", "de", "del", "della", "der", "den", "di", "da", "du", "la", "le", "bin", "ibn",
                              "al", "el", "st", "mc", "mac", "ter", "ten", "af"})
 _SSN_VALUE = re.compile(r"\d{3}[ -]\d{2}[ -]\d{4}")
-_PHONE_VALUE = re.compile(r"(?:\+?1[ .-])?(?:\(\d{3}\)[ ]?|\d{3}[ .-])\d{3}[ .-]\d{4}")
+_PHONE_VALUE = re.compile(r"(?:\+?1[ .-]|\+?1(?=\())?(?:\(\d{3}\)[ ]?|\d{3}[ .-])\d{3}[ .-]\d{4}")
 _DOB_VALUES = (
     re.compile(r"[A-Za-z]{3,9}\.?[ ]\d{1,2}(?:st|nd|rd|th)?,?[ ]\d{4}"),     # January 5, 1980
     re.compile(r"\d{1,2}[ ][A-Za-z]{3,9}\.?,?[ ]\d{4}"),                      # 5 January 1980
@@ -274,7 +276,7 @@ def _extend(category: str, text: str, start: int, end: int) -> int:
     if category == "person_name":
         allow_lower = text[start:start + 1].islower()           # "john smith" is all lower case; "John Smith was" is not
         words = 0
-        for _ in range(5):
+        for _ in range(6):
             m = _NAME_NEXT.match(text, end)
             if m is None:
                 break
@@ -285,7 +287,7 @@ def _extend(category: str, text: str, start: int, end: int) -> int:
                 break
             if not particle:
                 words += 1
-                if words > 2:
+                if words > 3:
                     break
             end = m.end()
         return start + len(text[start:end].rstrip(",.;:"))
