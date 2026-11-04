@@ -107,10 +107,18 @@ class RtiCollector(Collector):
         self._pod = k8s.pod_name(self.name, self.job_id)   # set first, so cleanup() finds it
         # Host network: DDS discovery uses the node's interfaces. No extra
         # capabilities: a participant only needs ordinary UDP sockets.
+        # GE's rtitools image ships DDS security files, but the bench rotated
+        # the platform's certificates, so the image's no longer match. When a
+        # replacement Secret is configured, mount it over the image's set.
+        secret_mount = (
+            (settings.rti_security_secret, settings.rti_sdds_dir)
+            if settings.rti_security_secret else None
+        )
         self._runner.create(
             name=self._pod, tool=self.name, job_id=self.job_id,
             image=settings.rti_image, command=["sleep", str(deadline)],
             deadline_s=deadline, limits=self.limits, host_network=True,
+            secret_mount=secret_mount,
         )
         self._runner.wait_running(self._pod, start_s)
         res = self._runner.exec(self._pod, argv, self.duration_s + 30)

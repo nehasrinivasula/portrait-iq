@@ -99,6 +99,13 @@ class Settings(BaseSettings):
     # participant, e.g. the router's headless service on the bench:
     # udpv4://axone-router-1.pm.svc.cluster.local
     rti_peer: str = ""
+    # DDS security files (identity cert and key, CA, governance, permissions)
+    # for rtiddsspy, held in a Kubernetes Secret in the tools namespace and
+    # mounted read-only over the image's own set at rti_sdds_dir. Empty keeps
+    # the image's files. The Secret's keys must be the file names the image's
+    # QoS looks for under that directory. SCRUM-39.
+    rti_security_secret: str = ""
+    rti_sdds_dir: str = "/opt/axone-tools/sdds"
     # Where tshark and editcap are on the machine running the backend, when
     # they are not on PATH (the Windows installer does not add them), e.g.
     # C:\Program Files\Wireshark

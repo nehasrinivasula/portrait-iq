@@ -96,6 +96,20 @@ def test_listens_without_printing_samples(tmp_path, monkeypatch, enabled):
     }
 
 
+def test_no_security_secret_is_mounted_by_default(tmp_path, monkeypatch, enabled):
+    runner = FakeRunner()
+    configured(tmp_path, monkeypatch, runner, duration_s=20).run("192.0.2.10")
+    assert runner.created[0].get("secret_mount") is None
+
+
+def test_security_secret_is_mounted_over_the_sdds_dir(tmp_path, monkeypatch, enabled):
+    monkeypatch.setattr(settings, "rti_security_secret", "rti-dds-security")
+    monkeypatch.setattr(settings, "rti_sdds_dir", "/opt/axone-tools/sdds")
+    runner = FakeRunner()
+    configured(tmp_path, monkeypatch, runner, duration_s=20).run("192.0.2.10")
+    assert runner.created[0]["secret_mount"] == ("rti-dds-security", "/opt/axone-tools/sdds")
+
+
 def test_nothing_seen_is_a_warning(tmp_path, monkeypatch, enabled):
     result = configured(tmp_path, monkeypatch, FakeRunner(stdout="")).run("192.0.2.10")
     assert result.summary.startswith("0 hosts, 0 topics")
