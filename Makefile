@@ -56,7 +56,7 @@ require = $(if $(strip $($(1))),,$(error $(1) is not set. Add it to deploy/lab.m
 
 .DEFAULT_GOAL := help
 .PHONY: help setup test dev dev-nocluster image image-save image-load secrets deploy pod-check \
-        status logs api-check undeploy clean render bundle ship tool-images
+        status logs api-check undeploy clean-images clean render bundle ship tool-images
 
 help:  ## List targets
 	@grep -hE '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -190,6 +190,9 @@ logs: bundle  ## Follow the pod's logs (Ctrl-C to stop)
 undeploy: bundle  ## Remove everything make deploy created (deletes the database volume)
 	$(REMOTE) undeploy
 	$(SSH) $(NODE) rm -rf $(REMOTE_DIR)
+
+clean-images: bundle  ## Remove old portrait-iq images from the node, keeping the deployed one
+	$(REMOTE) clean-images
 
 clean:  ## Remove local build output (dist/)
 	rm -rf $(BUILD_DIR)

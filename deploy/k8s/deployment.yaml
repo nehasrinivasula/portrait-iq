@@ -121,6 +121,11 @@ spec:
             httpGet: {path: /health, port: 8000}
             initialDelaySeconds: 20
             periodSeconds: 30
+            # The single worker can be busy for a while on a big log ingest or
+            # PHI/PII scan (SCRUM-95), so tolerate a few slow health checks
+            # instead of restarting the pod mid-job.
+            timeoutSeconds: 5
+            failureThreshold: 6
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: tmp, mountPath: /tmp}
