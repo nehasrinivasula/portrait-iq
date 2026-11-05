@@ -1,7 +1,7 @@
 """Pydantic schemas — the API's request/response contracts. Keep these in
 sync with models.py by hand for now; consider generating one from the other
 once the shape stabilizes."""
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -184,6 +184,13 @@ class JobOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @field_validator("created_at", "finished_at")
+    @classmethod
+    def _as_utc(cls, v: Optional[datetime]) -> Optional[datetime]:
+        # Stored as naive UTC. Without an offset a browser reads the time as
+        # local, and the run's elapsed timer (SCRUM-41) would be off by hours.
+        return v.replace(tzinfo=timezone.utc) if v is not None and v.tzinfo is None else v
 
 
 class UploadOut(BaseModel):
