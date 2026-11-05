@@ -63,3 +63,19 @@ export function formatElapsed(ms: number): string {
   if (m > 0) return `${m} min ${pad(s % 60)} s`;
   return `${s} s`;
 }
+
+export type AlertKind = "info" | "ok" | "warn" | "error";
+
+/** A run's status in plain words, with the alert style that goes with it.
+ * Shared by the run panel and the network checks page. */
+const RUN_HEADLINE: Record<string, [AlertKind, string]> = {
+  queued: ["info", "Waiting to start"],
+  running: ["info", "Running"],
+  done: ["ok", "Finished"],
+  partial: ["warn", "Finished, but some diagnostics failed"],
+  failed: ["error", "The run failed"],
+  cleanup_failed: ["error", "The run ended, but cleanup did not finish"],
+  interrupted: ["warn", "The run was interrupted"],
+};
+
+export const runHeadline = (status: string): [AlertKind, string] => RUN_HEADLINE[status] ?? ["info", status];

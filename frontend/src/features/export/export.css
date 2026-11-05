@@ -58,7 +58,3 @@
 .export-dialog .export-actions { margin-top: 18px; }
 .btn.small { padding: 4px 12px; min-height: 44px; font-size: 15px; }
 .export-facts code { word-break: break-all; }
-@media (max-width: 600px) {
-  .export-facts { grid-template-columns: 1fr; gap: 2px; }
-  .export-facts dd { margin-bottom: 8px; }
-}
