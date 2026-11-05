@@ -237,3 +237,59 @@ def test_export_is_audited_without_log_values(env):
     assert [r.action for r in rows] == ["package_create", "package_ready", "package_download"]
     assert all(SSN not in (r.detail or "") for r in rows)
     assert "sha256=" in rows[-1].detail
+
+
+# --- exports without a run: imported logs and all logs -------------------------------
+
+def _import_unassigned(seed, tmp_path):
+    lines = [HEADER, f'"2024-06-03T04:00:00.000+0000","0","1","INFO","host-z","u","unsetFriendlyName","svc[1:0]",":0","General","imported ssn {SSN}"']
+    path = tmp_path / "imported.csv"
+    path.write_text("\n".join(lines) + "\n")
+    pipeline.ingest_file(path, seed, job_id=None)
+
+
+def test_imported_logs_export_without_a_run(env, tmp_path):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    p = client.get("/api/jobs/unassigned/package/preview").json()
+    assert (p["scope"], p["title"], p["job_status"], p["finished"]) == ("imported", "Imported logs", None, True)
+    assert p["events"] == 1 and p["tools"] == [] and p["findings"] == 0
+    assert client.post("/api/jobs/unassigned/package", json={}).status_code == 202
+    s = client.get("/api/jobs/unassigned/package").json()
+    assert s["state"] == "ready" and s["file_name"].startswith("portrait-iq-imported-logs-")
+    zf = zipfile.ZipFile(io.BytesIO(client.get("/api/jobs/unassigned/package/download").content))
+    assert LAYOUT <= set(zf.namelist())
+    logs = zf.read("logs/events.jsonl").decode().splitlines()
+    assert len(logs) == 1 and SSN not in logs[0]                       # only the imported entry, masked
+    meta = json.loads(zf.read("metadata.json"))
+    assert meta["scope"] == "imported" and meta["run"] is None
+    tools = next(x for x in s["steps"] if x["id"] == "tools")
+    assert tools["status"] == "done" and "no diagnostic results" in tools["detail"]
+
+
+def test_all_logs_export_covers_every_set(env, tmp_path):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    p = client.get("/api/jobs/all/package/preview").json()
+    assert p["scope"] == "all" and p["events"] == 3 and p["findings"] == 1
+    client.post("/api/jobs/all/package", json={})
+    s = client.get("/api/jobs/all/package").json()
+    assert s["state"] == "ready" and s["file_name"].startswith("portrait-iq-all-logs-")
+    zf = zipfile.ZipFile(io.BytesIO(client.get("/api/jobs/all/package/download").content))
+    assert len(zf.read("logs/events.jsonl").decode().splitlines()) == 3
+    summary = json.loads(zf.read("logs/summary.json"))
+    assert {x["id"] for x in summary["sets"]} == {"job-1", "unassigned"}
+    assert json.loads(zf.read("findings/findings.json"))[0]["run"] == "job-1"
+
+
+def test_nothing_to_export_without_logs(env):
+    client, _ = env
+    r = client.post("/api/jobs/unassigned/package", json={})
+    assert r.status_code == 409 and "no imported logs" in r.json()["detail"]
+
+
+def test_collections_list_the_tools_each_run_used(env, tmp_path):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    rows = {c["job_id"]: c for c in client.get("/api/logs/collections").json()}
+    assert rows["job-1"]["tools"] == ["netshoot", "tshark"] and rows["unassigned"]["tools"] == []

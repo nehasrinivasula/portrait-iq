@@ -64,6 +64,7 @@ class CollectionOut(BaseModel):
     events: int
     first_timestamp: Optional[datetime]
     last_timestamp: Optional[datetime]
+    tools: list[str] = []            # the diagnostics a run used; empty for imported logs
 
 
 class IssueOut(BaseModel):

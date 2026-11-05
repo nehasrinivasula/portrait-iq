@@ -31,6 +31,7 @@ export default function App() {
             <Route path="audit" element={<AuditPage />} />
             <Route path="jobs/:jobId/results" element={<JobResultsPage />} />
             <Route path="jobs/:jobId/export" element={<ExportPage />} />
+            <Route path="export/:jobId" element={<ExportPage />} />
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

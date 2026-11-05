@@ -185,7 +185,7 @@ def list_collections(limit: int = Query(50, ge=1, le=200), db: Session = Depends
         CollectionOut(
             job_id=c.job_id, status=c.status, mode=c.mode, created_at=_utc(c.created_at),
             finished_at=_utc(c.finished_at), events=c.events,
-            first_timestamp=_utc(c.first_timestamp), last_timestamp=_utc(c.last_timestamp),
+            first_timestamp=_utc(c.first_timestamp), last_timestamp=_utc(c.last_timestamp), tools=c.tools,
         )
         for c in store.list_collections(db, limit)
     ]

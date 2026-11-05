@@ -9,6 +9,7 @@ device produced them.
 """
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -183,6 +184,7 @@ class CollectionRow:
     events: int
     first_timestamp: Optional[datetime]
     last_timestamp: Optional[datetime]
+    tools: list[str] = field(default_factory=list)   # the diagnostics a run used; none for imported logs
 
 
 def list_collections(db: Session, limit: int = 50) -> list[CollectionRow]:
@@ -198,7 +200,11 @@ def list_collections(db: Session, limit: int = 50) -> list[CollectionRow]:
     rows = []
     for job in db.scalars(select(Job).order_by(Job.created_at.desc()).limit(limit)):
         n, first, last = stats.get(job.id, (0, None, None))
-        rows.append(CollectionRow(job.id, job.status, job.mode, job.created_at, job.finished_at, n, first, last))
+        try:
+            tools = [str(t) for t in json.loads(job.tools or "[]")]
+        except ValueError:
+            tools = []
+        rows.append(CollectionRow(job.id, job.status, job.mode, job.created_at, job.finished_at, n, first, last, tools))
     if None in stats:
         n, first, last = stats[None]
         rows.append(CollectionRow(UNASSIGNED, None, None, None, None, n, first, last))

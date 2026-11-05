@@ -41,9 +41,13 @@ export interface Package {
   downloadable: boolean;
 }
 
+export type ExportScope = "run" | "imported" | "all";
+
 export interface Preview {
   job_id: string;
-  job_status: string;
+  scope: ExportScope;
+  title: string;               // "Run", "Imported logs" or "All logs"
+  job_status: string | null;   // null unless a run
   finished: boolean;
   events: number;
   tools: { tool: string; ok: boolean; files: number; error: string | null }[];
