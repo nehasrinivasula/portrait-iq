@@ -1,4 +1,6 @@
 /* Shared UI pieces */
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .segmented { display: flex; flex-wrap: wrap; gap: 8px; }
 .seg {
   min-height: 44px; padding: 8px 16px; border-radius: 6px; cursor: pointer;

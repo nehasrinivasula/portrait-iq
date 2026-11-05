@@ -1,8 +1,10 @@
-.job-results { max-width: 800px; margin: 0 auto; padding: 24px 16px; }
-.job-results h2 { margin-top: 16px; }
-.job-results-summary { font-weight: 600; }
-.job-results-error { background: var(--error-bg); border-left: 4px solid var(--error); padding: 12px; }
-.job-results-list { list-style: none; padding: 0; display: grid; gap: 8px; }
+/* Network checks page (SCRUM-91). Page title, alerts and buttons come from the shared styles. */
+.job-results { display: grid; gap: 14px; max-width: 800px; }
+.job-results > h1 { font-size: 26px; margin-bottom: 0; }  /* same as .page > h1 */
+.job-results > p.muted { margin: 0; }
+.job-results .alert { margin-top: 0; }
+.job-results h2 { font-size: 22px; margin-bottom: 8px; }
+.job-results-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .job-check { background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--ok); border-radius: 6px; padding: 10px 14px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; }
 .job-check.fail { border-left-color: var(--error); background: var(--error-bg); }
 .job-check p { flex-basis: 100%; margin: 0; }
