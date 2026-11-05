@@ -11,7 +11,6 @@
 .kind { min-width: 72px; text-align: center; padding: 2px 10px; border-radius: 999px; font-weight: 600;
   border: 1.5px solid var(--line); }
 .kind-hub, .kind-viewer { border-color: var(--primary); color: var(--primary); }
-.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .sweep-option { display: flex; gap: 10px; align-items: flex-start; margin-top: 10px; font-weight: 600; }
 .sweep-option input { width: 20px; height: 20px; margin-top: 3px; flex: none; }
 .sweep-option .muted { display: block; font-weight: 400; font-size: 15px; }

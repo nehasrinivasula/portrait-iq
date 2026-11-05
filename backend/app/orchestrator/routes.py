@@ -321,13 +321,4 @@ def get_findings(job_id: str, db: Session = Depends(get_db), user: User = Depend
     return out
 
 
-@router.post("/jobs/{job_id}/package")
-def package_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
-    """TODO: assemble the standardized zip (logs/, network/, k8s/, grafana/,
-    metadata.json, audit.log — see requirements doc's Analysis & Reporting
-    section) and return a download URL. Stub for now."""
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
-    log_action(db, user.id, "package_download", detail=f"job={job_id}", session_id=user.session_id)
-    raise HTTPException(501, "TODO: implement package assembly.")
+# Export (POST/GET /jobs/{job_id}/package...) lives in app/packaging/routes.py (SCRUM-61).

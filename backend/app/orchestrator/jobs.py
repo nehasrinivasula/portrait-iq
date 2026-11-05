@@ -138,9 +138,8 @@ def run_job(
 
             elif step == "package":
                 run_analysis(db, job.id)  # writes Signal rows
-                # TODO: assemble the actual zip artifact (see requirements
-                # doc's "Analysis & Reporting" section: metadata.json, one
-                # standardized layout every time).
+                # The zip itself is built on request, from the Export page
+                # (app/packaging, SCRUM-61), so masking can be chosen then.
 
         if cleanup_failed:
             status = "cleanup_failed"

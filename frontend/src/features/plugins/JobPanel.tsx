@@ -65,7 +65,12 @@ export default function JobPanel() {
           ))}
         </ul>
       )}
-      {finished && <button className="btn ghost" onClick={clear}>Clear</button>}
+      {finished && (
+        <div className="job-actions">
+          <Link to={`/jobs/${encodeURIComponent(job.id)}/export?from=run`} className="btn">Export results</Link>
+          <button type="button" className="btn ghost" onClick={clear}>Clear</button>
+        </div>
+      )}
     </section>
   );
 }

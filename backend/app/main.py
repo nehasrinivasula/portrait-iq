@@ -13,6 +13,7 @@ from app.db import SessionLocal, get_db, init_db
 from app.auth import AuthError, User, authenticate_demo_user, create_access_token, get_unlocked_user, start_session
 from app.orchestrator.jobs import recover_interrupted_jobs
 from app.orchestrator.routes import router as orchestrator_router
+from app.packaging.routes import router as packaging_router
 from app.schemas import CurrentUserOut, LoginRequest, TokenResponse
 from app.secrets_loader import install_log_redaction
 from app.sources.routes import router as sources_router
@@ -23,6 +24,7 @@ install_log_redaction()
 
 app = FastAPI(title=settings.app_name)
 app.include_router(orchestrator_router, prefix="/api")
+app.include_router(packaging_router, prefix="/api", tags=["export"])
 app.include_router(sources_router, prefix="/api/sources")
 app.include_router(logs_router, prefix="/api/logs")
 app.include_router(audit_router, prefix="/api/audit", tags=["audit"])

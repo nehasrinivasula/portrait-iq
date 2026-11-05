@@ -22,7 +22,7 @@ export const setUnauthorizedHandler = (fn: ((reason: SignOutReason) => void) | n
   onUnauthorized = fn;
 };
 
-export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function send(path: string, init: RequestInit): Promise<Response> {
   const token = tokenStore.get();
   const headers = new Headers(init.headers);
   // JSON bodies are passed as strings. Anything else (FormData for file
@@ -45,5 +45,18 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
     const body = await res.json().catch(() => ({}));
     throw new ApiError(res.status, body.detail ?? res.statusText, body.code);
   }
+  return res;
+}
+
+export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await send(path, init);
   return res.json() as Promise<T>;
+}
+
+/** A file download that needs the bearer token, so a plain link cannot fetch it. */
+export async function apiDownload(path: string): Promise<{ blob: Blob; fileName: string | null }> {
+  const res = await send(path, {});
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+  return { blob: await res.blob(), fileName: match ? decodeURIComponent(match[1]) : null };
 }

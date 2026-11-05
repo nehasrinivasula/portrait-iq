@@ -73,6 +73,10 @@ const ACTION_LABELS: Record<string, string> = {
   logs_privacy_report: "PHI/PII report viewed",
   logs_privacy_scan: "PHI/PII scan",
   audit_view: "Audit timeline viewed",
+  package_preview: "Export page viewed",
+  package_create: "Export started",
+  package_ready: "Export ready",
+  package_failed: "Export failed",
   package_download: "Download package",
 };
 
