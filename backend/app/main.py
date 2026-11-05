@@ -10,7 +10,7 @@ from app.audit import log_action
 from app.audit_routes import router as audit_router
 from app.config import settings
 from app.db import SessionLocal, get_db, init_db
-from app.auth import AuthError, User, authenticate_demo_user, create_access_token, get_current_user, touch_session
+from app.auth import AuthError, User, authenticate_demo_user, create_access_token, get_unlocked_user, start_session
 from app.orchestrator.jobs import recover_interrupted_jobs
 from app.orchestrator.routes import router as orchestrator_router
 from app.schemas import CurrentUserOut, LoginRequest, TokenResponse
@@ -59,8 +59,8 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
             "invalid_credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    touch_session(user.id)
     token, expires_at = create_access_token(user)
+    start_session(db, user)
     log_action(db, user.id, "login", detail="outcome=success", session_id=user.session_id)
     return TokenResponse(
         access_token=token,
@@ -69,7 +69,9 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
 
 
 @app.get("/api/auth/me", response_model=CurrentUserOut)
-def current_user(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def current_user(db: Session = Depends(get_db), user: User = Depends(get_unlocked_user)):
+    # Check only: the page calls this by itself on refresh, so it must not
+    # keep an idle session alive, but it must report a locked one (423).
     log_action(db, user.id, "session_check", detail="outcome=active", session_id=user.session_id)
     return CurrentUserOut(username=user.id, name=user.name)
 
