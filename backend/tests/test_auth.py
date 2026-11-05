@@ -2,11 +2,16 @@
 import secrets
 
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from sqlalchemy.orm import sessionmaker
 
+from app import auth
 from app.config import settings
+from app.db import get_db
 from app.main import app
+from app.models import AuditLogEntry, SessionActivity
 
 
 @pytest.fixture()
@@ -22,10 +27,33 @@ def demo_credentials(monkeypatch):
     return credentials
 
 
+def _use_database(engine) -> None:
+    Session = sessionmaker(bind=engine)
+
+    def override_db():
+        session = Session()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    app.dependency_overrides[get_db] = override_db
+
+
 @pytest.fixture()
-def client():
-    with TestClient(app) as test_client:
-        yield test_client
+def client(engine):
+    # Each test gets its own SQLite file (conftest). No `with`: that would run
+    # the app's startup against the real portrait_iq.db.
+    _use_database(engine)
+    yield TestClient(app)
+    app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.fixture()
+def clock(monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(auth.time, "time", lambda: now[0])
+    return now
 
 
 def login(client: TestClient, credentials: dict[str, str]) -> str:
@@ -122,13 +150,135 @@ def test_jobs_and_uploads_keep_the_session_unlocked(client: TestClient, demo_cre
     clock[0] += idle - 10      # longer than the timeout since login, not since the upload
     assert start_job() == 400
 
-    clock[0] += idle + 1       # really idle; polling a job does not count
-    assert client.get("/api/jobs/no-such-job", headers=headers).status_code == 404
+    clock[0] += idle + 1       # really idle
+    assert client.get("/api/jobs/no-such-job", headers=headers).status_code == 423
     assert upload() == 423
     assert start_job() == 423
 
-    login(client, demo_credentials)   # logging in again unlocks
+    # Logging in again unlocks: a new session, so a new token.
+    headers["Authorization"] = f"Bearer {login(client, demo_credentials)}"
     assert upload() == 400
+
+
+# Idle lock enforced on the server, per session (SCRUM-34) -------------------
+
+LOCKED = {"detail": "Session locked. Log in again to unlock.", "code": "session_locked"}
+
+
+def bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def upload(client: TestClient, headers) -> int:   # refused file: 400 when unlocked
+    return client.post("/api/uploads?kind=pcap", headers=headers,
+                       files={"file": ("x.pcap", b"not a capture")}).status_code
+
+
+def test_idle_session_is_refused_on_get_and_post(client, demo_credentials, clock, db):
+    headers = bearer(login(client, demo_credentials))
+    clock[0] += settings.session_idle_timeout_seconds + 1
+
+    for response in (
+        client.get("/api/devices", headers=headers),
+        client.get("/api/logs/events", headers=headers),
+        client.post("/api/uploads?kind=pcap", headers=headers, files={"file": ("x.pcap", b"x")}),
+    ):
+        assert response.status_code == 423
+        assert response.json() == LOCKED
+    # A page refresh restores the session through /me: it reports the lock too.
+    assert client.get("/api/auth/me", headers=headers).status_code == 423
+
+    locks = db.query(AuditLogEntry).filter_by(action="session_lock").all()
+    assert len(locks) == 1     # audited once, not on every refused request
+    assert locks[0].actor == demo_credentials["username"]
+    assert locks[0].detail.startswith("reason=idle")
+
+
+def test_polling_does_not_keep_the_session_alive(client, demo_credentials, clock):
+    headers = bearer(login(client, demo_credentials))
+    idle = settings.session_idle_timeout_seconds
+
+    for _ in range(3):         # polling a job, well inside the timeout each time
+        clock[0] += idle / 3
+        assert client.get("/api/jobs/no-such-job", headers=headers).status_code == 404
+        assert client.get("/api/auth/me", headers=headers).status_code == 200
+    clock[0] += 1              # just past the timeout since login
+
+    assert client.get("/api/jobs/no-such-job", headers=headers).status_code == 423
+    assert client.get("/api/devices", headers=headers).status_code == 423
+
+
+def test_user_requests_keep_the_session_alive(client, demo_credentials, clock):
+    headers = bearer(login(client, demo_credentials))
+    idle = settings.session_idle_timeout_seconds
+    for _ in range(3):
+        clock[0] += idle - 10
+        assert client.get("/api/devices", headers=headers).status_code == 200
+
+
+def test_lock_state_survives_a_restart(client, demo_credentials, clock, engine):
+    idle = settings.session_idle_timeout_seconds
+    left_alone = bearer(login(client, demo_credentials))
+    in_use = bearer(login(client, demo_credentials))
+    clock[0] += idle - 10
+    assert client.get("/api/devices", headers=in_use).status_code == 200
+
+    # Restart: nothing in process memory survives, only the database file.
+    engine.dispose()
+    _use_database(engine)
+    restarted = TestClient(app)
+    clock[0] += 20             # past the timeout for left_alone, not for in_use
+
+    assert restarted.get("/api/devices", headers=left_alone).status_code == 423
+    assert restarted.get("/api/devices", headers=in_use).status_code == 200
+
+
+def test_a_session_without_an_activity_record_is_locked(client, demo_credentials, clock, db):
+    headers = bearer(login(client, demo_credentials))
+    db.query(SessionActivity).delete()   # e.g. the database was replaced
+    db.commit()
+
+    assert client.get("/api/devices", headers=headers).status_code == 423
+    assert client.get("/api/devices", headers=headers).status_code == 423
+    locks = db.query(AuditLogEntry).filter_by(action="session_lock").all()
+    assert [e.detail for e in locks] == ["reason=no_activity_record"]
+
+
+def test_two_sessions_for_one_user_lock_independently(client, demo_credentials, clock):
+    idle = settings.session_idle_timeout_seconds
+    first = bearer(login(client, demo_credentials))
+    second = bearer(login(client, demo_credentials))
+    clock[0] += idle - 10
+    assert upload(client, second) == 400     # activity on the second session only
+    clock[0] += 20
+
+    assert upload(client, first) == 423
+    assert upload(client, second) == 400
+
+
+def test_logging_in_again_unlocks_with_a_new_session(client, demo_credentials, clock):
+    old = bearer(login(client, demo_credentials))
+    clock[0] += settings.session_idle_timeout_seconds + 1
+    assert upload(client, old) == 423
+
+    new = bearer(login(client, demo_credentials))
+    assert upload(client, new) == 400
+    assert client.get("/api/auth/me", headers=new).status_code == 200
+    assert upload(client, old) == 423        # the locked session stays locked
+
+
+def _dependencies(dependant):
+    for sub in dependant.dependencies:
+        yield sub.call
+        yield from _dependencies(sub)
+
+
+def test_every_signed_in_route_checks_the_idle_lock():
+    protected = [r for r in app.routes if isinstance(r, APIRoute)
+                 and auth.get_current_user in set(_dependencies(r.dependant))]
+    assert protected   # the walk found the routes
+    unchecked = [r.path for r in protected if auth.get_unlocked_user not in set(_dependencies(r.dependant))]
+    assert unchecked == []
 
 # Login settings from files (Kubernetes Secret volume) -----------------------
 

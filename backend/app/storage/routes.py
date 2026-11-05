@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.audit import log_action
-from app.auth import User, get_current_user, is_locked, touch_session
+from app.auth import User, get_active_user
 from app.db import get_db
 from app.models import Job
 from app.privacy import service as privacy
@@ -42,14 +42,6 @@ from app.storage.schemas import (
 )
 
 router = APIRouter()
-
-
-def _active_user(user: User = Depends(get_current_user)) -> User:
-    # Same rule as /api/sources: a locked session cannot read logs.
-    if is_locked(user.id):
-        raise HTTPException(423, "Session locked. Unlock before viewing logs.")
-    touch_session(user.id)
-    return user
 
 
 def _filter(
@@ -153,7 +145,7 @@ def search_events(
     cursor: Optional[str] = Query(None, description="next_cursor from the previous page."),
     mask: bool = Query(False, description="Replace flagged PHI/PII spans with [REDACTED:<kind>]."),
     db: Session = Depends(get_db),
-    user: User = Depends(_active_user),
+    user: User = Depends(get_active_user),
 ):
     """Search every stored event across all sources and devices in one query.
     Newest first by default."""
@@ -168,7 +160,7 @@ def get_facets(
     mask: bool = Query(False, description="Withhold the device and category values: they are log fields that can "
                                           "hold flagged text, and the table masks them."),
     db: Session = Depends(get_db),
-    user: User = Depends(_active_user),
+    user: User = Depends(get_active_user),
 ):
     f = replace(f, job_id=job_id.strip() or None) if job_id else f
     r = store.facets(db, f)
@@ -187,7 +179,7 @@ def get_facets(
 
 @router.get("/collections", response_model=list[CollectionOut])
 def list_collections(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db),
-                     user: User = Depends(_active_user)):
+                     user: User = Depends(get_active_user)):
     log_action(db, user.id, "collections_view", detail=f"limit={limit}", session_id=user.session_id)
     return [
         CollectionOut(
@@ -207,7 +199,7 @@ def _summary_or_404(db: Session, job_id: str):
 
 
 @router.get("/collections/{job_id}", response_model=CollectionSummaryOut)
-def get_collection(job_id: str, db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def get_collection(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """Completeness report: how many events were stored versus read, which
     files were rejected or never ingested, and a plain yes/no in `complete`."""
     s = _summary_or_404(db, job_id)
@@ -237,7 +229,7 @@ def view_collection(
     cursor: Optional[str] = Query(None, description="next_cursor from the previous page."),
     mask: bool = Query(False, description="Replace flagged PHI/PII spans with [REDACTED:<kind>]."),
     db: Session = Depends(get_db),
-    user: User = Depends(_active_user),
+    user: User = Depends(get_active_user),
 ):
     """The unified log view: every entry from one collection, from every
     source and device, as a single time-ordered stream. With no filters this
@@ -266,7 +258,7 @@ def _counts(counter: dict[str, int]) -> list[FlagCountOut]:
 
 
 @router.get("/privacy/categories", response_model=list[PrivacyCategoryOut])
-def privacy_categories(user: User = Depends(_active_user)):
+def privacy_categories(user: User = Depends(get_active_user)):
     """The kinds of PHI/PII the scanner looks for, and what each one means."""
     return [PrivacyCategoryOut(category=k, description=v, group=category_group(k)) for k, v in CATEGORY_LABELS.items()]
 
@@ -343,26 +335,26 @@ def _scan(db: Session, user: User, scope: Optional[str]) -> RescanOut:
 
 
 @router.get("/privacy", response_model=PrivacyReportOut)
-def all_privacy(db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def all_privacy(db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """PHI/PII scan report across every stored event, whichever collection it belongs to."""
     return _report(db, user, None)
 
 
 @router.post("/privacy/scan", response_model=RescanOut)
-def scan_all(db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def scan_all(db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """Scan every event the current scanner has not judged yet. Safe to repeat."""
     return _scan(db, user, None)
 
 
 @router.get("/collections/{job_id}/privacy", response_model=PrivacyReportOut)
-def collection_privacy(job_id: str, db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def collection_privacy(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """PHI/PII scan report for one collection: whether every event was scanned
     by the current scanner, and how many flags of each kind were found."""
     return _report(db, user, job_id)
 
 
 @router.post("/collections/{job_id}/privacy/scan", response_model=RescanOut)
-def scan_collection(job_id: str, db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def scan_collection(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """Scan the events of this collection that the current scanner has not
     judged yet (logs stored before PHI/PII flagging existed, or scanned by an
     older rule set). Safe to repeat."""

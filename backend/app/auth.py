@@ -1,8 +1,9 @@
 """Local-demo bearer-token authentication.
 
 This module intentionally does not implement GE SSO. A future identity
-provider can replace the credential check and token verification while routes
-continue to depend on ``get_current_user``.
+provider can replace the credential check and token verification in
+``get_current_user``. Routes depend on ``get_active_user`` or
+``get_unlocked_user``, which add the server-side idle lock on top of it.
 """
 import base64
 import hashlib
@@ -14,10 +15,13 @@ from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
 
+from app.audit import log_action
 from app.config import settings
+from app.db import get_db
+from app.models import SessionActivity
 
-_last_seen: dict[str, float] = {}
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -156,22 +160,84 @@ def get_current_user(
     return User(id=username, name=username, session_id=payload["jti"])
 
 
-def touch_session(user_id: str) -> None:
-    _last_seen[user_id] = time.time()
+# Idle lock (S-2, SCRUM-34) ---------------------------------------------------
+#
+# Enforced on the server, per login session (token ``jti``), with the last
+# activity stored in the database so neither a page refresh nor a backend
+# restart unlocks an idle session. Every protected route checks the lock;
+# only user-initiated routes count as activity:
+#
+#   get_unlocked_user  check only. For requests the page makes on its own
+#                      (job polling, restoring the session on refresh), so an
+#                      open page left alone still locks.
+#   get_active_user    check, then record activity. Everything else.
+#
+# Logging in again issues a new session, which is how a locked user unlocks.
+
+SESSION_LOCKED_DETAIL = "Session locked. Log in again to unlock."
 
 
-def is_locked(user_id: str) -> bool:
-    last = _last_seen.get(user_id)
-    if last is None:
+def start_session(db: Session, user: User) -> None:
+    """Record a new login session as active now. Call after the token is
+    issued, so ``user.session_id`` is set. Also drops rows whose tokens
+    have certainly expired, so the table does not grow without bound."""
+    now = time.time()
+    horizon = max(settings.auth_token_ttl_seconds, settings.session_idle_timeout_seconds)
+    db.query(SessionActivity).filter(SessionActivity.last_active_at < now - horizon).delete()
+    db.merge(SessionActivity(session_id=user.session_id, user_id=user.id, last_active_at=now))
+    db.commit()
+
+
+def touch_session(db: Session, user: User) -> None:
+    """Count a user-initiated request as activity. Never revives a locked
+    session."""
+    if not user.session_id:
+        return
+    db.query(SessionActivity).filter(
+        SessionActivity.session_id == user.session_id,
+        SessionActivity.locked_at.is_(None),
+    ).update({SessionActivity.last_active_at: time.time()})
+    db.commit()
+
+
+def is_locked(db: Session, user: User) -> bool:
+    """True when this login session is locked; locks it (and audits the
+    lock, once) when it has just gone idle.
+
+    Fails closed: a validly signed token whose session has no activity
+    record is locked. Login always writes the record before returning the
+    token, so the only ways to get here are a lost database or a session
+    the server never issued, and neither should let a request through."""
+    if not user.session_id:
+        return True
+    now = time.time()
+    row = db.get(SessionActivity, user.session_id)
+    if row is not None and row.locked_at is not None:
+        return True
+    if row is None:
+        reason = "reason=no_activity_record"
+        db.add(SessionActivity(session_id=user.session_id, user_id=user.id,
+                               last_active_at=now, locked_at=now))
+    elif now - row.last_active_at > settings.session_idle_timeout_seconds:
+        reason = f"reason=idle idle_seconds={int(now - row.last_active_at)}"
+        row.locked_at = now
+    else:
         return False
-    return (time.time() - last) > settings.session_idle_timeout_seconds
+    db.commit()
+    log_action(db, user.id, "session_lock", detail=reason, session_id=user.session_id)
+    return True
 
 
-def get_active_user(user: User = Depends(get_current_user)) -> User:
-    """Dependency for actions the idle lock (S-2) blocks: refuse while
-    locked, otherwise count the request as activity. Read-only GETs (e.g.
-    polling a job) do not use it, so a page left open still locks."""
-    if is_locked(user.id):
-        raise HTTPException(423, "Session locked. Log in again to unlock.")
-    touch_session(user.id)
+def get_unlocked_user(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+    """Refuse a locked session without counting the request as activity.
+    For requests the page makes by itself, e.g. polling a job."""
+    if is_locked(db, user):
+        raise AuthError(423, SESSION_LOCKED_DETAIL, "session_locked")
+    return user
+
+
+def get_active_user(user: User = Depends(get_unlocked_user), db: Session = Depends(get_db)) -> User:
+    """Refuse a locked session, otherwise count the request as activity.
+    The default for protected routes."""
+    touch_session(db, user)
     return user

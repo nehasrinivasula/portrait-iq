@@ -32,7 +32,19 @@ describe("apiFetch 401 handling", () => {
     ));
 
     await expect(apiFetch("/api/auth/me")).rejects.toMatchObject({ status: 401, code: "token_invalid" });
-    expect(onUnauthorized).toHaveBeenCalledOnce();
+    expect(onUnauthorized).toHaveBeenCalledExactlyOnceWith("expired");
+  });
+
+  it("signs the user out as locked when the server locked the idle session (423)", async () => {
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    tokenStore.set("idle-token");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: "Session locked. Log in again to unlock.", code: "session_locked" }), { status: 423 }),
+    ));
+
+    await expect(apiFetch("/api/jobs/j1")).rejects.toMatchObject({ status: 423, code: "session_locked" });
+    expect(onUnauthorized).toHaveBeenCalledExactlyOnceWith("locked");
   });
 });
 
