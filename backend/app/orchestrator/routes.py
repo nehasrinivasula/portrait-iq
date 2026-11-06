@@ -5,10 +5,13 @@ prototype's five tabs: Connect, Choose tools, Collect, Insights, Package.
 import json
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app import uploads
+from app.analysis.coverage import coverage_report
+from app.analysis.engine import run_analysis
+from app.analysis.findings import findings_for
 from app.audit import log_action
 from app.auth import User, get_active_user, get_current_user, is_locked, touch_session
 from app.collectors.base import Collector, PluginError, ResourceLimits
@@ -21,6 +24,7 @@ from app.models import Device, Job, Signal
 from app.orchestrator.jobs import create_job, read_results, run_job
 from app.schemas import (
     ConnectRequest,
+    CoverageOut,
     ConnectivityCheckRequest,
     ConnectivityCheckResponse,
     DeviceOut,
@@ -305,23 +309,30 @@ def get_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(get
 
 @router.get("/jobs/{job_id}/findings", response_model=list[SignalOut])
 def get_findings(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The patterns found in this collection's logs, each with its evidence: counts, first and last time,
+    the devices involved, and the earliest and latest matching log lines (PHI/PII masked)."""
     log_action(db, user.id, "findings_view", detail=f"job={job_id}", session_id=user.session_id)
-    signals = db.query(Signal).filter(Signal.job_id == job_id).all()
-    out = []
-    for s in signals:
-        out.append(
-            SignalOut(
-                id=s.id,
-                rule_id=s.rule_id,
-                title=s.title,
-                severity=s.severity,
-                count=s.count,
-                status=s.status,
-                manual_ref=s.manual_ref,
-                actions=json.loads(s.actions_json or "[]"),
-            )
-        )
-    return out
+    return findings_for(db, job_id)
+
+
+@router.post("/jobs/{job_id}/findings/run", response_model=list[SignalOut])
+def run_findings(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
+    """Run the pattern rules over this collection's stored events now, replacing its earlier findings."""
+    if db.get(Job, job_id) is None:
+        raise HTTPException(404, "job not found")
+    log_action(db, user.id, "findings_run", detail=f"job={job_id}", session_id=user.session_id)
+    run_analysis(db, job_id)
+    return findings_for(db, job_id)
+
+
+@router.get("/jobs/{job_id}/findings/coverage", response_model=CoverageOut)
+def get_findings_coverage(job_id: str, top: int = Query(20, ge=1, le=100), db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    """What the rules do not cover: the ERROR and WARN events no rule matches, grouped by message shape."""
+    if db.get(Job, job_id) is None:
+        raise HTTPException(404, "job not found")
+    log_action(db, user.id, "findings_coverage_view", detail=f"job={job_id}", session_id=user.session_id)
+    return coverage_report(db, job_id, top=top)
 
 
 @router.post("/jobs/{job_id}/package")
