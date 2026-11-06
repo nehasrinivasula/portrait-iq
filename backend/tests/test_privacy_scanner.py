@@ -268,7 +268,7 @@ def test_the_wider_rules_do_not_flag_ordinary_log_text():
 
 
 def test_a_change_to_the_rules_bumps_the_scanner_version():
-    assert SCANNER_VERSION >= 3
+    assert SCANNER_VERSION >= 4
 
 
 def test_a_card_after_a_short_number_is_found():
@@ -308,3 +308,56 @@ def test_values_are_masked_whole():
 def test_two_labelled_values_joined_by_a_comma_are_both_found():
     cats = [f.category for f in scan_text("mrn=123456,ssn=123-45-6789")]
     assert cats == ["record_identifier", "ssn"]
+
+
+def test_phone_with_a_country_code_is_masked_whole():
+    assert _masked("phone_number=+1(555)123-4567 ok") == "phone_number=[REDACTED:phone] ok"
+    assert _masked("call +1 (555) 123-4567 now") == "call [REDACTED:phone] now"
+
+
+def test_json_escaped_accented_names_are_found():
+    text = json.dumps({"patientName": "José Garcia"})            # json.dumps writes José
+    assert "\\u00e9" in text
+    assert [f.category for f in scan_text(text)] == ["person_name"]
+    assert [f.category for f in scan_text(json.dumps(text))] == ["person_name"]    # a JSON string inside JSON
+
+
+def test_long_names_are_masked_whole():
+    assert _masked("patientName=Maria Elena Garcia Lopez admitted") == "patientName=[REDACTED:person_name] admitted"
+
+
+def test_an_apostrophe_inside_a_single_quoted_name_does_not_end_it():
+    assert _masked("patientName='O'Brien' ok") == "patientName='[REDACTED:person_name]' ok"
+    assert _masked("patientName='Mary' ok") == "patientName='[REDACTED:person_name]' ok"
+
+
+def test_short_key_forms_are_found():
+    for text, category in {"ptMrn: 42": "record_identifier", "pt_id=12345": "record_identifier", "ptDOB=01/02/1980": "date_of_birth",
+                           "ptSSN=123-45-6789": "ssn", "pt_phone=608-555-0142": "phone"}.items():
+        assert [f.category for f in scan_text(text)] == [category], text
+    assert scan_text("script accept opt: yes") == ()
+
+
+def test_labelled_ids_are_masked_whole():
+    for value in ("1234.5678", "123/456789", "12:34:56", "123,456", "A123 4567", "1234 5678"):
+        assert _masked(f"mrn={value} ok") == "mrn=[REDACTED:record_identifier] ok", value
+    assert _masked("patient_id=123/456789 ok") == "patient_id=[REDACTED:record_identifier] ok"
+    # a comma that starts the next field still ends the value
+    assert [f.category for f in scan_text("mrn=123456,ssn=123-45-6789")] == ["record_identifier", "ssn"]
+
+
+def test_phone_values_with_spaces_are_masked_whole():
+    for value in ("+44 20 7946 0958", "555 1234", "(608) 555-0142", "+1(555)123-4567"):
+        assert _masked(f"phone_number={value} ok") == "phone_number=[REDACTED:phone] ok", value
+    assert scan_text("phone=none") == () and scan_text("phone=12 34") == ()
+
+
+def test_bare_tel_is_flagged():
+    for text in ("tel=5551234567", "tel=5551234", "tel: 555 1234"):
+        assert [f.category for f in scan_text(text)] == ["phone"], text
+    assert scan_text("hotel=Hilton intel=ok") == ()
+
+
+def test_ssn_with_unusual_grouping_is_masked_whole():
+    assert _masked("ssn=123 456789 ok") == "ssn=[REDACTED:ssn] ok"
+    assert _masked("ssn=12345 6789 ok") == "ssn=[REDACTED:ssn] ok"
