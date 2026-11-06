@@ -40,11 +40,14 @@ def _apply_audit_compatibility_columns() -> None:
         ("normalized_events", "privacy_scan_version", "INTEGER"),
         ("normalized_events", "sensitive_flags", "TEXT"),
         ("normalized_events", "network_flags", "TEXT"),
+        ("signals", "first_seen", "DATETIME"),
+        ("signals", "last_seen", "DATETIME"),
+        ("signals", "devices_json", "TEXT"),
     )
     inspector = inspect(engine)
     present = {
         table: {column["name"] for column in inspector.get_columns(table)}
-        for table in {"audit_log", "jobs", "normalized_events"}
+        for table in {"audit_log", "jobs", "normalized_events", "signals"}
         if inspector.has_table(table)
     }
     with engine.begin() as connection:
