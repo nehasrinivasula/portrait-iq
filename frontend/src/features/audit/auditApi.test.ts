@@ -56,5 +56,6 @@ describe("pattern detection actions", () => {
   it("can be filtered to by their readable names", () => {
     expect(ACTION_OPTIONS).toContainEqual(["findings_run", "Pattern detection run"]);
     expect(ACTION_OPTIONS).toContainEqual(["findings_coverage_view", "Pattern coverage viewed"]);
+    expect(ACTION_OPTIONS).toContainEqual(["findings_run_failed", "Pattern detection failed"]);
   });
 });
