@@ -12,9 +12,10 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
+from app.analysis import auto as auto_analysis
 from app.audit import log_action
 from app.auth import User, get_active_user
 from app.config import settings
@@ -140,7 +141,8 @@ def preview_files(
             for r, covered in plan_new_windows(db, remotes, source)]
 
 
-def _run(db: Session, source: LogSource, user: User, req: AcquireRequest) -> AcquisitionOut:
+def _run(db: Session, source: LogSource, user: User, req: AcquireRequest,
+         background: BackgroundTasks) -> AcquisitionOut:
     if req.job_id and db.get(Job, req.job_id) is None:
         raise HTTPException(404, "job not found")
     try:
@@ -153,17 +155,21 @@ def _run(db: Session, source: LogSource, user: User, req: AcquireRequest) -> Acq
         raise HTTPException(422, str(e))
     except SourceError as e:
         raise HTTPException(400, str(e))
+    if auto_analysis.should_run(req.job_id, result.files):
+        # After the response: the pull must not wait for, or fail because of, pattern detection.
+        background.add_task(auto_analysis.run_in_background, db.get_bind(), req.job_id, user.id, user.session_id)
     return _to_out(result)
 
 
 @router.post("/{source_id}/acquire", response_model=AcquisitionOut)
-def acquire_logs(source_id: str, req: AcquireRequest, db: Session = Depends(get_db),
+def acquire_logs(source_id: str, req: AcquireRequest, background: BackgroundTasks, db: Session = Depends(get_db),
                  user: User = Depends(get_active_user)):
-    return _run(db, _source(source_id), user, req)
+    return _run(db, _source(source_id), user, req, background)
 
 
 @router.post("/local/upload", response_model=AcquisitionOut)
 def upload_logs(
+    background: BackgroundTasks,
     files: list[UploadFile] = File(...),
     job_id: str | None = None,
     ingest: bool = True,
@@ -196,7 +202,7 @@ def upload_logs(
                         raise HTTPException(413, f"Upload is larger than the {settings.default_max_output_mb} MB limit.")
                     out.write(chunk)
         req = AcquireRequest(options={"path": str(inbox)}, job_id=job_id, ingest=ingest)
-        return _run(db, _source("local"), user, req)
+        return _run(db, _source("local"), user, req, background)
     finally:
         # acquire() copied what it kept into staging; the inbox is scratch.
         shutil.rmtree(inbox, ignore_errors=True)
