@@ -12,9 +12,9 @@ top of it):
   * Idempotent. Re-ingesting the same file replaces its earlier rows instead
     of duplicating them (matched on source_file + job_id), so retrying after
     a crash is always safe.
-  * Loud. A file no parser recognises raises UnrecognizedLogFormat; a file
-    with an unacceptable share of unconvertible rows raises IngestError.
-    Data is never silently dropped.
+  * Loud. A file no parser recognises raises UnrecognizedLogFormat; rejected
+    rows are counted and stored in the file receipt. Callers may opt into a
+    maximum reject rate when they need a strict import.
   * Receipted. Each stored file also gets one IngestedFile row (rows read,
     events stored, rows rejected) in the same transaction, so the unified log
     view can prove nothing was lost after ingest.
@@ -41,7 +41,7 @@ from app.privacy.scanner import scan_columns
 from app.models import NormalizedEvent as EventRow
 
 DEFAULT_PATTERNS = ("*.csv", "*.log")
-DEFAULT_MAX_REJECT_RATE = 0.01  # fail a file if more than 1% of its rows can't be converted
+DEFAULT_MAX_REJECT_RATE = None  # malformed rows are counted and skipped by default
 DEFAULT_BATCH_SIZE = 5000
 
 
@@ -70,7 +70,7 @@ def ingest_file(
     job_id: Optional[str] = None,
     parser: Optional[LogParser] = None,
     replace: bool = True,
-    max_reject_rate: float = DEFAULT_MAX_REJECT_RATE,
+    max_reject_rate: Optional[float] = DEFAULT_MAX_REJECT_RATE,
     batch_size: int = DEFAULT_BATCH_SIZE,
     source_label: Optional[str] = None,
     allow_empty: bool = False,
@@ -143,7 +143,7 @@ def ingest_file(
 
         if report.rows_read == 0 and not allow_empty:
             raise IngestError(f"{path.name}: contained no log rows")
-        if report.reject_rate > max_reject_rate:
+        if max_reject_rate is not None and report.reject_rate > max_reject_rate:
             raise IngestError(
                 f"{path.name}: {report.rows_rejected} of {report.rows_read} rows "
                 f"({report.reject_rate:.1%}) could not be converted, over the "

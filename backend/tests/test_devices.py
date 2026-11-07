@@ -266,12 +266,15 @@ def test_a_different_device_is_never_replaced(db, staging, source, fake):
     assert db.query(NormalizedEvent).count() == 3       # VIEWER's line kept, HUB's 2 added
 
 
-def test_failed_file_does_not_add_devices(db, staging, tmp_path):
-    bad = tmp_path / "bad.csv"   # 1 good row, 5 bad timestamps: over the 1% reject limit, ingestion fails
+def test_bad_rows_are_counted_and_valid_devices_are_learned(db, staging, tmp_path):
+    bad = tmp_path / "bad.csv"   # one good row, five rejected timestamps
     bad.write_text(HDR + line("2026-10-19T09:00:00.000+0000", "h", HUB, "Hub-01")
                    + "".join(line("garbage", "h", VIEWER) for _ in range(5)))
     r = acquire(db, LocalImportSource(), actor="tester", options={"path": str(bad)}, ingest=True)
-    assert r.files[0].status == "failed" and list_known(db) == []
+    assert r.files[0].status == "ingested"
+    assert r.files[0].events == 1 and r.files[0].rows_rejected == 5
+    assert r.files[0].reject_reasons == {"bad_timestamp": 5}
+    assert [d.device_uuid for d in list_known(db)] == [HUB]
 
 
 def test_acquire_without_ingest_still_learns_devices(db, staging, tmp_path):

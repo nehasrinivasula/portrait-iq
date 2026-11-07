@@ -46,7 +46,6 @@ _LEADING_RE = re.compile(
 _GLOG_LEVELS = {"I": "INFO", "W": "WARN", "E": "ERROR", "F": "ERROR"}
 
 SNIFF_LINES = 20
-SNIFF_MIN_FRACTION = 0.9
 
 
 def infer_severity(message: str) -> Optional[str]:
@@ -74,7 +73,7 @@ class KubernetesLogParser(LogParser):
 
     def sniff(self, path: Path) -> bool:
         try:
-            seen = matched = 0
+            seen = 0
             with open_text(path) as fh:
                 for text in fh:
                     text = text.rstrip("\r\n")
@@ -82,12 +81,14 @@ class KubernetesLogParser(LogParser):
                         continue
                     seen += 1
                     if _LINE_RE.match(text):
-                        matched += 1
+                        return True
                     if seen >= SNIFF_LINES:
                         break
         except OSError:
             return False
-        return seen > 0 and matched / seen >= SNIFF_MIN_FRACTION
+        # A badly damaged file may contain mostly rejected lines; one valid
+        # timestamped log line is enough to route it to this parser.
+        return False
 
     def parse(self, path: Path, report: Optional[ParseReport] = None) -> Iterator[NormalizedEvent]:
         path = Path(path)

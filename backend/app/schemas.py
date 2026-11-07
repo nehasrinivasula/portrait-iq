@@ -253,6 +253,8 @@ class FileOutcomeOut(BaseModel):
     status: str
     size: Optional[int] = None
     events: Optional[int] = None
+    rows_rejected: Optional[int] = None
+    reject_reasons: Optional[dict[str, int]] = None
     error: Optional[str] = None
 
 
