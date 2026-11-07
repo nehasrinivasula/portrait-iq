@@ -17,18 +17,26 @@ export type PluginOptions = Record<string, Record<string, unknown>>;
 
 export type JobStatus = "queued" | "running" | "done" | "partial" | "failed" | "cleanup_failed" | "interrupted";
 
+// Why a run failed (SCRUM-68): the step, the tool involved, and a plain reason.
+export interface RunError {
+  step: string | null;
+  plugin: string | null;
+  reason: string;
+}
+
 export interface Job {
   id: string;
   mode: string;
   status: JobStatus;
   current_step: string | null;
+  error: RunError | null;   // set only on a failed/interrupted run
   created_at: string;
   finished_at: string | null;
 }
 
 export type ToolResult =
   | { tool: string; summary: string; warnings: string[]; artifact_paths: string[] }
-  | { tool: string; error: string };
+  | { tool: string; step?: string; error: string };
 
 export const listPlugins = () => apiFetch<PluginList>("/api/plugins");
 

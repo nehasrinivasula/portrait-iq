@@ -1,15 +1,7 @@
 import { Link } from "react-router-dom";
 import { isFinished } from "./api";
 import { useJobs } from "../jobs/JobsContext";
-
-const STEP_LABEL: Record<string, string> = {
-  deploy_tools: "Running the diagnostics",
-  collect_server_logs: "Collecting logs",
-  collect_network_diagnostics: "Collecting network information",
-  collect_grafana_health: "Collecting system health",
-  cleanup: "Removing diagnostics from the system",
-  package: "Preparing results",
-};
+import { runErrorText, stepLabel } from "../jobs/runStatus";
 
 const HEADLINE: Record<string, [kind: "info" | "ok" | "error" | "warn", text: string]> = {
   queued: ["info", "Waiting to start"],
@@ -25,7 +17,7 @@ export default function JobPanel() {
   const { job, results, lost, logPull, clear } = useJobs();
   if (!job) return null;
   const [kind, headline] = HEADLINE[job.status] ?? ["info", job.status];
-  const step = job.current_step ? STEP_LABEL[job.current_step] ?? job.current_step : null;
+  const step = stepLabel(job.current_step);
   const finished = isFinished(job.status);
 
   return (
@@ -33,6 +25,9 @@ export default function JobPanel() {
       <div className={`alert ${kind}`} role={kind === "error" ? "alert" : "status"}>
         <strong>{headline}</strong>
         {!finished && (step ?? "Preparing")}
+        {/* The failing step, tool and plain reason, so the engineer can tell
+            what went wrong and whether to retry (SCRUM-68). */}
+        {finished && job.error && <p className="run-error">{runErrorText(job.error)}</p>}
         {job.status === "cleanup_failed" && "Something may still be running on the system. Check it before leaving the site."}
       </div>
       {lost && <p className="muted" role="status">Lost contact with the server. Still trying; the run is not affected.</p>}
@@ -56,7 +51,10 @@ export default function JobPanel() {
             <li key={r.tool} className="card">
               <h3>{r.tool}</h3>
               {"error" in r ? (
-                <div className="alert error" role="alert"><strong>Failed</strong>{r.error}</div>
+                <div className="alert error" role="alert">
+                  <strong>Failed{stepLabel(r.step) ? ` — ${stepLabel(r.step)}` : ""}</strong>
+                  {r.error}
+                </div>
               ) : (
                 <>
                   <p>{r.summary}</p>

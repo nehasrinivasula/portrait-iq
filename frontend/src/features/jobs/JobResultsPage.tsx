@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { apiFetch } from '../../api';
 import { netshootSummary, type PluginResult } from './netshootResults';
+import { runErrorText } from './runStatus';
+import type { RunError } from '../plugins/api';
 import './jobResults.css';
 
-type Job = { id: string; status: string };
+type Job = { id: string; status: string; error: RunError | null };
 
 export default function JobResultsPage() {
   const { jobId } = useParams<{ jobId: string }>();
@@ -51,6 +53,8 @@ export default function JobResultsPage() {
       <p className="muted">Job {jobId}</p>
       {error && <p role="alert" className="job-results-error">{error}</p>}
       {job && <p role="status">Run status: {job.status}</p>}
+      {/* The run-level failure reason, step and tool (SCRUM-68). */}
+      {job?.error && <p role="alert" className="job-results-error">{runErrorText(job.error)}</p>}
       {netshoot?.error && <p role="alert" className="job-results-error">Netshoot could not run: {netshoot.error}</p>}
       {checks.length > 0 ? (
         <>
