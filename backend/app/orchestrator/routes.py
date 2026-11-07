@@ -4,8 +4,10 @@ prototype's five tabs: Connect, Choose tools, Collect, Insights, Package.
 """
 import json
 import logging
+from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app import uploads
@@ -19,6 +21,7 @@ from app.discovery import service as discovery
 from app.db import SessionLocal, get_db
 from app.models import Device, Job, Signal
 from app.orchestrator.jobs import create_job, read_results, run_job
+from app.reporting.summary import build_summary, render_markdown, summary_to_json
 from app.schemas import (
     ConnectRequest,
     ConnectivityCheckRequest,
@@ -322,6 +325,27 @@ def get_findings(job_id: str, db: Session = Depends(get_db), user: User = Depend
             )
         )
     return out
+
+
+@router.get("/jobs/{job_id}/summary")
+def get_summary(
+    job_id: str,
+    format: Literal["md", "json"] = Query("md"),
+    mask: bool = Query(True),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_active_user),
+):
+    """One readable report for a run: key errors with when and where they
+    happened, diagnostics outcome, data completeness and suggested next
+    steps. Markdown by default, the same content as JSON with format=json."""
+    summary = build_summary(db, job_id, mask=mask)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    log_action(db, user.id, "summary_view", detail=f"job={job_id} format={format} mask={mask}",
+               session_id=user.session_id)
+    if format == "json":
+        return summary_to_json(summary)
+    return PlainTextResponse(render_markdown(summary), media_type="text/markdown; charset=utf-8")
 
 
 @router.post("/jobs/{job_id}/package")
