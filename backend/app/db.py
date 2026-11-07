@@ -37,6 +37,7 @@ def _apply_audit_compatibility_columns() -> None:
         ("audit_log", "session_id", "VARCHAR"),
         ("jobs", "requested_by", "VARCHAR"),
         ("jobs", "session_id", "VARCHAR"),
+        ("jobs", "error", "TEXT"),
         ("normalized_events", "privacy_scan_version", "INTEGER"),
         ("normalized_events", "sensitive_flags", "TEXT"),
         ("normalized_events", "network_flags", "TEXT"),

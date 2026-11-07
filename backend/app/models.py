@@ -50,6 +50,11 @@ class Job(Base):
     session_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
+    # Why a run failed, as JSON {step, plugin, reason} for the UI (SCRUM-68).
+    # NULL while running and for a clean run. Per-tool failures are in
+    # results.json; this is the run-level reason (bad options, a failing
+    # step, cleanup, an interruption).
+    error = Column(Text, nullable=True)
 
     events = relationship("NormalizedEvent", back_populates="job")
     signals = relationship("Signal", back_populates="job")

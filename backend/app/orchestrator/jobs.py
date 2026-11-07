@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.analysis.engine import run_analysis
 from app.audit import log_action
 from app.collectors import k8s
-from app.collectors.base import Collector, CollectorResult, PluginError, ResourceLimits
+from app.collectors.base import Collector, CollectorResult, PluginError, ResourceLimits, reason_for
 from app.collectors.registry import PluginRegistry, get_registry
 from app.config import settings
 from app.models import Job
@@ -96,6 +96,11 @@ def run_job(
 
     try:
         if plugins is None:
+            # Checking and building the selected tools, before anything is
+            # deployed. A bad option fails here; "configure" is the step the
+            # field engineer sees for it.
+            job.current_step = "configure"
+            db.commit()
             plugins = (registry or get_registry()).create_all(tools, limits, plugin_options)
 
         for step in STEPS:
@@ -116,14 +121,17 @@ def run_job(
                         _record(job.id, results, plugin.run(target_ip))
                     except (NotImplementedError, PluginError) as e:
                         # A stub, a bad option or a tool that could not run:
-                        # the message is safe to show.
+                        # the reason is safe to show.
                         failed_tools += 1
-                        _record(job.id, results, {"tool": plugin.name, "error": str(e) or type(e).__name__})
+                        _record(job.id, results,
+                                {"tool": plugin.name, "step": step, "error": reason_for(e)})
                     except Exception as e:  # noqa: BLE001
-                        # Type only: an unexpected error's text may hold anything.
+                        # reason_for names the type only: an unexpected error's
+                        # own text may hold anything.
                         failed_tools += 1
                         log.exception("job %s: plugin %s crashed", job.id, plugin.name)
-                        _record(job.id, results, {"tool": plugin.name, "error": type(e).__name__})
+                        _record(job.id, results,
+                                {"tool": plugin.name, "step": step, "error": reason_for(e)})
 
             elif step == "collect_server_logs":
                 # TODO: point ingestion.pipeline.ingest_directory() at wherever
@@ -144,26 +152,38 @@ def run_job(
 
         if cleanup_failed:
             status = "cleanup_failed"
+            _set_error(job, "cleanup",
+                       "Cleanup did not finish; a diagnostic may still be running on the system.")
         elif plugins and failed_tools == len(plugins):
-            status = "failed"
+            status = "failed"   # every tool failed; results.json has each tool's reason
         elif failed_tools:
             status = "partial"   # some tools ran, some did not: results.json says which
         else:
             status = "done"
         _finish(db, job, status)
 
-    except (NotImplementedError, PluginError):
+    except (NotImplementedError, PluginError) as e:
         # A bad option or an unknown plugin, found before anything ran: a
-        # known failure with a message safe to show, not a crash.
+        # known failure with a reason safe to show, not a crash.
         cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
+        _set_error(job, job.current_step, reason_for(e))
         _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
 
-    except Exception:
+    except Exception as e:
         cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
+        _set_error(job, job.current_step, reason_for(e))
         _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
         raise
 
     return job
+
+
+def _set_error(job: Job, step: str | None, reason: str, plugin: str | None = None) -> None:
+    """Record why the run failed, as JSON for JobOut (SCRUM-68). The first
+    reason set wins, so a cleanup failure does not overwrite the original
+    cause of a failed run."""
+    if job.error is None:
+        job.error = json.dumps({"step": step, "plugin": plugin, "reason": reason})
 
 
 def job_output_dir(job_id: str) -> Path:
@@ -191,6 +211,8 @@ def recover_interrupted_jobs(db: Session) -> None:
     for job in stale:
         job.status = "interrupted"
         job.finished_at = datetime.utcnow()
+        _set_error(job, job.current_step,
+                   "The run was interrupted before it finished (the backend restarted). Any partial results are kept.")
         log_action(db, "system", "job_interrupted", detail=f"job={job.id} step={job.current_step}")
     db.commit()
     if not settings.sweep_tool_pods_on_startup:

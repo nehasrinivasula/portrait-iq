@@ -5,8 +5,8 @@
 | List the plugins | `GET /api/plugins` | none | `{ plugins: [{ name, display_name, description }], load_errors }` |
 | Upload a capture (tshark import only) | `POST /api/uploads?kind=pcap` | multipart form, field `file` (.pcap or .pcapng, up to 500 MB) | `{ upload_id, kind, size_bytes }` |
 | Start a job | `POST /api/jobs?target_ip=<ip>` | JSON: `{ tools: [...], plugin_options: {...} }` | the job, with `status: "queued"` |
-| Job status | `GET /api/jobs/{id}` | none | `{ id, status, current_step, created_at, finished_at }` |
-| Job results | `GET /api/jobs/{id}/results` | none | one entry per tool: `{ tool, summary, warnings, artifact_paths }` or `{ tool, error }` |
+| Job status | `GET /api/jobs/{id}` | none | `{ id, status, current_step, error, created_at, finished_at }`. `error` is `null` unless the run failed or was interrupted; then `{ step, plugin, reason }` — the step it failed at, the tool involved (or `null`), and a plain-language reason safe to show (SCRUM-68) |
+| Job results | `GET /api/jobs/{id}/results` | none | one entry per tool: `{ tool, summary, warnings, artifact_paths }` or, on failure, `{ tool, step, error }` where `error` is a plain-language reason |
 
 ## tshark live capture filters
 

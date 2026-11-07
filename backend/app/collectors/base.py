@@ -42,6 +42,18 @@ class PluginConfigError(PluginError):
     """configure() was given options the plugin does not accept."""
 
 
+def reason_for(exc: BaseException) -> str:
+    """A short, plain-language reason for a run failure, safe to show the
+    field engineer (SCRUM-68). PluginError messages are written to be shown;
+    an unexpected error's own text may hold anything, so only its type is
+    named, never its message."""
+    if isinstance(exc, PluginError):              # config and other known, safe failures
+        return str(exc) or f"The tool could not run ({type(exc).__name__})."
+    if isinstance(exc, NotImplementedError):
+        return "This diagnostic isn't available yet."
+    return f"The tool stopped unexpectedly ({type(exc).__name__})."
+
+
 @dataclass
 class ResourceLimits:
     """Ceilings, not targets, from the requirements doc's Reliability
