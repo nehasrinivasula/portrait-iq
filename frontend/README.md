@@ -32,6 +32,25 @@ removes just that filter, and **Clear filters** removes them all. Results
 page with `limit` and `next_cursor`, so the browser never downloads the
 whole store.
 
+### Time-frame presets and calendar view (SCRUM-92)
+
+The **Date** control is a drop-down so a field engineer can choose a common
+window without typing timestamps:
+
+- Any time (stored-log search only)
+- Last hour, last 6 hours, last 24 hours, or last 7 days
+- Custom range
+
+Choosing **Custom range…** opens native **From** and **To** calendar/time
+controls. The UI validates that both values are present, neither is in the
+future, and the end is after the start. It displays local time for the
+engineer, then sends UTC ISO 8601 values to the API.
+
+The same picker is reused on the **Run** page before a log pull. A new pull is
+limited to the prior 30 days, while a Logs-page search can use any stored
+history. Selecting a date range filters the Portrait IQ event store; it does
+not contact GE/Axone from the browser or retrieve data at filter time.
+
 ## Where the logs come from
 
 The browser never calls GE/Axone directly:
