@@ -5,10 +5,13 @@ what to do next, so a field engineer does not have to open the log files.
 
 Sources, all already in the database or the run's folder:
   run                 the Job row
-  findings            Signal rows from analysis/engine.run_analysis, enriched
-                      here with first/last seen, devices and processes by
-                      re-applying each rule to the run's events (Signals do
-                      not store those)
+  findings            every rule in analysis/rules.RULES applied to the run's
+                      events in one pass, for count, first/last seen, devices
+                      and components. Applied here even when pattern detection
+                      never ran for the run (an uploaded collection) or ran
+                      before more logs arrived, so the report never says
+                      "none found" just because nobody looked. A saved Signal
+                      still supplies its manual match status and actions.
   other key errors    ERROR/WARN events no rule matched, grouped by process
                       and message shape (numbers, ids and quoted values blanked)
   diagnostics         each tool's result (orchestrator/jobs.read_results)
@@ -34,7 +37,8 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.analysis.rules import RULES
+from app.analysis.rules import RULES, Rule
+from app.knowledge.lookup import lookup_signal
 from app.models import Job, Signal
 from app.models import NormalizedEvent as E
 from app.orchestrator.jobs import read_results
@@ -44,6 +48,9 @@ from app.storage.completeness import PROBLEM
 
 TOP_ERRORS = 10
 TOP_DEVICES = 5
+# Distinct message shapes kept while grouping "other" errors. A noisy run can
+# have a huge number; lines past the cap are counted, not grouped.
+MAX_SHAPES = 2000
 RUNNING = ("queued", "running")
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 DRAFT_NOTE = "draft, not yet confirmed against service manuals"
@@ -80,6 +87,7 @@ class FindingItem:
     manual_ref: Optional[str]
     actions: list[str]
     spread: Spread
+    saved: bool = True            # a Signal from pattern detection exists for it
 
 
 @dataclass
@@ -115,6 +123,8 @@ class Summary:
     findings: list[FindingItem]
     other_errors: list[ErrorGroup]
     other_error_total: int        # ERROR/WARN lines no rule matched, all of them (not just the top)
+    other_error_ungrouped: int    # of those, lines past MAX_SHAPES distinct messages
+    analysis: str                 # current | not_run | out_of_date: the saved pattern detection vs. the logs
     diagnostics: list[ToolOutcome]
     logs_complete: Optional[bool]
     completeness_issues: list[str]
@@ -170,14 +180,19 @@ def _safe(text: Optional[str], mask: bool, field: str = "message") -> Optional[s
 
 # --- building ------------------------------------------------------------------------
 
-def _scan_events(db: Session, job_id: str, rule_ids: set[str], mask: bool):
-    """One pass over the run's events (columns only): per-rule spread and
+def _matches(rule: Rule, row) -> bool:
+    # The one place a rule is applied. Pattern detection (#35) changes this to
+    # rule.matches(row.severity, row.message).
+    return rule.match(row)
+
+
+def _scan_events(db: Session, job_id: str, mask: bool):
+    """One pass over the run's events (columns only): every rule's spread and
     groups of unmatched ERROR/WARN lines. Device and component names are
     masked here, once per distinct value."""
-    rules = [r for r in RULES if r.id in rule_ids]
-    by_rule = {r.id: Spread() for r in rules}
+    by_rule = {r.id: Spread() for r in RULES}
     groups: dict[tuple, Spread] = {}
-    total = unmatched = 0
+    total = unmatched = ungrouped = 0
     first = last = None
     names: dict[tuple, Optional[str]] = {}
 
@@ -192,16 +207,50 @@ def _scan_events(db: Session, job_id: str, rule_ids: set[str], mask: bool):
         first = row.timestamp if first is None or row.timestamp < first else first
         last = row.timestamp if last is None or row.timestamp > last else last
         matched = False
-        for rule in rules:
-            if rule.match(row):
+        for rule in RULES:
+            if _matches(rule, row):
                 by_rule[rule.id].add(row.timestamp, name(row.device_id, "device_id"), name(row.process, "process"))
                 matched = True
         if not matched and row.severity in ("ERROR", "WARN"):
             unmatched += 1
             process = name(row.process, "process")
             key = (row.severity, process, message_shape(row.message))
-            groups.setdefault(key, Spread()).add(row.timestamp, name(row.device_id, "device_id"), process)
-    return total, first, last, by_rule, groups, unmatched
+            group = groups.get(key)
+            if group is None:
+                if len(groups) >= MAX_SHAPES:
+                    ungrouped += 1
+                    continue
+                group = groups[key] = Spread()
+            group.add(row.timestamp, name(row.device_id, "device_id"), process)
+    return total, first, last, by_rule, groups, unmatched, ungrouped
+
+
+def _findings(signals, by_rule: dict[str, Spread]) -> tuple[list[FindingItem], str]:
+    """One finding per rule that matched, and whether the saved Signals agree
+    with what the rules find in the stored logs now."""
+    saved = {s.rule_id: s for s in signals}
+    findings, missing, differs = [], False, False
+    for rule in RULES:
+        spread, sig = by_rule[rule.id], saved.get(rule.id)
+        if sig is not None and sig.count != spread.count:
+            differs = True
+        if not spread.count:
+            continue
+        if sig is None:
+            missing = True
+            match = lookup_signal(rule.id)
+            status, ref, actions = match.status, match.manual_ref, match.actions or list(rule.draft_actions)
+        else:
+            status, ref, actions = sig.status, sig.manual_ref, json.loads(sig.actions_json or "[]")
+        findings.append(FindingItem(
+            rule_id=rule.id, title=rule.title_template.format(n=spread.count), severity=rule.severity,
+            count=spread.count, status=status, manual_ref=ref, actions=actions, spread=spread,
+            saved=sig is not None,
+        ))
+    findings.sort(key=lambda f: (_SEVERITY_ORDER.get(f.severity, 3), -f.count))
+    if missing and not signals:
+        return findings, "not_run"
+    return findings, "out_of_date" if (missing or differs) else "current"
 
 
 def _tool_outcomes(job_id: str) -> list[ToolOutcome]:
@@ -243,17 +292,8 @@ def build_summary(db: Session, job_id: str, *, mask: bool = True,
     if job is None:
         return None
     signals = db.scalars(select(Signal).where(Signal.job_id == job_id)).all()
-    total, first, last, by_rule, groups, unmatched = _scan_events(db, job_id, {s.rule_id for s in signals}, mask)
-
-    findings = [
-        FindingItem(
-            rule_id=s.rule_id, title=s.title, severity=s.severity, count=s.count, status=s.status,
-            manual_ref=s.manual_ref, actions=json.loads(s.actions_json or "[]"),
-            spread=by_rule.get(s.rule_id, Spread()),
-        )
-        for s in signals
-    ]
-    findings.sort(key=lambda f: (_SEVERITY_ORDER.get(f.severity, 3), -f.count))
+    total, first, last, by_rule, groups, unmatched, ungrouped = _scan_events(db, job_id, mask)
+    findings, analysis = _findings(signals, by_rule)
 
     ranked = sorted(groups.items(), key=lambda kv: (kv[0][0] != "ERROR", -kv[1].count))[:TOP_ERRORS]
     other = [ErrorGroup(severity=sev, process=proc, message=_shorten(_safe(shape, mask)), spread=spread)
@@ -272,6 +312,12 @@ def build_summary(db: Session, job_id: str, *, mask: bool = True,
         notes.append("This run has no stored log entries, so there are no errors to list.")
     if job.status in RUNNING:
         notes.append("The run has not finished; more logs and findings may still arrive.")
+    if analysis == "not_run":
+        notes.append("Pattern detection has not run for this run, so the findings below come from "
+                     "applying the rules to the stored logs now.")
+    elif analysis == "out_of_date":
+        notes.append("The saved pattern detection for this run is out of date (the logs changed after it "
+                     "ran), so the findings below come from applying the rules to the stored logs now.")
 
     return Summary(
         job_id=job.id, mode=job.mode, status=job.status, tools=json.loads(job.tools or "[]"),
@@ -279,6 +325,7 @@ def build_summary(db: Session, job_id: str, *, mask: bool = True,
         generated_at=now or datetime.now(timezone.utc).replace(tzinfo=None), masked=mask,
         events=total, first_event=first, last_event=last,
         findings=findings, other_errors=other, other_error_total=unmatched,
+        other_error_ungrouped=ungrouped, analysis=analysis,
         diagnostics=diagnostics, logs_complete=logs_complete, completeness_issues=issues,
         next_steps=_next_steps(findings, diagnostics, logs_complete, issues), notes=notes,
     )
@@ -352,6 +399,9 @@ def render_markdown(s: Summary) -> str:
             sp = g.spread
             lines.append(f"| {g.severity} | {_cell(g.process or '-')} | {_cell(g.message)} | {sp.count:,} | "
                          f"{_t(sp.first_seen)} | {_t(sp.last_seen)} | {_cell(_top(sp.devices, 3))} |")
+        if s.other_error_ungrouped:
+            lines += ["", f"{s.other_error_ungrouped:,} more lines had too many different messages to group "
+                          f"(over {MAX_SHAPES:,}); search the logs for them."]
 
     lines += ["", "## Diagnostics", ""]
     if not s.diagnostics:
@@ -386,7 +436,8 @@ def summary_to_json(s: Summary) -> dict:
         "findings": [{**{k: v for k, v in asdict(f).items() if k != "spread"}, **spread(f.spread)} for f in s.findings],
         "other_errors": [{"severity": g.severity, "component": g.process, "message": g.message, **spread(g.spread)}
                          for g in s.other_errors],
-        "other_error_total": s.other_error_total,
+        "other_error_total": s.other_error_total, "other_error_ungrouped": s.other_error_ungrouped,
+        "analysis": s.analysis,
         "diagnostics": [asdict(t) for t in s.diagnostics],
         "logs_complete": s.logs_complete, "completeness_issues": s.completeness_issues, "notes": s.notes,
     }

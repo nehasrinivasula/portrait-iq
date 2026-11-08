@@ -34,7 +34,7 @@ def add(db, job_id, seconds, severity, message, device="hub-1", process="svc"):
                     category="General", source_file="a.csv", source_line=seconds))
 
 
-def seed_run(db, job_id="job-1", status="done", results=None, rows_read=None):
+def seed_run(db, job_id="job-1", status="done", results=None, rows_read=None, analyze=True):
     db.add(Job(id=job_id, mode="live", status=status, tools=json.dumps(["netshoot", "rti"]),
                requested_by="tester", created_at=T0, finished_at=T0 + timedelta(minutes=5)))
     add(db, job_id, 10, "ERROR", PING, device="hub-2", process="scheduler")
@@ -47,7 +47,8 @@ def seed_run(db, job_id="job-1", status="done", results=None, rows_read=None):
     db.add(IngestedFile(source_file="a.csv", job_id=job_id, parser="portrait_csv",
                         rows_read=rows_read or n, events_written=n, rows_rejected=(rows_read or n) - n))
     db.commit()
-    run_analysis(db, job_id)
+    if analyze:
+        run_analysis(db, job_id)
     path = job_output_dir(job_id) / "results.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(results if results is not None else [
@@ -83,6 +84,42 @@ def test_other_errors_exclude_rule_matches_and_group_by_shape(db):
     assert timeout.spread.count == 2 and set(timeout.spread.devices) == {"hub-1", "hub-3"}
     assert s.other_errors[0].severity == "ERROR"          # errors before warnings
     assert s.other_error_total == 3
+
+
+def test_findings_are_found_even_when_pattern_detection_never_ran(db):
+    seed_run(db, analyze=False)                    # e.g. an uploaded collection
+    s = build_summary(db, "job-1")
+    assert s.analysis == "not_run"
+    ping = next(f for f in s.findings if f.rule_id == "ping_timeout")
+    assert ping.count == 2 and not ping.saved and ping.actions and ping.status == "unconfirmed"
+    assert not any("ping scheduler" in g.message for g in s.other_errors)
+    md = render_markdown(s)
+    assert "Pattern detection has not run" in md and "No known problem patterns" not in md
+
+
+def test_saved_findings_that_are_out_of_date_are_recounted(db):
+    seed_run(db)
+    assert build_summary(db, "job-1").analysis == "current"
+    add(db, "job-1", 90, "ERROR", PING, device="hub-4", process="scheduler")   # more logs after the analysis
+    db.commit()
+    s = build_summary(db, "job-1")
+    ping = next(f for f in s.findings if f.rule_id == "ping_timeout")
+    assert s.analysis == "out_of_date" and ping.saved
+    assert ping.count == 3 and ping.title.endswith("(3x)") and "hub-4" in ping.spread.devices
+    assert "out of date" in render_markdown(s)
+
+
+def test_message_groups_are_capped(db, monkeypatch):
+    import app.reporting.summary as summary
+    monkeypatch.setattr(summary, "MAX_SHAPES", 2)
+    seed_run(db)
+    for i, word in enumerate(("alpha", "beta", "gamma")):
+        add(db, "job-1", 100 + i, "WARN", f"{word} failed")
+    db.commit()
+    s = build_summary(db, "job-1")
+    assert len(s.other_errors) == 2
+    assert s.other_error_ungrouped == 3 and s.other_error_total == 6     # 2 timeouts + 1 viewer grouped, 3 past the cap
+    assert "too many different messages" in render_markdown(s)
 
 
 def test_masking_hides_personal_data_in_message_shapes(db):

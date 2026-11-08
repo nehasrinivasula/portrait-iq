@@ -516,11 +516,16 @@ What it contains:
   Actions from the analysis are marked as drafts until they are matched
   against service manuals (`knowledge/lookup.py`).
 - **Key errors found by the analysis**: each finding with how often, first and
-  last seen, affected devices (top 5) and components. Signals do not store
-  these, so the report re-applies each rule to the run's events in one pass.
+  last seen, affected devices (top 5) and components. The report applies
+  every rule to the run's events itself, in one pass, so it is right even when
+  pattern detection never ran for the run (an uploaded collection) or ran
+  before more logs arrived. It says so when that happens (`analysis` in the
+  JSON: `current`, `not_run` or `out_of_date`). A saved finding still supplies
+  its manual match status and actions.
 - **Other errors and warnings**: the 10 most frequent ERROR/WARN messages no
   rule covers, grouped by component and message with numbers, ids and quoted
   values blanked (`<n>`, `<id>`), each with count, first/last seen, devices.
+  At most 2,000 distinct messages are grouped; lines past that are counted.
 - **Diagnostics**: each tool's outcome, failure reason or warnings.
 - **Data completeness**: the same verdict as the unified log view.
 
