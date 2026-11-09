@@ -57,6 +57,9 @@ def test_dds_errors_in_every_known_spelling():
         "DDS participant removed after authentication time-out",
         "dds: security handshake failed",
         "DDS discovery rejected remote participant",
+        "on_sample_lost: total_count=4",
+        "ON SAMPLE LOST reported by reader",
+        "DataReaderListener::on_sample_lost called",
     ):
         for level in (ERROR, WARN):
             assert "dds_security" in _hits(level, message), (level, message)
