@@ -84,11 +84,14 @@ spec:
               value: "__RTI__"
             - name: RTI_IMAGE
               value: "__RTI_IMAGE__"
-            # The QoS XML in that image holding the domain's profile; empty
-            # means rtiddsspy runs without GE's security and sees nothing.
+            # The QoS XML in that image. The collector reaches each UMF domain
+            # over RTI Real-Time WAN via the router's WAN NodePort, so this is
+            # the -WithWAN file (umfwan_server_* profiles); empty uses the
+            # image's default and the WAN profiles are unavailable.
             - name: RTI_QOS_FILE
               value: "__RTI_QOS_FILE__"
-            # Who rtiddsspy asks for discovery; empty uses the job's target IP.
+            # Override the WAN peer rtiddsspy builds (udpv4_wan://<router>:
+            # <NodePort>); empty builds it from the job target and the domain.
             - name: RTI_PEER
               value: "__RTI_PEER__"
             # A Secret in this namespace with replacement DDS security files,

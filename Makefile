@@ -34,7 +34,9 @@ NODE_PORT     ?= 30080
 TSHARK_LIVE_CAPTURE ?= false
 RTI ?= false
 RTI_IMAGE ?= docker-axone-all/axone-umf-rtitools:branch-latest
-RTI_QOS_FILE ?=
+# The -WithWAN QoS carries the umfwan_server_* profiles the collector drives
+# over Real-Time WAN. Empty would fall back to the image's default QoS.
+RTI_QOS_FILE ?= /opt/axone-tools/qos/MDH-tools-RTIAdminConsole-WithWAN.xml
 RTI_PEER ?=
 RTI_SECURITY_SECRET ?=
 RTI_SDDS_DIR ?= /opt/axone-tools/sdds

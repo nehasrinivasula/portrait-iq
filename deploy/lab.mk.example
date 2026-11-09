@@ -43,13 +43,15 @@ NODE_PORT            = 30080
 # RTI_IMAGE is the name it was saved under. Default: false.
 # RTI                  = true
 # RTI_IMAGE            = axone-umf-rtitools:temp
-# The QoS file in that image with the AxoneNetQoSLibrary profiles (GE's
-# Admin Console uses this one). Without it rtiddsspy prints "QoS profile ...
-# was not found", skips DDS security and sees no devices.
-# RTI_QOS_FILE         = /opt/axone-tools/qos/MDH-tools-RTIAdminConsole.xml
-# GE's profile has multicast off, so point discovery at a domain participant
-# (the router's headless service) instead of the job's target IP:
-# RTI_PEER             = udpv4://axone-router-1.pm.svc.cluster.local
+# The QoS file in that image. The collector reaches each UMF domain over RTI
+# Real-Time WAN through the router's WAN NodePort (proven on the bench
+# 2026-11-08: plain UDP never completes), so the default is the -WithWAN file,
+# which has the umfwan_server_* profiles. Change only to experiment.
+# RTI_QOS_FILE         = /opt/axone-tools/qos/MDH-tools-RTIAdminConsole-WithWAN.xml
+# The collector builds the WAN peer (udpv4_wan://<router>:<NodePort>, where the
+# router host defaults to the job's target IP, then the node). Set RTI_PEER to
+# override it, or point the job's target IP at the node (e.g. 192.168.0.3).
+# RTI_PEER             = udpv4_wan://192.168.0.3:32013
 # A Secret (in the tools namespace) with replacement DDS security files,
 # mounted over the image's set when the bench's certs were rotated and the
 # image's no longer authenticate. Create it yourself; its keys must be the

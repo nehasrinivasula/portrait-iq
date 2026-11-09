@@ -13,15 +13,18 @@ from app.config import settings
 
 LIMITS = ResourceLimits(cpu_pct=50, mem_mb=512, max_output_mb=100)
 
+# rtiddsspy's real discovery-table format (confirmed on the bench 2026-11-08):
+# source_timestamp, Info (W/R + change code), Src HostId (hex), topic, type.
+# Host ids and topics here are synthetic. A "New data ..." style line is left
+# in to confirm sample lines are not matched.
 SPY_OUTPUT = """\
-RTI Connext DDS Spy built with DDS version: 7.3.0
-source_timestamp  Info          Src HostId      topic                 type
------------------ ------------- --------------- --------------------- ----------------
-1700000000.000001 New writer    from 192.0.2.21 "SyntheticVitals"     "SyntheticVitalsType"
-1700000000.000002 New reader    from 192.0.2.30 "SyntheticVitals"     "SyntheticVitalsType"
-1700000000.000003 New data      from 192.0.2.21 "SyntheticVitals"     "SyntheticVitalsType"
-1700000000.000004 New data      from 192.0.2.21 "SyntheticVitals"     "SyntheticVitalsType"
-1700000000.000005 New writer    from 192.0.2.30 "SyntheticAlarm"      "SyntheticAlarmType"
+RTI Connext DDS Spy built with DDS version: 6.1.2.23
+source_timestamp   Info  Src HostId  topic             type
+-----------------  ----  ----------  ----------------  ----------------
+1700000000.000001  W +N  0A000215    SyntheticVitals   SyntheticVitalsType
+1700000000.000002  R +N  0A00021E    SyntheticVitals   SyntheticVitalsType
+1700000000.000005  W +N  0A00021E    SyntheticAlarm    SyntheticAlarmType
+1700000000.000006  D     0A000215    SyntheticVitals   SyntheticVitalsType
 some line rtiddsspy prints that the parser does not know
 """
 
@@ -40,7 +43,7 @@ class FakeRunner:
         self.created.append(kw)
 
     def wait_running(self, name, timeout_s):
-        pass
+        return "192.0.2.5"   # the node IP, used as the WAN public address
 
     def exec(self, name, argv, timeout_s):
         self.execs.append(argv)
@@ -73,8 +76,7 @@ def test_options(enabled):
             r.configure(bad)
 
 
-def test_listens_without_printing_samples(tmp_path, monkeypatch, enabled):
-    monkeypatch.setattr(settings, "rti_qos_file", "/opt/axone-tools/qos/example.xml")
+def test_listens_over_wan_without_printing_samples(tmp_path, monkeypatch, enabled):
     runner = FakeRunner()
     result = configured(tmp_path, monkeypatch, runner, duration_s=20).run("192.0.2.10")
 
@@ -82,18 +84,35 @@ def test_listens_without_printing_samples(tmp_path, monkeypatch, enabled):
     assert pod["host_network"] is True and pod["image"] == settings.rti_image
     assert "add_capabilities" not in pod
     argv = runner.execs[0]
-    assert argv[:3] == ["timeout", "20", "rtiddsspy"]
+    # Real-Time WAN: DDS_SECURE + the RTWAN env set via `env`, a udpv4_wan peer
+    # at the router's domain-12 NodePort, and the WAN source-pod QoS profile.
+    assert argv[0] == "env"
+    assert "DDS_SECURE=secure" in argv
+    assert "DDS_RTWAN_SERVER_PUBLIC_ADDRESS=192.0.2.5" in argv       # the node IP
+    assert "DDS_RTWAN_SERVER_PORT_SOURCEPOD=32113" in argv           # 32013 + offset 100
+    assert argv[argv.index("rtiddsspy") - 2:argv.index("rtiddsspy")] == ["timeout", "20"]
     assert argv[argv.index("-domainId") + 1] == "12"
-    assert argv[argv.index("-peer") + 1] == "192.0.2.10"
-    assert argv[argv.index("-qosProfile") + 1] == "AxoneNetQoSLibrary::umfgeneral_qos"
+    assert argv[argv.index("-peer") + 1] == "udpv4_wan://192.0.2.10:32013"
+    assert argv[argv.index("-qosProfile") + 1] == "AxoneNetQoSLibrary::umfwan_server_sourcepod_qos"
     assert "-printSample" not in argv
 
     assert result.summary == "2 hosts, 2 topics on domain 12 over 20s"
     assert result.warnings == []
     saved = json.loads((tmp_path / "rti.json").read_text())
     assert saved["topics"]["SyntheticVitals"] == {
-        "type": "SyntheticVitalsType", "writers": ["192.0.2.21"], "readers": ["192.0.2.30"], "samples": 2,
+        "type": "SyntheticVitalsType", "writers": ["0A000215"], "readers": ["0A00021E"],
     }
+
+
+def test_wan_profile_port_and_peer_are_per_domain(tmp_path, monkeypatch, enabled):
+    for domain, role, nodeport in [(7, "logger", 32007), (13, "viewpod", 32015)]:
+        runner = FakeRunner()
+        configured(tmp_path, monkeypatch, runner, domain=domain).run("192.0.2.10")
+        argv = runner.execs[0]
+        assert argv[argv.index("-domainId") + 1] == str(domain)
+        assert argv[argv.index("-peer") + 1] == f"udpv4_wan://192.0.2.10:{nodeport}"
+        assert argv[argv.index("-qosProfile") + 1] == f"AxoneNetQoSLibrary::umfwan_server_{role}_qos"
+        assert f"DDS_RTWAN_SERVER_PORT_{role.upper()}={nodeport + 100}" in argv
 
 
 def test_no_security_secret_is_mounted_by_default(tmp_path, monkeypatch, enabled):
@@ -134,7 +153,7 @@ def test_bad_target_is_refused_before_any_pod(tmp_path, monkeypatch, enabled):
 
 def test_summary_ignores_unknown_lines():
     assert summarize("nothing useful\n")["topics"] == {}
-    assert summarize(SPY_OUTPUT)["hosts"] == ["192.0.2.21", "192.0.2.30"]
+    assert summarize(SPY_OUTPUT)["hosts"] == ["0A000215", "0A00021E"]
 
 
 def test_configured_peer_replaces_the_target(tmp_path, monkeypatch, enabled):
