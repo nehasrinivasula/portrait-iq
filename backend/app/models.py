@@ -143,8 +143,25 @@ class Signal(Base):
     status = Column(String, default="unconfirmed")  # "unconfirmed" | "confirmed" | "no_match"
     manual_ref = Column(String, nullable=True)
     actions_json = Column(Text, nullable=True)   # JSON list of suggested next steps
+    # Supporting evidence (app/analysis/engine.py). The matching events themselves are not copied:
+    # the sample is in signal_evidence, which points at normalized_events.
+    first_seen = Column(DateTime, nullable=True)     # earliest / latest matching event (naive UTC)
+    last_seen = Column(DateTime, nullable=True)
+    devices_json = Column(Text, nullable=True)       # JSON {"total": n, "top": [[device_id, count], ...]}
 
     job = relationship("Job", back_populates="signals")
+
+
+class SignalEvidence(Base):
+    """A few of the events a signal matched: the earliest and the latest, so a finding can be checked
+    against the real log lines. Points at the event by id; the text is read from the event store (and
+    masked for PHI/PII) when shown, never copied here. rank 0.. orders them by time."""
+    __tablename__ = "signal_evidence"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id = Column(String, ForeignKey("signals.id"), nullable=False, index=True)
+    event_id = Column(Integer, nullable=False)
+    rank = Column(Integer, nullable=False, default=0)
 
 
 class AcquiredFileRecord(Base):

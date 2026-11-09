@@ -100,8 +100,12 @@ app/
     schemas.py                Response models for those endpoints
 
   analysis/
-    rules.py               The 5 findings from the sample logs, as rule objects
-    engine.py                Runs rules over events, writes Signal rows
+    rules.py               The pattern rules (matchers + their own examples)
+    scan.py                  Matching and evidence over a stream of events, no database
+    engine.py                Reads a collection's events, writes Signal + evidence rows
+    findings.py              Reads findings back out, evidence masked for PHI/PII
+    coverage.py              ERROR/WARN events no rule matches (also a CLI)
+    text.py                  Message shape and masking helpers
 
   reporting/
     summary.py             One readable diagnostic summary per run (Markdown / JSON)
@@ -532,6 +536,40 @@ place at startup (as for the audit columns), so existing events are kept. They
 have no scan version, so the report shows them as unscanned until
 `POST /api/logs/privacy/scan` judges them. Nothing needs deleting.
 
+## Pattern detection
+
+Pattern rules (`analysis/rules.py`) run over a collection's normalized events and flag known issues:
+ping scheduler time-outs, DDS discovery/authentication errors, failed Patient Data Recording cleanups,
+the `hidepid` mount warning, health checks logged as warnings, and request/response time-outs that
+are not tied to ping. Each finding carries its evidence:
+
+- `count`, `first_seen`, `last_seen`;
+- `devices`: the devices with the most matches, and `devices_total`;
+- `evidence`: the earliest and latest 5 matching log lines (event id, time, device, source file and line, level,
+  message with PHI/PII masked), pointing back into the event store so they can be opened in the Logs view.
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/jobs/{id}/findings/run` | Run the rules over the collection's stored events now. Replaces its earlier findings, so running twice never doubles them. Audit action `findings_run` |
+| `GET /api/jobs/{id}/findings` | The findings from the last run, with evidence. Audit action `findings_view` |
+| `GET /api/jobs/{id}/findings/coverage?top=20` | What the rules do **not** cover: how many ERROR/WARN events match no rule, and the most frequent message shapes among them (numbers and ids folded, one masked example each). Audit action `findings_coverage_view` |
+
+The same report from a terminal: `python -m app.analysis.coverage <collection id>`.
+
+**How "none missed" is checked.** A rule can only catch what it knows, so there are two checks:
+
+1. Every rule lists `examples` (lines it must catch) and `near_misses` (lines it must not). `tests/test_analysis_rules.py`
+   runs them all, so a rule cannot be added without a line it is required to catch. `tests/test_analysis_scan.py` plants every
+   example among ordinary lines, shuffled, and requires every one to be found with exact counts and nothing else.
+2. The coverage report above, run on real collections, shows what is still unexplained. A shape that keeps appearing there is
+   either a known issue that needs a rule or noise that deserves one. Run it on the 35 sample files after ingesting them and
+   add what it shows; the rules and their examples were written from the sample notes in `rules.py` and the messages in the tests,
+   not from the full sample set.
+
+Matching is case-insensitive and accepts the spellings seen in practice (`time-out`, `timed out`, `timeout`). An event can
+support more than one finding. Findings stay `unconfirmed` and their actions are drafts until the knowledge layer has
+real manuals to match against.
+
 ## Diagnostic summary report
 
 `GET /api/jobs/{job_id}/summary` gives one readable report for a run, so a
@@ -648,7 +686,9 @@ Collected logs are scanned for PHI/PII patterns on ingest; see
 - Analytics endpoints (`analytics/service.py` has no route pointing to it)
 - Packaging the final zip artifact (`orchestrator/routes.py::package` is a stub). When it is built it must include the PHI/PII report for each collection (`privacy.service.privacy_report`), refuse to call the package scanned unless `complete_for_packaging` is true, and run `privacy.scanner.scan_text` over the netshoot and tshark text it adds (only log events are scanned today)
 - Masking in a CSV/NDJSON export: reuse `privacy.scanner.mask_text` so an export honours the same `mask` option as the API
-- PHI/PII flags on analysis findings and in the audit log are not needed today (neither stores log text), but any new field that copies log text must be scanned too
+- PHI/PII flags on analysis findings and in the audit log: findings store event ids and counts, never log text; the evidence text and coverage examples are masked when shown. Any new field that copies log text must be scanned too
+- Running the rules automatically after a collection is acquired (today: `POST .../findings/run`, and the job's package step)
+- A Findings page in the UI
 
 Each of these is a natural next PR and doesn't require touching the others —
 that separation is the whole point of the layering.

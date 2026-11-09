@@ -181,9 +181,8 @@ def _safe(text: Optional[str], mask: bool, field: str = "message") -> Optional[s
 # --- building ------------------------------------------------------------------------
 
 def _matches(rule: Rule, row) -> bool:
-    # The one place a rule is applied. Pattern detection (#35) changes this to
-    # rule.matches(row.severity, row.message).
-    return rule.match(row)
+    # The one place a rule is applied (rules are declarative matchers: analysis/rules.py).
+    return rule.matches(row.severity, row.message)
 
 
 def _scan_events(db: Session, job_id: str, mask: bool):

@@ -41,6 +41,9 @@ def _apply_audit_compatibility_columns() -> None:
         ("normalized_events", "privacy_scan_version", "INTEGER"),
         ("normalized_events", "sensitive_flags", "TEXT"),
         ("normalized_events", "network_flags", "TEXT"),
+        ("signals", "first_seen", "DATETIME"),
+        ("signals", "last_seen", "DATETIME"),
+        ("signals", "devices_json", "TEXT"),
         # Message log parsing (ingestion/messages.py). Older events keep NULL:
         # component comes from sourceInfo, which is not stored, so they cannot
         # be backfilled. Pull those logs again to get sequences for them.
@@ -53,7 +56,7 @@ def _apply_audit_compatibility_columns() -> None:
     inspector = inspect(engine)
     present = {
         table: {column["name"] for column in inspector.get_columns(table)}
-        for table in {"audit_log", "jobs", "normalized_events"}
+        for table in {"audit_log", "jobs", "normalized_events", "signals"}
         if inspector.has_table(table)
     }
     with engine.begin() as connection:

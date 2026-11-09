@@ -74,6 +74,8 @@ const ACTION_LABELS: Record<string, string> = {
   logs_privacy_scan: "PHI/PII scan",
   audit_view: "Audit timeline viewed",
   package_download: "Download package",
+  findings_run: "Pattern detection run",
+  findings_coverage_view: "Pattern coverage viewed",
 };
 
 /** Every action the page can filter by, as [code, label], in label order. */
