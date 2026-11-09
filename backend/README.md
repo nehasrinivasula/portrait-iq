@@ -103,6 +103,9 @@ app/
     rules.py               The 5 findings from the sample logs, as rule objects
     engine.py                Runs rules over events, writes Signal rows
 
+  reporting/
+    summary.py             One readable diagnostic summary per run (Markdown / JSON)
+
   knowledge/
     lookup.py               Signal -> manual entry. Returns "unconfirmed" until
                              real manuals are ingested — see Marco's feedback,
@@ -528,6 +531,40 @@ Upgrading: this adds three nullable columns to `normalized_events`
 place at startup (as for the audit columns), so existing events are kept. They
 have no scan version, so the report shows them as unscanned until
 `POST /api/logs/privacy/scan` judges them. Nothing needs deleting.
+
+## Diagnostic summary report
+
+`GET /api/jobs/{job_id}/summary` gives one readable report for a run, so a
+field engineer can see what happened without opening the log files. It is
+Markdown by default (`format=json` for the same content as JSON) and needs a
+signed-in, unlocked session. Unknown job: 404. Each view is audited as
+`summary_view job=<id>`, never with report contents.
+
+What it contains:
+- **Run**: one-line verdict, mode, status, diagnostics run, start/finish (UTC).
+- **Suggested next steps**: failed diagnostics to re-run and missing logs
+  first, then each finding's actions, errors before warnings, no repeats.
+  Actions from the analysis are marked as drafts until they are matched
+  against service manuals (`knowledge/lookup.py`).
+- **Key errors found by the analysis**: each finding with how often, first and
+  last seen, affected devices (top 5) and components. The report applies
+  every rule to the run's events itself, in one pass, so it is right even when
+  pattern detection never ran for the run (an uploaded collection) or ran
+  before more logs arrived. It says so when that happens (`analysis` in the
+  JSON: `current`, `not_run` or `out_of_date`). A saved finding still supplies
+  its manual match status and actions.
+- **Other errors and warnings**: the 10 most frequent ERROR/WARN messages no
+  rule covers, grouped by component and message with numbers, ids and quoted
+  values blanked (`<n>`, `<id>`), each with count, first/last seen, devices.
+  At most 2,000 distinct messages are grouped; lines past that are counted.
+- **Diagnostics**: each tool's outcome, failure reason or warnings.
+- **Data completeness**: the same verdict as the unified log view.
+
+Personal data: messages, device names and component names go through the
+PHI/PII scanner, and flagged parts are shown as `[REDACTED:<category>]`, the
+same as the Logs page. IP and MAC addresses stay readable since they identify
+equipment. `mask=false` turns masking off for investigation. The export zip will carry this report as `SUMMARY.md` once the
+packaging step lands.
 
 ## Tool plugins (SCRUM-39)
 
