@@ -80,6 +80,12 @@ class NormalizedEvent(Base):
     privacy_scan_version = Column(Integer, nullable=True)
     sensitive_flags = Column(Text, nullable=True)
     network_flags = Column(Text, nullable=True)
+    # Parsed from free-text messages (ingestion/messages.py); NULL for ordinary lines.
+    component = Column(String, nullable=True)        # class / source file from sourceInfo
+    message_kind = Column(String, nullable=True)     # request | reply | response | publish | timeout
+    command = Column(String, nullable=True)
+    correlation_id = Column(String, nullable=True)   # ties a request to its reply
+    status = Column(String, nullable=True)           # e.g. "ack", "nak_alreadyExists"
 
     job = relationship("Job", back_populates="events")
 
@@ -90,6 +96,9 @@ class NormalizedEvent(Base):
         Index("ix_events_job_ts", "job_id", "timestamp", "id"),
         # Also serves plain device_id lookups, so device_id has no index of its own.
         Index("ix_events_device_ts", "device_id", "timestamp"),
+        # Request/reply lookups (storage/sequences.py) and "show this exchange".
+        Index("ix_events_correlation", "correlation_id"),
+        Index("ix_events_kind_ts", "message_kind", "timestamp"),
     )
 
 
