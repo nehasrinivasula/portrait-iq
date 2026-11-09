@@ -227,6 +227,15 @@ class SignalOut(BaseModel):
         from_attributes = True
 
 
+class FindingsStatusOut(BaseModel):
+    state: str                                  # never | running | ok | failed
+    last_run_at: Optional[datetime] = None      # when the last run finished (not while one is running)
+    started_at: Optional[datetime] = None       # when the current run started, while running
+    events_scanned: Optional[int] = None
+    error: Optional[str] = None                 # exception type only, when the last run failed
+    stale: bool = False                         # logs arrived after the last run: running again would change the findings
+
+
 class UnmatchedShapeOut(BaseModel):
     severity: str
     count: int

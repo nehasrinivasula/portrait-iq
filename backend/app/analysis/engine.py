@@ -8,6 +8,8 @@ never held in memory, and every event is offered to every rule: an event may sup
 finding. Running it again replaces the collection's earlier signals instead of adding duplicates.
 """
 import json
+import threading
+from datetime import datetime
 from typing import Iterable, Optional
 
 from sqlalchemy import select
@@ -17,10 +19,21 @@ from app.analysis.rules import RULES
 from app.analysis.scan import EventRow, scan
 from app.knowledge.lookup import lookup_signal
 from app.models import NormalizedEvent as E
-from app.models import Signal, SignalEvidence
+from app.models import AnalysisRun, Signal, SignalEvidence
 
 BATCH = 5000
 TOP_DEVICES = 10
+
+# One run per collection at a time. Two runs at once (an acquisition finishing while someone clicks Run)
+# would each delete "the old findings" and each add new ones, leaving the collection with both sets.
+# In-process only, which is enough while the API runs as one process.
+_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _lock_for(job_id: str) -> threading.Lock:
+    with _locks_guard:
+        return _locks.setdefault(job_id, threading.Lock())
 
 
 def iter_events(db: Session, job_id: str, batch: Optional[int] = None) -> Iterable[EventRow]:
@@ -40,7 +53,31 @@ def iter_events(db: Session, job_id: str, batch: Optional[int] = None) -> Iterab
 
 
 def run_analysis(db: Session, job_id: str, rules: tuple = RULES) -> list[Signal]:
-    found = scan(iter_events(db, job_id), rules)
+    """Run the rules over the collection and replace its findings. One at a time per collection."""
+    with _lock_for(job_id):
+        # Say so before the work starts, so a manual run shows as running too, and if the work fails
+        # the status says failed instead of staying "running".
+        db.merge(AnalysisRun(job_id=job_id, status="running", ran_at=datetime.utcnow(), events_scanned=None, error=None))
+        db.commit()
+        try:
+            return _run_locked(db, job_id, rules)
+        except Exception as e:
+            db.rollback()
+            db.merge(AnalysisRun(job_id=job_id, status="failed", ran_at=datetime.utcnow(),
+                                 events_scanned=None, error=type(e).__name__))
+            db.commit()
+            raise
+
+
+def _counted(rows: Iterable[EventRow], counter: list) -> Iterable[EventRow]:
+    for row in rows:
+        counter[0] += 1
+        yield row
+
+
+def _run_locked(db: Session, job_id: str, rules: tuple) -> list[Signal]:
+    scanned = [0]
+    found = scan(_counted(iter_events(db, job_id), scanned), rules)
 
     # Replace, don't append: running twice must not double every finding.
     old = [s.id for s in db.query(Signal.id).filter(Signal.job_id == job_id).all()]
@@ -80,5 +117,6 @@ def run_analysis(db: Session, job_id: str, rules: tuple = RULES) -> list[Signal]
         db.add_all(SignalEvidence(signal_id=signal.id, event_id=eid, rank=i) for i, (_, eid) in enumerate(evidence))
         signals.append(signal)
 
+    db.merge(AnalysisRun(job_id=job_id, status="ok", ran_at=datetime.utcnow(), events_scanned=scanned[0], error=None))
     db.commit()
     return signals

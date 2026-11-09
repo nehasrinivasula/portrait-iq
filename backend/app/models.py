@@ -164,6 +164,20 @@ class SignalEvidence(Base):
     rank = Column(Integer, nullable=False, default=0)
 
 
+class AnalysisRun(Base):
+    """The last time pattern detection ran for a collection, and how it ended: so the UI can say "analysed
+    at 10:42" (or "analysing...", or "failed"), and tell findings that are out of date because more logs
+    arrived since. One row per collection, replaced on every run. Holds no log text: `error` is an
+    exception type name only."""
+    __tablename__ = "analysis_runs"
+
+    job_id = Column(String, ForeignKey("jobs.id"), primary_key=True)
+    status = Column(String, nullable=False)           # "running" | "ok" | "failed"
+    ran_at = Column(DateTime, nullable=False)         # when it started (running) or finished (ok, failed); naive UTC
+    events_scanned = Column(Integer, nullable=True)
+    error = Column(String, nullable=True)
+
+
 class AcquiredFileRecord(Base):
     """Manifest of every file pulled from a log source (SCRUM-43). This is
     what makes "only pull new, unprocessed files" true: before fetching, the
