@@ -310,9 +310,12 @@ def get_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(get
 
 
 @router.get("/jobs/{job_id}/findings", response_model=list[SignalOut])
-def get_findings(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def get_findings(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """The patterns found in this collection's logs, each with its evidence: counts, first and last time,
-    the devices involved, and the earliest and latest matching log lines (PHI/PII masked)."""
+    the devices involved, and the earliest and latest matching log lines (PHI/PII masked). Returns log
+    lines, so a locked session is refused, as for /api/logs."""
+    if db.get(Job, job_id) is None:
+        raise HTTPException(404, "job not found")
     log_action(db, user.id, "findings_view", detail=f"job={job_id}", session_id=user.session_id)
     return findings_for(db, job_id)
 
@@ -338,7 +341,7 @@ def get_findings_status(job_id: str, db: Session = Depends(get_db), user: User =
 
 @router.get("/jobs/{job_id}/findings/coverage", response_model=CoverageOut)
 def get_findings_coverage(job_id: str, top: int = Query(20, ge=1, le=100), db: Session = Depends(get_db),
-                          user: User = Depends(get_current_user)):
+                          user: User = Depends(get_active_user)):
     """What the rules do not cover: the ERROR and WARN events no rule matches, grouped by message shape."""
     if db.get(Job, job_id) is None:
         raise HTTPException(404, "job not found")

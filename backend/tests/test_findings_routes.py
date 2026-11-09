@@ -56,6 +56,14 @@ def actions(db):
     return [a for (a,) in db.execute(select(AuditLogEntry.action)).all()]
 
 
+def test_findings_and_coverage_refuse_a_locked_session(env, monkeypatch):
+    client, _ = env
+    monkeypatch.setattr("app.auth.is_locked", lambda _user_id: True)
+    assert client.get("/api/jobs/job-1/findings").status_code == 423
+    assert client.get("/api/jobs/job-1/findings/coverage").status_code == 423
+    assert client.post("/api/jobs/job-1/findings/run").status_code == 423
+
+
 def test_findings_are_empty_until_the_rules_have_run(env):
     client, _ = env
     assert client.get("/api/jobs/job-1/findings").json() == []
@@ -88,6 +96,7 @@ def test_running_twice_does_not_duplicate_findings(env):
 
 def test_an_unknown_collection_is_a_404_for_run_and_coverage(env):
     client, _ = env
+    assert client.get("/api/jobs/nope/findings").status_code == 404
     assert client.post("/api/jobs/nope/findings/run").status_code == 404
     assert client.get("/api/jobs/nope/findings/coverage").status_code == 404
 

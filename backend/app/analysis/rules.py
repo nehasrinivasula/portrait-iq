@@ -155,6 +155,8 @@ RULES: tuple = (
             Matcher(_rx(r"!DDS"), levels=PROBLEM_LEVELS),
             Matcher(_rx(r"\bDDS\b[^\r\n]{0,100}(?:reject|authenticat|" + _TIMEOUT + r"|removed|fail|error|sample ?lost)"),
                     levels=PROBLEM_LEVELS),
+            # on_sample_lost is the DDS DataReaderListener callback; some components log it without "DDS" in the line.
+            Matcher(_rx(r"\bon[ _]?sample[ _]?lost\b"), levels=PROBLEM_LEVELS),
         ),
         note="Varies by hour in the sample, peaking around 04:00 UTC. Remote participants "
              "removed after authentication time-outs.",
@@ -168,11 +170,14 @@ RULES: tuple = (
             (WARN, "!DDS authentication time-out, remote participant removed"),
             (ERROR, "DDS participant rejected: security check failed"),
             (WARN, "dds discovery error on domain 0"),
+            (WARN, "on_sample_lost: total_count=4"),
+            (WARN, "listener onSampleLost called"),
         ),
         near_misses=(
             (INFO, "!DDS participant discovered"),
             (WARN, "Healthcheck succeeded in 12 ms"),
             (WARN, "Address book updated"),               # "dds" inside another word
+            (INFO, "on_sample_lost listener registered"),
         ),
     ),
     Rule(
