@@ -227,7 +227,10 @@ class PodRunner:
             raise
         if code != 0 or decoder.written != size:
             dest.unlink(missing_ok=True)
-            raise PluginError(f"copying {path} out of pod {name} failed: {err.text()[:200]}")
+            raise PluginError(
+                f"copying {path} out of pod {name} failed: {err.text()[:200]}",
+                safe_reason="Could not copy the diagnostic's output out of its pod.",
+            )
         return size
 
     def _stream(self, name, argv, timeout_s, on_stdout, on_stderr) -> int | None:

@@ -327,12 +327,42 @@ def test_known_tool_failure_continues_and_is_shown_to_the_user(db, local_registr
 def test_job_fails_only_when_every_tool_failed(db, local_registry):
     job = run_job(db, _job(db, ["exploding"]), "192.0.2.10", registry=local_registry)
     assert job.status == "failed"
+    # A fully-failed run carries a run-level reason, not just per-tool ones.
+    err = json.loads(job.error)
+    assert err["step"] == "deploy_tools" and "per-tool results" in err["reason"]
     # An unexpected crash: a plain reason naming the type, never its raw message.
     assert read_results(job.id) == [
         {"tool": "exploding", "step": "deploy_tools",
          "error": "The tool stopped unexpectedly (RuntimeError)."}
     ]
     assert CALLS[-1] == "exploding.cleanup"
+
+
+def test_raw_tool_output_in_a_plugin_error_is_never_shown_or_stored(db, local_registry):
+    # A PluginError whose message quotes raw tool output carries a vetted
+    # safe_reason. The raw text may hold patient or system data, so it must
+    # reach neither the API result, results.json nor the run-level error —
+    # only the vetted line does (SCRUM-68, PHI safety).
+    marker = "PATIENT-Jane-Doe-MRN-00042"
+
+    class Noisy(Recorder):
+        name = "noisy"
+
+        def run(self, target_ip):
+            raise PluginError(f"rtiddsspy failed ({marker})",
+                              safe_reason="The RTI diagnostic could not be completed.")
+
+    local_registry.register(Noisy)
+    job = run_job(db, _job(db, ["noisy"]), "192.0.2.10", registry=local_registry)
+
+    assert job.status == "failed"
+    assert read_results(job.id) == [
+        {"tool": "noisy", "step": "deploy_tools",
+         "error": "The RTI diagnostic could not be completed."}   # vetted line, not the raw message
+    ]
+    assert marker not in json.dumps(read_results(job.id))         # not in results.json
+    assert marker not in (job.error or "")                        # not in the run-level error
+    assert marker not in (JobOut.model_validate(job).error.reason or "")  # not in the API response
 
 
 def test_failed_cleanup_is_recorded_and_the_rest_still_run(db, local_registry, caplog):
@@ -343,6 +373,9 @@ def test_failed_cleanup_is_recorded_and_the_rest_still_run(db, local_registry, c
     assert f"job {job.id}: cleanup of plugin leaky failed" in caplog.text
     audit = db.query(models.AuditLogEntry).filter_by(action="plugin_cleanup_failed").one()
     assert audit.detail == f"job={job.id} plugin=leaky error=RuntimeError"
+    # The run-level error names the tool whose leftover needs attention (SCRUM-68).
+    err = json.loads(job.error)
+    assert err["step"] == "cleanup" and err["plugin"] == "leaky" and "leaky" in err["reason"]
 
 
 def test_failed_cleanup_after_a_failed_run_is_still_reported(db, local_registry):

@@ -92,7 +92,7 @@ def run_job(
     started = []
     results: list[dict[str, Any]] = []
     failed_tools = 0
-    cleanup_failed = False
+    cleanup_failures: list[str] = []
 
     try:
         if plugins is None:
@@ -120,9 +120,12 @@ def run_job(
                     try:
                         _record(job.id, results, plugin.run(target_ip))
                     except (NotImplementedError, PluginError) as e:
-                        # A stub, a bad option or a tool that could not run:
-                        # the reason is safe to show.
+                        # A stub, a bad option or a tool that could not run.
+                        # reason_for() yields the safe line (the raw message may
+                        # embed tool output); the full message is logged, not
+                        # shown, so the failure can still be diagnosed.
                         failed_tools += 1
+                        log.warning("job %s: plugin %s did not run: %s", job.id, plugin.name, e)
                         _record(job.id, results,
                                 {"tool": plugin.name, "step": step, "error": reason_for(e)})
                     except Exception as e:  # noqa: BLE001
@@ -142,7 +145,7 @@ def run_job(
                 pass  # TODO: same idea, different sources
 
             elif step == "cleanup":
-                cleanup_failed = _cleanup_all(db, job, started)
+                cleanup_failures = _cleanup_all(db, job, started)
 
             elif step == "package":
                 run_analysis(db, job.id)  # writes Signal rows
@@ -150,12 +153,15 @@ def run_job(
                 # doc's "Analysis & Reporting" section: metadata.json, one
                 # standardized layout every time).
 
-        if cleanup_failed:
+        if cleanup_failures:
             status = "cleanup_failed"
-            _set_error(job, "cleanup",
-                       "Cleanup did not finish; a diagnostic may still be running on the system.")
+            _set_error(job, "cleanup", _cleanup_reason(cleanup_failures),
+                       plugin=cleanup_failures[0] if len(cleanup_failures) == 1 else None)
         elif plugins and failed_tools == len(plugins):
-            status = "failed"   # every tool failed; results.json has each tool's reason
+            # Every tool failed; each tool's own reason is in results.json.
+            status = "failed"
+            _set_error(job, "deploy_tools",
+                       "Every selected diagnostic failed; open the per-tool results to see why.")
         elif failed_tools:
             status = "partial"   # some tools ran, some did not: results.json says which
         else:
@@ -164,15 +170,16 @@ def run_job(
 
     except (NotImplementedError, PluginError) as e:
         # A bad option or an unknown plugin, found before anything ran: a
-        # known failure with a reason safe to show, not a crash.
-        cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
+        # known failure with a reason safe to show, not a crash. The original
+        # cause is recorded first and wins over any later cleanup failure.
         _set_error(job, job.current_step, reason_for(e))
-        _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
+        cleanup_failures = _cleanup_all(db, job, started) or cleanup_failures
+        _finish(db, job, "cleanup_failed" if cleanup_failures else "failed")
 
     except Exception as e:
-        cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
         _set_error(job, job.current_step, reason_for(e))
-        _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
+        cleanup_failures = _cleanup_all(db, job, started) or cleanup_failures
+        _finish(db, job, "cleanup_failed" if cleanup_failures else "failed")
         raise
 
     return job
@@ -184,6 +191,14 @@ def _set_error(job: Job, step: str | None, reason: str, plugin: str | None = Non
     cause of a failed run."""
     if job.error is None:
         job.error = json.dumps({"step": step, "plugin": plugin, "reason": reason})
+
+
+def _cleanup_reason(tools: list[str]) -> str:
+    """A safe run-level reason for a cleanup failure, naming the tool(s) whose
+    pod or process may still be running so the field engineer can remove it."""
+    names = ", ".join(tools)
+    return (f"Cleanup did not finish for: {names}. A diagnostic may still be "
+            "running on the system; remove its pod or process by hand.")
 
 
 def job_output_dir(job_id: str) -> Path:
@@ -240,18 +255,19 @@ def _audit_job(db: Session, job: Job, action: str, detail: str) -> None:
     log_action(db, actor, action, detail=f"job={job.id} {detail}", session_id=job.session_id)
 
 
-def _cleanup_all(db: Session, job: Job, started: list[Collector]) -> bool:
+def _cleanup_all(db: Session, job: Job, started: list[Collector]) -> list[str]:
     """Best-effort cleanup in reverse start order, emptying started. One
     plugin's cleanup bug must not skip the others or mask the original
     failure, but it must not go unnoticed either: each failure is logged
-    and audited with the job and plugin name. Returns True if any failed."""
-    failed = False
+    and audited with the job and plugin name. Returns the names of the
+    plugins whose cleanup() raised (empty if all cleaned up)."""
+    failed: list[str] = []
     while started:
         plugin = started.pop()
         try:
             plugin.cleanup()
         except Exception as e:
-            failed = True
+            failed.append(plugin.name)
             log.exception("job %s: cleanup of plugin %s failed", job.id, plugin.name)
             try:
                 log_action(
