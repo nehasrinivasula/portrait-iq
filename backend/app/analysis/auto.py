@@ -27,7 +27,6 @@ def run_in_background(bind, job_id: str, actor: str, session_id) -> None:
     `bind` is the engine the request used, so tests and the app each run against their own database."""
     db: Session = sessionmaker(bind=bind)()
     try:
-        _mark(db, job_id, "running")
         log_action(db, actor, "findings_run", detail=f"job={job_id} auto=true", session_id=session_id)
         db.commit()
         run_analysis(db, job_id)

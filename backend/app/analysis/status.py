@@ -36,3 +36,13 @@ def findings_status(db: Session, job_id: str, now: Optional[datetime] = None) ->
         "error": run.error if state == "failed" else None,
         "stale": stale,
     }
+
+
+def recover_interrupted_analysis(db: Session) -> int:
+    """At startup: a run still marked "running" belongs to a process that no longer exists (runs are
+    in-process), so it can never finish. Mark it failed now instead of leaving it "running" for an hour."""
+    runs = db.query(AnalysisRun).filter(AnalysisRun.status == "running").all()
+    for run in runs:
+        run.status, run.error, run.ran_at = "failed", "Interrupted", datetime.utcnow()
+    db.commit()
+    return len(runs)

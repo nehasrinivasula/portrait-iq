@@ -525,7 +525,7 @@ are not tied to ping. Each finding carries its evidence:
 events for a collection (`job_id` given), the rules run on that collection in the background, after the response. The pull never
 waits for it and never fails because of it: a failure is recorded in `analysis_runs` (exception type only) and audited as
 `findings_run_failed`, the earlier findings are kept, and `POST .../findings/run` retries. Automatic runs are audited as
-`findings_run` with `auto=true`. Runs for one collection are serialised in-process, so two at once cannot leave two sets of
+`findings_run` with `auto=true`. A manual run shows as `running` too; a run that fails is marked `failed` at once, and a run left `running` by a process that died is marked `failed` ("Interrupted") when the server starts. The status endpoint refuses a locked session but does not count as activity. Runs for one collection are serialised in-process, so two at once cannot leave two sets of
 findings. Run the rules again by hand after changing a rule.
 
 The same report from a terminal: `python -m app.analysis.coverage <collection id>`.

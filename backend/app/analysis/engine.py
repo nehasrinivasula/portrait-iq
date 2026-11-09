@@ -55,7 +55,18 @@ def iter_events(db: Session, job_id: str, batch: Optional[int] = None) -> Iterab
 def run_analysis(db: Session, job_id: str, rules: tuple = RULES) -> list[Signal]:
     """Run the rules over the collection and replace its findings. One at a time per collection."""
     with _lock_for(job_id):
-        return _run_locked(db, job_id, rules)
+        # Say so before the work starts, so a manual run shows as running too, and if the work fails
+        # the status says failed instead of staying "running".
+        db.merge(AnalysisRun(job_id=job_id, status="running", ran_at=datetime.utcnow(), events_scanned=None, error=None))
+        db.commit()
+        try:
+            return _run_locked(db, job_id, rules)
+        except Exception as e:
+            db.rollback()
+            db.merge(AnalysisRun(job_id=job_id, status="failed", ran_at=datetime.utcnow(),
+                                 events_scanned=None, error=type(e).__name__))
+            db.commit()
+            raise
 
 
 def _counted(rows: Iterable[EventRow], counter: list) -> Iterable[EventRow]:

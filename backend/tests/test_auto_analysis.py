@@ -191,3 +191,58 @@ def test_a_failure_in_the_background_does_not_fail_the_upload(client_env, monkey
 def test_status_of_an_unknown_collection_is_a_404(client_env):
     client, _ = client_env
     assert client.get("/api/jobs/nope/findings/status").status_code == 404
+
+
+def test_a_manual_run_shows_as_running_while_it_works(job, engine, monkeypatch):
+    add_events(job)
+    job.commit()
+    seen = []
+    real_scan = analysis_engine.scan
+
+    def watching_scan(rows, rules=None):
+        with sessionmaker(bind=engine)() as other:
+            seen.append(other.get(AnalysisRun, "job-1").status)
+        return real_scan(rows) if rules is None else real_scan(rows, rules)
+
+    monkeypatch.setattr(analysis_engine, "scan", watching_scan)
+    run_analysis(job, "job-1")
+    assert seen == ["running"] and job.get(AnalysisRun, "job-1").status == "ok"
+
+
+def test_a_failed_manual_run_says_failed_not_running_and_keeps_the_old_findings(job, monkeypatch):
+    add_events(job)
+    job.commit()
+    run_analysis(job, "job-1")
+
+    def boom(rows, rules=None):
+        raise RuntimeError("patientName=John Smith")
+
+    monkeypatch.setattr(analysis_engine, "scan", boom)
+    with pytest.raises(RuntimeError):
+        run_analysis(job, "job-1")
+    run = job.get(AnalysisRun, "job-1")
+    assert run.status == "failed" and run.error == "RuntimeError"
+    assert len(findings_for(job, "job-1")) == 1
+
+
+def test_runs_left_running_by_a_dead_process_are_failed_at_startup(job):
+    from app.analysis.status import recover_interrupted_analysis
+    job.add(Job(id="job-2", mode="live", status="done"))
+    job.add(AnalysisRun(job_id="job-1", status="running", ran_at=datetime.utcnow()))
+    job.add(AnalysisRun(job_id="job-2", status="ok", ran_at=datetime.utcnow(), events_scanned=5))
+    job.commit()
+    assert recover_interrupted_analysis(job) == 1
+    job.expire_all()
+    assert job.get(AnalysisRun, "job-1").status == "failed" and job.get(AnalysisRun, "job-1").error == "Interrupted"
+    assert job.get(AnalysisRun, "job-2").status == "ok"
+    assert findings_status(job, "job-1")["state"] == "failed"
+
+
+def test_status_refuses_a_locked_session_without_counting_as_activity(client_env, monkeypatch):
+    client, _ = client_env
+    touched = []
+    monkeypatch.setattr("app.auth.touch_session", lambda user_id: touched.append(user_id))
+    assert client.get("/api/jobs/job-1/findings/status").status_code == 200
+    assert touched == []                                          # polling must not keep a session alive
+    monkeypatch.setattr("app.orchestrator.routes.is_locked", lambda _user_id: True)
+    assert client.get("/api/jobs/job-1/findings/status").status_code == 423
