@@ -40,7 +40,7 @@ def env(monkeypatch):
     app.dependency_overrides[get_current_user] = lambda: User(
         id="reviewer", name="Reviewer", session_id="review-session"
     )
-    monkeypatch.setattr("app.auth.is_locked", lambda _user_id: False)
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)
     seed = Session()
     yield TestClient(app), seed
     seed.close()

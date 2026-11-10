@@ -2,7 +2,7 @@
 sync with models.py by hand for now; consider generating one from the other
 once the shape stabilizes."""
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -194,6 +194,13 @@ class JobOut(BaseModel):
     class Config:
         from_attributes = True
 
+    @field_validator("created_at", "finished_at")
+    @classmethod
+    def _as_utc(cls, v: Optional[datetime]) -> Optional[datetime]:
+        # Stored as naive UTC. Without an offset a browser reads the time as
+        # local, and the run's elapsed timer (SCRUM-41) would be off by hours.
+        return v.replace(tzinfo=timezone.utc) if v is not None and v.tzinfo is None else v
+
     @field_validator("error", mode="before")
     @classmethod
     def _parse_error(cls, value):
@@ -209,6 +216,22 @@ class UploadOut(BaseModel):
     size_bytes: int
 
 
+class EvidenceEventOut(BaseModel):
+    """One log line a finding rests on. The message is masked for PHI/PII."""
+    event_id: int
+    timestamp: datetime
+    device_id: Optional[str] = None
+    severity: str
+    source_file: Optional[str] = None
+    source_line: Optional[int] = None
+    message: str
+
+
+class DeviceCountOut(BaseModel):
+    device_id: Optional[str] = None
+    count: int
+
+
 class SignalOut(BaseModel):
     id: str
     rule_id: str
@@ -218,9 +241,33 @@ class SignalOut(BaseModel):
     status: str
     manual_ref: Optional[str]
     actions: list[str] = []
+    first_seen: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
+    devices: list[DeviceCountOut] = []         # the devices with the most matches
+    devices_total: int = 0                      # how many devices matched at all
+    evidence: list[EvidenceEventOut] = []       # earliest and latest matching events
 
     class Config:
         from_attributes = True
+
+
+class UnmatchedShapeOut(BaseModel):
+    severity: str
+    count: int
+    shape: str                       # the message with numbers and ids folded away
+    example_event_id: int
+    example: str                     # one real message of this shape, PHI/PII masked
+
+
+class CoverageOut(BaseModel):
+    events: int
+    matched_events: int
+    problem_events: int              # ERROR and WARN events
+    problem_matched: int
+    problem_unmatched: int           # the ones no rule explains
+    per_rule: dict[str, int]
+    unmatched: list[UnmatchedShapeOut]
+    unmatched_not_listed: int = 0
 
 
 # --- Log acquisition (SCRUM-43) ---
