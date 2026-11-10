@@ -24,7 +24,8 @@ def init_db() -> None:
 
 def _apply_audit_compatibility_columns() -> None:
     """Upgrade only known nullable metadata columns in place: SCRUM-36's audit
-    columns and S-3's PHI/PII scan columns on stored events.
+    columns, S-3's PHI/PII scan columns and the parsed message fields on
+    stored events.
 
     ``create_all`` creates tables but never changes existing ones. These
     columns are nullable, so adding them preserves all existing local SQLite
@@ -40,11 +41,22 @@ def _apply_audit_compatibility_columns() -> None:
         ("normalized_events", "privacy_scan_version", "INTEGER"),
         ("normalized_events", "sensitive_flags", "TEXT"),
         ("normalized_events", "network_flags", "TEXT"),
+        ("signals", "first_seen", "DATETIME"),
+        ("signals", "last_seen", "DATETIME"),
+        ("signals", "devices_json", "TEXT"),
+        # Message log parsing (ingestion/messages.py). Older events keep NULL:
+        # component comes from sourceInfo, which is not stored, so they cannot
+        # be backfilled. Pull those logs again to get sequences for them.
+        ("normalized_events", "component", "VARCHAR"),
+        ("normalized_events", "message_kind", "VARCHAR"),
+        ("normalized_events", "command", "VARCHAR"),
+        ("normalized_events", "correlation_id", "VARCHAR"),
+        ("normalized_events", "status", "VARCHAR"),
     )
     inspector = inspect(engine)
     present = {
         table: {column["name"] for column in inspector.get_columns(table)}
-        for table in {"audit_log", "jobs", "normalized_events"}
+        for table in {"audit_log", "jobs", "normalized_events", "signals"}
         if inspector.has_table(table)
     }
     with engine.begin() as connection:

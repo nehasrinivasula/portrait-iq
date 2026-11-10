@@ -4,14 +4,9 @@ import { useAuth } from "../../auth/AuthContext";
 import { useNotify } from "../../ui/Notifications";
 import { getJob, getResults, isFinished, type Job, type ToolResult } from "../plugins/api";
 import type { AcquisitionResult } from "../logs/logsApi";
+import { activeJobStore, resumeJobId } from "./jobStorage";
 
 const POLL_MS = 2000;
-const KEY = "piq.job";
-const store = {
-  get: () => { try { return sessionStorage.getItem(KEY); } catch { return null; } },
-  set: (id: string) => { try { sessionStorage.setItem(KEY, id); } catch { /* private mode: lose the run on reload */ } },
-  clear: () => { try { sessionStorage.removeItem(KEY); } catch { /* ignore */ } },
-};
 
 export type LogPull =
   | { state: "running" }
@@ -23,6 +18,8 @@ interface JobsState {
   logPull: LogPull | null;
   job: Job | null;
   results: ToolResult[] | null;
+  /** True briefly after sign-in while a saved run is being restored. */
+  restoring: boolean;
   /** True while polling is failing; the run itself is unaffected (S-2). */
   lost: boolean;
   /** Watch a run; pullLogs, when given, starts the log pull for it right away. */
@@ -48,14 +45,15 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   const notify = useNotify();
   const [job, setJob] = useState<Job | null>(null);
   const [results, setResults] = useState<ToolResult[] | null>(null);
+  const [restoring, setRestoring] = useState(false);
   const [lost, setLost] = useState(false);
   const [logPull, setLogPull] = useState<LogPull | null>(null);
   const [targetIp, setTargetIp] = useState("");
   const announced = useRef<string | null>(null);
 
-  const clear = useCallback(() => { store.clear(); setJob(null); setResults(null); setLost(false); setLogPull(null); }, []);
+  const clear = useCallback(() => { activeJobStore.clear(); setJob(null); setResults(null); setLost(false); setLogPull(null); setRestoring(false); }, []);
   const track = useCallback((j: Job, pullLogs?: () => Promise<AcquisitionResult>) => {
-    store.set(j.id); setResults(null); setLost(false); announced.current = null; setJob(j); setLogPull(null);
+    activeJobStore.set(j.id); setResults(null); setLost(false); setRestoring(false); announced.current = null; setJob(j); setLogPull(null);
     if (!pullLogs) return;
     setLogPull({ state: "running" });
     pullLogs()
@@ -71,15 +69,24 @@ export function JobsProvider({ children }: { children: ReactNode }) {
       });
   }, [notify]);
 
-  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); setLogPull(null); setTargetIp(""); } }, [user]);
+  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); setLogPull(null); setRestoring(false); setTargetIp(""); } }, [user]);
 
-  // A page reload must not lose a run that is still going: pick it back up.
+  // Sign-out removes the bearer token, not the opaque job id. Once the same
+  // browser session signs in again, recover the persisted server-side run.
   useEffect(() => {
-    const id = user ? store.get() : null;
-    if (!id) return;
+    let live = true;
+    const id = resumeJobId(Boolean(user));
+    if (!id) { setRestoring(false); return; }
+    setRestoring(true);
     getJob(id)
-      .then((j) => { if (isFinished(j.status)) announced.current = j.id; setJob(j); })
-      .catch(() => store.clear());
+      .then((j) => {
+        if (!live) return;
+        if (isFinished(j.status)) announced.current = j.id;
+        setJob(j);
+      })
+      .catch(() => { if (live) activeJobStore.clear(); })
+      .finally(() => { if (live) setRestoring(false); });
+    return () => { live = false; };
   }, [user]);
 
   useEffect(() => {
@@ -111,5 +118,5 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     else notify({ kind: "error", title: "The run failed", body: "Open Run diagnostics for details." });
   }, [job, notify]);
 
-  return <Ctx.Provider value={{ job, results, lost, logPull, track, clear, targetIp, setTargetIp }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ job, results, restoring, lost, logPull, track, clear, targetIp, setTargetIp }}>{children}</Ctx.Provider>;
 }

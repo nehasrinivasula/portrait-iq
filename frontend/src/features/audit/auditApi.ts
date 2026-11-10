@@ -78,6 +78,8 @@ const ACTION_LABELS: Record<string, string> = {
   package_ready: "Export ready",
   package_failed: "Export failed",
   package_download: "Download package",
+  findings_run: "Pattern detection run",
+  findings_coverage_view: "Pattern coverage viewed",
 };
 
 /** Every action the page can filter by, as [code, label], in label order. */

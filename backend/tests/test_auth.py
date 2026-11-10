@@ -280,6 +280,48 @@ def test_every_signed_in_route_checks_the_idle_lock():
     unchecked = [r.path for r in protected if auth.get_unlocked_user not in set(_dependencies(r.dependant))]
     assert unchecked == []
 
+
+def test_diagnostic_status_survives_idle_lock_and_relogin(client: TestClient, db, demo_credentials, monkeypatch):
+    """A run belongs to the server, not to the browser token that started it."""
+    from app import auth
+    from app.db import get_db
+    from app.orchestrator import routes
+
+    clock = [1_000_000.0]
+    monkeypatch.setattr(auth.time, "time", lambda: clock[0])
+    monkeypatch.setattr(routes, "_run_in_background", lambda *_args: None)
+
+    def use_test_db():
+        yield db
+
+    app.dependency_overrides[get_db] = use_test_db
+    try:
+        first_token = login(client, demo_credentials)
+        first_headers = {"Authorization": f"Bearer {first_token}"}
+        started = client.post(
+            "/api/jobs?target_ip=192.0.2.10",
+            headers=first_headers,
+            json={"tools": []},
+        )
+        assert started.status_code == 200
+        job = started.json()
+        assert job["status"] == "queued"
+
+        # The idle lock refuses the old token (SCRUM-34) but never cancels the
+        # run: it stays on the server for the next sign-in to pick up.
+        clock[0] += settings.session_idle_timeout_seconds + 1
+        locked_view = client.get(f"/api/jobs/{job['id']}", headers=first_headers)
+        assert locked_view.status_code == 423
+
+        # A new browser token after sign-in can read the same persisted job.
+        second_token = login(client, demo_credentials)
+        resumed = client.get(f"/api/jobs/{job['id']}", headers={"Authorization": f"Bearer {second_token}"})
+        assert resumed.status_code == 200
+        assert resumed.json()["id"] == job["id"]
+        assert resumed.json()["status"] == "queued"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
 # Login settings from files (Kubernetes Secret volume) -----------------------
 
 def _write(path, value):

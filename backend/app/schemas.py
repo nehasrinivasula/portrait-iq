@@ -199,6 +199,22 @@ class UploadOut(BaseModel):
     size_bytes: int
 
 
+class EvidenceEventOut(BaseModel):
+    """One log line a finding rests on. The message is masked for PHI/PII."""
+    event_id: int
+    timestamp: datetime
+    device_id: Optional[str] = None
+    severity: str
+    source_file: Optional[str] = None
+    source_line: Optional[int] = None
+    message: str
+
+
+class DeviceCountOut(BaseModel):
+    device_id: Optional[str] = None
+    count: int
+
+
 class SignalOut(BaseModel):
     id: str
     rule_id: str
@@ -208,9 +224,33 @@ class SignalOut(BaseModel):
     status: str
     manual_ref: Optional[str]
     actions: list[str] = []
+    first_seen: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
+    devices: list[DeviceCountOut] = []         # the devices with the most matches
+    devices_total: int = 0                      # how many devices matched at all
+    evidence: list[EvidenceEventOut] = []       # earliest and latest matching events
 
     class Config:
         from_attributes = True
+
+
+class UnmatchedShapeOut(BaseModel):
+    severity: str
+    count: int
+    shape: str                       # the message with numbers and ids folded away
+    example_event_id: int
+    example: str                     # one real message of this shape, PHI/PII masked
+
+
+class CoverageOut(BaseModel):
+    events: int
+    matched_events: int
+    problem_events: int              # ERROR and WARN events
+    problem_matched: int
+    problem_unmatched: int           # the ones no rule explains
+    per_rule: dict[str, int]
+    unmatched: list[UnmatchedShapeOut]
+    unmatched_not_listed: int = 0
 
 
 # --- Log acquisition (SCRUM-43) ---

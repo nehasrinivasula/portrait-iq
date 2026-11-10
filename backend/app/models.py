@@ -81,6 +81,12 @@ class NormalizedEvent(Base):
     privacy_scan_version = Column(Integer, nullable=True)
     sensitive_flags = Column(Text, nullable=True)
     network_flags = Column(Text, nullable=True)
+    # Parsed from free-text messages (ingestion/messages.py); NULL for ordinary lines.
+    component = Column(String, nullable=True)        # class / source file from sourceInfo
+    message_kind = Column(String, nullable=True)     # request | reply | response | publish | timeout
+    command = Column(String, nullable=True)
+    correlation_id = Column(String, nullable=True)   # ties a request to its reply
+    status = Column(String, nullable=True)           # e.g. "ack", "nak_alreadyExists"
 
     job = relationship("Job", back_populates="events")
 
@@ -91,6 +97,9 @@ class NormalizedEvent(Base):
         Index("ix_events_job_ts", "job_id", "timestamp", "id"),
         # Also serves plain device_id lookups, so device_id has no index of its own.
         Index("ix_events_device_ts", "device_id", "timestamp"),
+        # Request/reply lookups (storage/sequences.py) and "show this exchange".
+        Index("ix_events_correlation", "correlation_id"),
+        Index("ix_events_kind_ts", "message_kind", "timestamp"),
     )
 
 
@@ -135,8 +144,25 @@ class Signal(Base):
     status = Column(String, default="unconfirmed")  # "unconfirmed" | "confirmed" | "no_match"
     manual_ref = Column(String, nullable=True)
     actions_json = Column(Text, nullable=True)   # JSON list of suggested next steps
+    # Supporting evidence (app/analysis/engine.py). The matching events themselves are not copied:
+    # the sample is in signal_evidence, which points at normalized_events.
+    first_seen = Column(DateTime, nullable=True)     # earliest / latest matching event (naive UTC)
+    last_seen = Column(DateTime, nullable=True)
+    devices_json = Column(Text, nullable=True)       # JSON {"total": n, "top": [[device_id, count], ...]}
 
     job = relationship("Job", back_populates="signals")
+
+
+class SignalEvidence(Base):
+    """A few of the events a signal matched: the earliest and the latest, so a finding can be checked
+    against the real log lines. Points at the event by id; the text is read from the event store (and
+    masked for PHI/PII) when shown, never copied here. rank 0.. orders them by time."""
+    __tablename__ = "signal_evidence"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id = Column(String, ForeignKey("signals.id"), nullable=False, index=True)
+    event_id = Column(Integer, nullable=False)
+    rank = Column(Integer, nullable=False, default=0)
 
 
 class AcquiredFileRecord(Base):

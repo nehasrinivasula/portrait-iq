@@ -78,6 +78,15 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 
 /* Time frame */
 .tf-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); max-width: 640px; }
+.tf-select { display: grid; gap: 4px; max-width: 280px; }
+.tf-select label, .tf-calendar-title { font-size: 15px; font-weight: 600; }
+.tf-select select {
+  min-height: 44px; width: 100%; padding: 6px 12px; border: 1.5px solid var(--line);
+  border-radius: 6px; background: var(--panel); color: inherit; font: inherit;
+}
+.tf-calendar { max-width: 640px; }
+.tf-calendar-title { margin: 0; }
+.tf-calendar .hint { margin: 3px 0 10px; }
 .tf-summary { background: var(--bg); border-radius: 6px; padding: 10px 14px; font-weight: 600; }
 .source-list { display: grid; gap: 8px; margin: 10px 0 0; }
 
@@ -105,6 +114,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .filters .field { min-width: 150px; }
 .filters .field.grow { flex: 1; min-width: 220px; }
 .filters .field input, .filters .field select { width: 100%; min-height: 44px; background: var(--bg); border: 1.5px solid var(--line); border-radius: 6px; padding: 6px 12px; }
+.filters .tf-select { min-width: 176px; max-width: 230px; }
+.filters .tf-select select { min-height: 40px; background: var(--bg); }
 .filters .tf-grid { margin-top: 8px; }
 .job-chip { margin: 0; flex: none; }
 .active-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; border-top: 1px solid var(--line); padding-top: 8px; }
@@ -124,5 +135,4 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .filters .field input, .filters .field select { min-height: 40px; }
 .filters .field label { font-size: 15px; margin-bottom: 2px; }
 .filters .tf legend { margin-bottom: 2px !important; }
-.filters .segmented { gap: 6px; }
 .logs-head h1 { font-size: 24px; }
