@@ -10,7 +10,7 @@ const POLL_MS = 2000;
 
 export type LogPull =
   | { state: "running" }
-  | { state: "done"; newFiles: number; events: number }
+  | { state: "done"; newFiles: number; events: number; skipped: number }
   | { state: "error"; message: string };
 
 interface JobsState {
@@ -59,8 +59,9 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     pullLogs()
       .then((r) => {
         const events = r.files.reduce((n, f) => n + (f.events ?? 0), 0);
-        setLogPull({ state: "done", newFiles: r.new_files, events });
-        notify({ kind: r.failed ? "warn" : "ok", title: r.failed ? "Some logs couldn't be collected" : "Logs collected", body: `${events} events from ${r.new_files} new file${r.new_files === 1 ? "" : "s"}.` });
+        const skipped = r.files.reduce((n, f) => n + (f.rows_rejected ?? 0), 0);
+        setLogPull({ state: "done", newFiles: r.new_files, events, skipped });
+        notify({ kind: r.failed || skipped ? "warn" : "ok", title: r.failed ? "Some logs couldn't be collected" : skipped ? "Logs collected with skipped lines" : "Logs collected", body: `${events} events from ${r.new_files} new file${r.new_files === 1 ? "" : "s"}${skipped ? `; ${skipped} malformed log lines skipped` : ""}.` });
       })
       .catch((e) => {
         const message = e instanceof ApiError && e.status !== 0 ? e.message : "Can't reach the server.";
