@@ -37,3 +37,4 @@
 .run-steps li[data-state="current"] > span[aria-hidden] { color: var(--primary); }
 .run-steps li[data-state="upcoming"] { color: var(--muted); }
 .run-steps .muted { margin: 0; }
+.job-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }

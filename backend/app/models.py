@@ -2,7 +2,8 @@
 ORM tables. One per architecture-diagram box that needs to persist state:
 Device (connect), Job (orchestrator), NormalizedEvent (event store), Signal
 (analysis engine output), AcquiredFileRecord (log acquisition manifest),
-IngestedFile (receipt of what ingestion stored per file), AuditLogEntry (cross-cutting).
+IngestedFile (receipt of what ingestion stored per file), AuditLogEntry (cross-cutting),
+SessionActivity (server-side idle lock).
 """
 import uuid
 from datetime import datetime
@@ -228,3 +229,16 @@ class AuditLogEntry(Base):
     session_id = Column(String, nullable=True, index=True)
     action = Column(String, nullable=False, index=True)
     detail = Column(Text, nullable=True)
+
+
+class SessionActivity(Base):
+    """Last user-initiated request per login session, for the idle lock
+    (S-2, SCRUM-34). Kept in the database so a backend restart does not
+    unlock idle sessions. One row per token ``jti``; a session with no row is
+    treated as locked."""
+    __tablename__ = "session_activity"
+
+    session_id = Column(String, primary_key=True)      # token jti
+    user_id = Column(String, nullable=False, index=True)
+    last_active_at = Column(Float, nullable=False)     # epoch seconds (time.time())
+    locked_at = Column(Float, nullable=True)           # set once; a locked session stays locked

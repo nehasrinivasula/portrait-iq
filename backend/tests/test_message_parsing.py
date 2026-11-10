@@ -179,7 +179,8 @@ def test_parser_fills_the_new_fields(tmp_path):
 
 
 @pytest.fixture
-def env():
+def env(monkeypatch):
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)

@@ -15,7 +15,7 @@ from app.analysis.coverage import coverage_report
 from app.analysis.engine import run_analysis
 from app.analysis.findings import findings_for
 from app.audit import log_action
-from app.auth import User, get_active_user, get_current_user, is_locked, touch_session
+from app.auth import User, get_active_user, get_unlocked_user
 from app.collectors.base import Collector, PluginError, ResourceLimits
 from app.collectors.registry import get_registry
 from app.config import settings
@@ -57,7 +57,7 @@ router = APIRouter()
 def connectivity_check(
     req: ConnectivityCheckRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ):
     """Run a bounded TCP reachability check before diagnostics start.
 
@@ -65,9 +65,6 @@ def connectivity_check(
     the check itself completed successfully; callers should inspect `status`
     and the per-port results.
     """
-    if is_locked(user.id):
-        raise HTTPException(423, "Session locked — unlock before checking connectivity.")
-
     log_action(
         db,
         user.id,
@@ -108,7 +105,6 @@ def connectivity_check(
             ),
             session_id=user.session_id,
         )
-        touch_session(user.id)
         return response
 
 
@@ -116,7 +112,7 @@ def connectivity_check(
 def connect(
     req: ConnectRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ):
     """This week's feature #2 lives here. Today it does nothing real —
     replace the body with an actual reachability check (ping/SNMP/SSH,
@@ -128,7 +124,6 @@ def connect(
     The password is masked in logs only while this request runs, then
     forgotten (SCRUM-72). Keep everything that uses it inside the with."""
     with redaction_scope(req.password.get_secret_value(), "CONNECT_PASSWORD"):
-        touch_session(user.id)
         log_action(db, user.id, "connect", detail=f"mode={req.mode} ip={req.ip_address}", session_id=user.session_id)
 
         if req.mode not in ("live", "pre_install"):
@@ -157,7 +152,7 @@ def list_plugins():
 
 
 @router.get("/devices", response_model=list[DeviceOut])
-def list_devices(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_devices(db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     log_action(db, user.id, "devices_view", detail="", session_id=user.session_id)
     return db.query(Device).all()
 
@@ -273,9 +268,10 @@ def run_existing_job(db: Session, job_id: str, target_ip: str, plugins: list[Col
 
 
 @router.get("/jobs/{job_id}/results")
-def get_job_results(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def get_job_results(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_unlocked_user)):
     """Each plugin's summary, warnings and files, or the error that stopped
-    it, in the order the plugins ran. Partial while the job is running."""
+    it, in the order the plugins ran. Partial while the job is running.
+    Polled by the page, so it checks the idle lock but is not activity."""
     if db.get(Job, job_id) is None:
         raise HTTPException(404, "job not found")
     log_action(db, user.id, "job_results_view", detail=f"job={job_id}", session_id=user.session_id)
@@ -302,7 +298,8 @@ def upload_file(
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
-def get_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def get_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_unlocked_user)):
+    """Polled while a job runs: checks the idle lock but is not activity."""
     job = db.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
@@ -362,13 +359,4 @@ def get_summary(
     return PlainTextResponse(render_markdown(summary), media_type="text/markdown; charset=utf-8")
 
 
-@router.post("/jobs/{job_id}/package")
-def package_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """TODO: assemble the standardized zip (logs/, network/, k8s/, grafana/,
-    metadata.json, audit.log — see requirements doc's Analysis & Reporting
-    section) and return a download URL. Stub for now."""
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
-    log_action(db, user.id, "package_download", detail=f"job={job_id}", session_id=user.session_id)
-    raise HTTPException(501, "TODO: implement package assembly.")
+# Export (POST/GET /jobs/{job_id}/package...) lives in app/packaging/routes.py (SCRUM-61).

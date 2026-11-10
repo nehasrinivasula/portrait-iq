@@ -42,8 +42,8 @@ def test_connect_password_hidden_in_repr():
 def test_connect_password_masked_in_logs_during_the_request(db, caplog, monkeypatch):
     # Stands in for discovery code that logs carelessly while handling the request.
     monkeypatch.setattr(
-        routes, "touch_session",
-        lambda _uid: logging.getLogger("wiring-test").info("connecting with %s", FAKE_PASSWORD),
+        routes, "log_action",
+        lambda *_, **__: logging.getLogger("wiring-test").info("connecting with %s", FAKE_PASSWORD),
     )
     with caplog.at_level(logging.INFO):
         _connect(db)
@@ -64,6 +64,7 @@ def test_validation_errors_do_not_echo_passwords(monkeypatch):
 
     monkeypatch.setitem(main.app.dependency_overrides, get_current_user,
                         lambda: User(id="tester", name="Tester"))
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)
     client = TestClient(main.app)
     for path, body in (
         ("/api/connect", {"username": "tester", "password": FAKE_PASSWORD}),  # ip_address missing

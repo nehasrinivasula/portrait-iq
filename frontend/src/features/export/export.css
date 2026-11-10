@@ -1,0 +1,60 @@
+/* Export page (SCRUM-61). Built from the shared pieces: .card, .alert, .btn, .log-table, .privacy-switches. */
+.export-page { display: grid; gap: 16px; max-width: 900px; }
+.export-page > h1 { font-size: 26px; margin-bottom: 0; }  /* same as .page > h1 */
+.export-page > p.muted { margin: 0; }
+.export-card { display: grid; gap: 10px; }
+.export-card h2 { font-size: 22px; }
+.export-card .alert { margin-top: 0; }
+.export-result-head { font-size: 22px; margin: 0; }
+.export-result-head:focus { outline: none; }
+.export-result-head:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+.export-list { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 6px; }
+.export-tools { list-style: none; padding: 0; margin: 6px 0 0; display: grid; gap: 4px; }
+.export-tools li[data-ok="true"] > span[aria-hidden] { color: var(--ok); }
+.export-tools li[data-ok="false"] > span[aria-hidden] { color: var(--error); }
+.export-inline-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.export-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+
+.export-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0; }
+.export-facts dt { font-weight: 600; }
+.export-facts dd { margin: 0; min-width: 0; }
+.export-hash { word-break: break-all; font-size: 15px; }
+.export-facts .hint { display: block; }
+.export-table { height: auto; }
+
+/* Steps: same marks and states as the run's step list */
+.export-steps ol { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 8px; }
+.export-steps .muted { margin: 0; }
+.export-steps > ol > li { border-left: 4px solid var(--line); padding: 4px 0 4px 12px; }
+.export-step-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.export-mark { width: 1.2em; text-align: center; font-weight: 600; }
+.export-steps > ol > li[data-state="pending"] { color: var(--muted); }
+.export-steps > ol > li[data-state="running"] { border-left-color: var(--primary); font-weight: 600; }
+.export-steps > ol > li[data-state="running"] .export-mark { color: var(--primary); }
+.export-steps > ol > li[data-state="done"] { border-left-color: var(--ok); }
+.export-steps > ol > li[data-state="done"] .export-mark { color: var(--ok); }
+.export-steps > ol > li[data-state="warn"] { border-left-color: var(--warn); }
+.export-steps > ol > li[data-state="failed"] { border-left-color: var(--error); background: var(--error-bg); }
+.export-step-detail { margin: 2px 0 0 calc(1.2em + 10px); font-weight: 400; color: var(--muted); }
+.export-steps > ol > li[data-state="failed"] .export-step-detail { color: var(--text); }
+.export-tag {
+  display: inline-block; padding: 0 10px; border-radius: 999px; font-weight: 600; font-size: 14px; border: 1.5px solid;
+}
+.export-tag.warn { background: var(--warn-bg); border-color: var(--warn); }
+.export-tag.failed { background: var(--panel); border-color: var(--error); }
+.export-issues { margin: 4px 0 0 calc(1.2em + 10px); font-weight: 400; }
+.export-issues summary { cursor: pointer; min-height: 32px; font-weight: 600; color: var(--primary); }
+.export-issues ul { margin: 4px 0 0; padding-left: 20px; display: grid; gap: 4px; list-style: disc; }
+.export-issues li { border: 0; padding: 0; background: none; }
+
+/* Download confirmation */
+.export-dialog {
+  border: 1px solid var(--line); border-radius: 8px; padding: 24px; width: min(620px, calc(100vw - 32px));
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .18); color: var(--text);
+}
+.export-dialog::backdrop { background: rgba(0, 0, 0, .5); }
+.export-dialog h2 { font-size: 22px; }
+.export-dialog .export-facts { margin: 14px 0; }
+.export-dialog .export-actions { margin-top: 18px; }
+.btn.small { padding: 4px 12px; min-height: 44px; font-size: 15px; }
+.export-facts code { word-break: break-all; }

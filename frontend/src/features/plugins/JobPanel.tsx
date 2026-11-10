@@ -2,22 +2,12 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { isFinished, type Job } from "./api";
 import { useJobs } from "../jobs/JobsContext";
-import { formatElapsed, parseServerTime, stepLabel, stepProgress } from "./progress";
-
-const HEADLINE: Record<string, [kind: "info" | "ok" | "error" | "warn", text: string]> = {
-  queued: ["info", "Waiting to start"],
-  running: ["info", "Running"],
-  done: ["ok", "Finished"],
-  partial: ["warn", "Finished, but some diagnostics failed"],
-  failed: ["error", "The run failed"],
-  cleanup_failed: ["error", "The run ended, but cleanup did not finish"],
-  interrupted: ["warn", "The run was interrupted"],
-};
+import { formatElapsed, parseServerTime, runHeadline, stepLabel, stepProgress } from "./progress";
 
 export default function JobPanel() {
   const { job, results, lost, logPull, clear } = useJobs();
   if (!job) return null;
-  const [kind, headline] = HEADLINE[job.status] ?? ["info", job.status];
+  const [kind, headline] = runHeadline(job.status);
   const step = job.current_step ? stepLabel(job.current_step) : null;
   const finished = isFinished(job.status);
   const stopped = job.status === "failed" || job.status === "interrupted";
@@ -65,7 +55,12 @@ export default function JobPanel() {
           ))}
         </ul>
       )}
-      {finished && <button className="btn ghost" onClick={clear}>Clear</button>}
+      {finished && (
+        <div className="job-actions">
+          <Link to={`/jobs/${encodeURIComponent(job.id)}/export?from=run`} className="btn">Export results</Link>
+          <button type="button" className="btn ghost" onClick={clear}>Clear</button>
+        </div>
+      )}
     </section>
   );
 }

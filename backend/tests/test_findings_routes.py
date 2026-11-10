@@ -20,7 +20,8 @@ T0 = datetime(2024, 6, 2, 10, 0, 0)
 
 
 @pytest.fixture
-def env():
+def env(monkeypatch):
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
@@ -58,7 +59,7 @@ def actions(db):
 
 def test_findings_and_coverage_refuse_a_locked_session(env, monkeypatch):
     client, _ = env
-    monkeypatch.setattr("app.auth.is_locked", lambda _user_id: True)
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: True)
     assert client.get("/api/jobs/job-1/findings").status_code == 423
     assert client.get("/api/jobs/job-1/findings/coverage").status_code == 423
     assert client.post("/api/jobs/job-1/findings/run").status_code == 423

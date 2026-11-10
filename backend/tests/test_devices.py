@@ -180,7 +180,7 @@ def test_pull_selected_devices_only(db, staging, source, fake):
 # --- the endpoints ---------------------------------------------------------------------------
 
 @pytest.fixture
-def client(engine, staging):
+def client(engine, staging, monkeypatch):
     Session = sessionmaker(bind=engine)
 
     def _db():
@@ -192,6 +192,8 @@ def client(engine, staging):
 
     app.dependency_overrides[get_db] = _db
     app.dependency_overrides[get_current_user] = lambda: User(id="tester", name="Tester")
+    # Overridden users carry no login session, which the idle lock refuses.
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)
     yield TestClient(app)
     app.dependency_overrides.clear()
 
