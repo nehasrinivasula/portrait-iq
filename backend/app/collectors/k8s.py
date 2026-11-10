@@ -154,7 +154,10 @@ class PodRunner:
         try:
             self.api.create_namespaced_pod(self.namespace, body, _request_timeout=API_TIMEOUT_S)
         except ApiException as e:
-            raise PluginError(f"could not create the {tool} pod: {_api_message(e)}") from None
+            raise PluginError(
+                f"could not create the {tool} pod: {_api_message(e)}",
+                safe_reason="Could not start the diagnostic's pod.",
+            ) from None
 
     def wait_running(self, name: str, timeout_s: int) -> str:
         """Wait for the pod to run, or fail with why it is still pending
@@ -165,15 +168,24 @@ class PodRunner:
             try:
                 pod = self.api.read_namespaced_pod(name, self.namespace, _request_timeout=API_TIMEOUT_S)
             except ApiException as e:
-                raise PluginError(f"could not read pod {name}: {_api_message(e)}") from None
+                raise PluginError(
+                    f"could not read pod {name}: {_api_message(e)}",
+                    safe_reason="Could not check on the diagnostic's pod.",
+                ) from None
             phase = pod.status.phase
             if phase == "Running":
                 return getattr(pod.status, "host_ip", None) or ""
             if phase in ("Succeeded", "Failed"):
-                raise PluginError(f"pod {name} stopped before the tool ran ({phase})")
+                raise PluginError(
+                    f"pod {name} stopped before the tool ran ({phase})",
+                    safe_reason="The diagnostic's pod stopped before the tool could run.",
+                )
             if time.monotonic() >= deadline:
                 why = _pending_reason(pod) or phase or "unknown"
-                raise PluginError(f"pod {name} did not start within {timeout_s}s: {why}")
+                raise PluginError(
+                    f"pod {name} did not start within {timeout_s}s: {why}",
+                    safe_reason="The diagnostic's pod did not start in time.",
+                )
             self._sleep(2)
 
     def delete(self, name: str) -> None:
@@ -185,7 +197,10 @@ class PodRunner:
         except ApiException as e:
             if e.status == 404:
                 return
-            raise PluginError(f"could not delete pod {name}: {_api_message(e)}") from None
+            raise PluginError(
+                f"could not delete pod {name}: {_api_message(e)}",
+                safe_reason="Could not remove the diagnostic's pod.",
+            ) from None
 
     def sweep(self) -> list[str]:
         """Delete every tool pod in our namespace. For startup only, when no
@@ -243,7 +258,10 @@ class PodRunner:
                 _preload_content=False,
             )
         except ApiException as e:
-            raise PluginError(f"could not run {argv[0]} in pod {name}: {_api_message(e)}") from None
+            raise PluginError(
+                f"could not run {argv[0]} in pod {name}: {_api_message(e)}",
+                safe_reason="Could not run the diagnostic inside its pod.",
+            ) from None
         deadline = time.monotonic() + timeout_s
         try:
             while resp.is_open():
