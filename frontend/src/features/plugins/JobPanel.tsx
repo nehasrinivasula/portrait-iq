@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { isFinished, type Job } from "./api";
 import { useJobs } from "../jobs/JobsContext";
+import { runErrorText, stepLabel as errorStepLabel } from "../jobs/runStatus";
 import { formatElapsed, parseServerTime, runHeadline, stepLabel, stepProgress } from "./progress";
 
 export default function JobPanel() {
@@ -17,6 +18,9 @@ export default function JobPanel() {
       <div className={`alert ${kind}`} role={kind === "error" ? "alert" : "status"}>
         <strong>{headline}</strong>
         {!finished && (step ?? "Preparing")}
+        {/* The failing step, tool and plain reason, so the engineer can tell
+            what went wrong and whether to retry (SCRUM-68). */}
+        {finished && job.error && <p className="run-error">{runErrorText(job.error)}</p>}
         {job.status === "cleanup_failed" && "Something may still be running on the system. Check it before leaving the site."}
         {stopped && step && `Stopped at: ${step}.`}
       </div>
@@ -43,7 +47,10 @@ export default function JobPanel() {
             <li key={r.tool} className="card">
               <h3>{r.tool}</h3>
               {"error" in r ? (
-                <div className="alert error" role="alert"><strong>Failed</strong>{r.error}</div>
+                <div className="alert error" role="alert">
+                  <strong>Failed{errorStepLabel(r.step) ? ` — ${errorStepLabel(r.step)}` : ""}</strong>
+                  {r.error}
+                </div>
               ) : (
                 <>
                   <p>{r.summary}</p>

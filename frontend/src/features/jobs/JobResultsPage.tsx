@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { apiFetch } from "../../api";
 import { getJob, isFinished, type Job } from "../plugins/api";
 import { runHeadline, stepLabel } from "../plugins/progress";
+import { runErrorText } from "../jobs/runStatus";
 import { netshootSummary, type PluginResult } from "./netshootResults";
 import "./jobResults.css";
 

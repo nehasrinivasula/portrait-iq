@@ -7,6 +7,7 @@ export type NetshootCheck = {
 export type PluginResult = {
   tool: string;
   summary?: string;
+  step?: string;
   error?: string;
   checks?: NetshootCheck[];
 };

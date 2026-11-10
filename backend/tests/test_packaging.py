@@ -112,7 +112,8 @@ def test_export_builds_the_standard_layout(env):
     zf = open_zip(client)
     names = set(zf.namelist())
     assert LAYOUT <= names
-    assert {"tools/netshoot/checks.txt", "tools/tshark/capture.pcap"} <= names
+    assert "tools/netshoot/checks.txt" in names
+    assert "tools/tshark/capture.pcap" not in names          # binary: cannot be masked, so left out
     meta = json.loads(zf.read("metadata.json"))
     assert meta["format_version"] == 1 and meta["run"]["id"] == "job-1" and meta["export"]["masked"] is True
     assert json.loads(zf.read("findings/findings.json"))[0]["title"] == "Timeouts"
@@ -125,6 +126,41 @@ def test_masked_by_default_in_logs_and_text_tool_files(env):
     logs = zf.read("logs/events.jsonl").decode()
     assert SSN not in logs and "[REDACTED:ssn]" in logs
     assert SSN not in zf.read("tools/netshoot/checks.txt").decode()
+
+
+def test_masked_tool_files_keep_ip_and_mac_addresses(env):
+    """The Logs page masks personal data only; equipment addresses are what tool files are for."""
+    client, _ = env
+    (job_output_dir("job-1") / "netshoot" / "checks.txt").write_text(
+        f"ping 10.1.2.3 ok\nmac aa:bb:cc:dd:ee:ff\nnote: ssn {SSN}\n")
+    export(client)
+    text = open_zip(client).read("tools/netshoot/checks.txt").decode()
+    assert "10.1.2.3" in text and "aa:bb:cc:dd:ee:ff" in text and SSN not in text
+
+
+def test_unmasked_export_includes_binary_tool_files(env):
+    client, _ = env
+    export(client, mask=False)
+    assert "tools/tshark/capture.pcap" in open_zip(client).namelist()
+
+
+def test_findings_in_the_zip_carry_their_evidence_fields(env):
+    client, _ = env
+    export(client)
+    f = json.loads(open_zip(client).read("findings/findings.json"))[0]
+    assert {"first_seen", "last_seen", "devices", "devices_total", "evidence"} <= set(f)
+
+
+def test_a_failed_re_export_keeps_the_last_good_zip(env, monkeypatch):
+    client, _ = env
+    export(client)
+    first = next(service.package_dir("job-1").glob("*.zip")).read_bytes()
+    monkeypatch.setitem(service._STEP_FUNCS, "tools", lambda *_: None)
+    monkeypatch.setattr(service.zipfile, "ZipFile", lambda *a, **k: (_ for _ in ()).throw(OSError(28, "No space")))
+    r = client.post("/api/jobs/job-1/package", json={})
+    assert r.status_code == 202, r.text
+    assert client.get("/api/jobs/job-1/package").json()["state"] == "failed"
+    assert [p.read_bytes() for p in service.package_dir("job-1").glob("*.zip")] == [first]
 
 
 def test_unmasked_export_keeps_values_and_warns(env):
@@ -143,12 +179,12 @@ def test_each_step_explains_what_it_did_and_what_failed(env):
     assert [x["id"] for x in s["steps"]] == [i for i, _ in service.STEPS]
     assert all(x["detail"] for x in s["steps"])
     tools = steps["tools"]
-    assert tools["status"] == "warn" and tools["detail"] == "2 of 3 diagnostics ran; 2 files added."
+    assert tools["status"] == "warn" and tools["detail"] == "2 of 3 diagnostics ran; 1 file added."
     reasons = {i["item"]: i["reason"] for i in tools["issues"]}
     assert reasons["rti"] == "This diagnostic did not finish during the run: RTI is turned off on this server."
     assert "no longer on the server" in reasons["netshoot: gone.txt"]
-    assert "only text files can be masked" in reasons["tshark: capture.pcap"]
-    assert any("capture.pcap could not be masked" in w for w in s["warnings"])
+    assert "Left out: only text files can be masked" in reasons["tshark: capture.pcap"]
+    assert any("capture.pcap was left out" in w for w in s["warnings"])
     assert not s["partial"]
 
 

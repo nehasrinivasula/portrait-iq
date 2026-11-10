@@ -95,6 +95,8 @@ const ACTION_LABELS: Record<string, string> = {
   sources_view: "Log sources viewed",
   tool_pods_swept: "Leftover diagnostics removed",
   package_download: "Download package",
+  findings_run: "Pattern detection run",
+  findings_coverage_view: "Pattern coverage viewed",
 };
 
 /** Every action the page can filter by, as [code, label], in label order. */

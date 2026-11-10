@@ -22,8 +22,10 @@ reason safe to show). One failed step does not stop the others (R-2: keep
 partial results); only failing to write the zip itself fails the export.
 
 Masking (on by default) uses the same rules as the Logs page's mask switch.
-Text files from the tools are masked too. Binary files (packet captures)
-cannot be, and the export says so.
+Text files from the tools are masked too, with the personal kinds only: IP
+and MAC addresses are what the tool files are for, as on the Logs page.
+Binary files (packet captures) cannot be masked, so a masked export leaves
+them out and says so; turn masking off to include them.
 """
 from __future__ import annotations
 
@@ -45,7 +47,7 @@ from sqlalchemy.orm import Session
 from app.models import AuditLogEntry, Job, Signal
 from app.orchestrator.jobs import job_output_dir, read_results
 from app.privacy import service as privacy
-from app.privacy.scanner import SCANNER_VERSION, mask_text, scan_text
+from app.privacy.scanner import SCANNER_VERSION, category_group, mask_text, scan_text
 from app.storage import events as store
 from app.storage.filters import UNASSIGNED, EventFilter
 
@@ -403,22 +405,25 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def _copy_artifact(src: Path, dest: Path, masked: bool) -> bool:
-    """Copy one tool file; mask it if it is text. Returns False when it could not be masked."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    """Copy one tool file, masking its personal data if it is text. Returns False, copying
+    nothing, when masking is on and the file cannot be masked (binary, too large, not UTF-8):
+    it could hold patient data, so it is left out unless the engineer exports unmasked."""
     if not masked:
+        dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
         return True
     if src.suffix.lower() in BINARY_SUFFIXES or src.stat().st_size > TEXT_LIMIT:
-        shutil.copyfile(src, dest)
         return False
     try:
         lines = src.read_text(encoding="utf-8").splitlines(keepends=True)
     except UnicodeDecodeError:
-        shutil.copyfile(src, dest)
         return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
     with dest.open("w", encoding="utf-8") as fh:
         for line in lines:
-            fh.write(mask_text(line, list(scan_text(line)), "message") or line)
+            # Personal data only, like the Logs page: IPs and MACs are the point of a tool file.
+            flags = [f for f in scan_text(line) if category_group(f.category) == "personal"]
+            fh.write(mask_text(line, flags, "message") or line)
     return True
 
 
@@ -451,9 +456,10 @@ def _step_tools(ctx: _Ctx, step: Step) -> None:
                 step.issues.append(Issue(f"{tool}: {name}", "Left out: the file is no longer on the server."))
                 continue
             if not _copy_artifact(src, tools_dir / tool / name, ctx.status.masked):
-                w = f"{tool}: {name} could not be masked (not a text file). Review it before sharing."
-                step.issues.append(Issue(f"{tool}: {name}", "Copied as is: only text files can be masked."))
-                ctx.status.warnings.append(w)
+                step.issues.append(Issue(f"{tool}: {name}", "Left out: only text files can be masked. "
+                                                              "Export with masking off to include it."))
+                ctx.status.warnings.append(f"{tool}: {name} was left out because it could not be masked.")
+                continue
             copied += 1
     ctx.status.contents.append(ContentEntry("tools/", "Diagnostic results and the files each tool produced",
                                             files=copied + 1, masked=ctx.status.masked))
@@ -466,20 +472,21 @@ def _step_tools(ctx: _Ctx, step: Step) -> None:
 
 
 def _step_findings(ctx: _Ctx, step: Step) -> None:
+    from app.analysis.findings import findings_for     # each finding with its evidence (PHI/PII masked)
     if ctx.scope == UNASSIGNED:
-        signals = []
-    elif ctx.scope == ALL:
-        signals = ctx.db.scalars(select(Signal)).all()
+        found: list[tuple[str, Any]] = []
     else:
-        signals = ctx.db.scalars(select(Signal).where(Signal.job_id == ctx.scope)).all()
-    _write_json(ctx.work / "findings" / "findings.json", [
-        {"run": s.job_id, "rule_id": s.rule_id, "title": s.title, "severity": s.severity, "count": s.count,
-         "status": s.status, "manual_ref": s.manual_ref, "actions": json.loads(s.actions_json or "[]")}
-        for s in signals
-    ])
-    ctx.status.contents.append(ContentEntry("findings/findings.json", "What the analysis found", files=1))
+        if ctx.scope == ALL:
+            job_ids = sorted(set(ctx.db.scalars(select(Signal.job_id)).all()))
+        else:
+            job_ids = [ctx.scope]
+        found = [(jid, f) for jid in job_ids for f in findings_for(ctx.db, jid)]
+    _write_json(ctx.work / "findings" / "findings.json",
+                [{"run": jid, **f.model_dump(mode="json")} for jid, f in found])
+    ctx.status.contents.append(ContentEntry("findings/findings.json", "What the analysis found, with the evidence for each",
+                                            files=1))
     none = "Imported logs are not analysed for findings." if ctx.scope == UNASSIGNED else "No findings."
-    step.detail = f"{len(signals)} finding{'s' if len(signals) != 1 else ''}." if signals else none
+    step.detail = f"{len(found)} finding{'s' if len(found) != 1 else ''}." if found else none
 
 
 def _step_audit(ctx: _Ctx, step: Step) -> None:
@@ -546,6 +553,9 @@ def _write_zip(ctx: _Ctx, step: Step) -> None:
                 else:
                     zf.write(path, arc)
         tmp.replace(dest)
+        for old in package_dir(ctx.job.id).glob("*.zip"):
+            if old != dest:
+                old.unlink(missing_ok=True)      # one package per run, replaced only once the new one exists
     except OSError as e:
         tmp.unlink(missing_ok=True)
         raise PackageError(f"The zip could not be written ({e.strerror or type(e).__name__}). "

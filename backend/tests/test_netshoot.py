@@ -155,7 +155,8 @@ def test_a_pod_that_never_starts_is_still_deleted(tmp_path, monkeypatch):
     assert job.status == "failed"
     assert runner.deleted == [runner.created[0]["name"]]
     assert read_results(job.id) == [{
-        "tool": "netshoot", "error": "pod did not start within 120s: Unschedulable: Too many pods",
+        "tool": "netshoot", "step": "deploy_tools",
+        "error": "pod did not start within 120s: Unschedulable: Too many pods",
     }]
 
 

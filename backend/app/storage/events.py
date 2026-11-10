@@ -74,6 +74,12 @@ def _conditions(f: EventFilter) -> list:
         # Personal kinds live in sensitive_flags, IP and MAC kinds in network_flags.
         conds.append(or_(*[col.like(f'%"{k}"%') for k in f.flag_categories
                            for col in (E.sensitive_flags, E.network_flags)]))
+    if f.message_kinds:
+        conds.append(E.message_kind.in_(f.message_kinds))
+    if f.components:
+        conds.append(E.component.in_(f.components))
+    if f.correlation_id is not None:
+        conds.append(E.correlation_id == f.correlation_id)
     return conds
 
 
@@ -149,6 +155,7 @@ class Facets:
     categories: list[tuple[Optional[str], int]]
     devices: list[tuple[Optional[str], int]]
     distinct_devices: int
+    message_kinds: list[tuple[Optional[str], int]] = field(default_factory=list)
 
 
 def facets(db: Session, f: EventFilter) -> Facets:
@@ -169,6 +176,7 @@ def facets(db: Session, f: EventFilter) -> Facets:
         total=total, first_timestamp=first, last_timestamp=last,
         sources=grouped(E.source), severities=grouped(E.severity), categories=grouped(E.category),
         devices=grouped(E.device_id, FACET_LIMIT), distinct_devices=distinct,
+        message_kinds=grouped(E.message_kind),
     )
 
 

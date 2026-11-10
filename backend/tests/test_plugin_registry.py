@@ -30,7 +30,7 @@ from app.config import settings
 from app.db import Base
 from app.orchestrator import routes
 from app.orchestrator.jobs import create_job, read_results, run_job
-from app.schemas import JobCreateRequest
+from app.schemas import JobCreateRequest, JobOut
 
 LIMITS = ResourceLimits(cpu_pct=50, mem_mb=512, max_output_mb=100)
 BUILTINS = {"hub_import", "netshoot", "rti", "tshark"}
@@ -283,6 +283,10 @@ def test_all_plugins_configured_before_any_runs(db, local_registry):
     )
     assert job.status == "failed"
     assert CALLS == ["recorder.configure", "second.configure"]  # nothing ran
+    # The run-level reason names the step and is safe to show (SCRUM-68).
+    assert job.error is not None
+    err = json.loads(job.error)
+    assert err == {"step": "configure", "plugin": None, "reason": "bad option"}
 
 
 def test_happy_path_order(db, local_registry):
@@ -314,15 +318,51 @@ def test_known_tool_failure_continues_and_is_shown_to_the_user(db, local_registr
     job = run_job(db, _job(db, ["refusing", "second"]), "192.0.2.10", registry=local_registry)
     assert job.status == "partial"
     results = read_results(job.id)
-    assert results[0] == {"tool": "refusing", "error": "cluster unreachable"}   # safe message kept
+    # The failing step and a plain-language reason travel with the tool (SCRUM-68).
+    assert results[0] == {"tool": "refusing", "step": "deploy_tools", "error": "cluster unreachable"}
     assert results[1]["tool"] == "second" and "error" not in results[1]
+    assert job.error is None   # a per-tool failure is not a run-level failure
 
 
 def test_job_fails_only_when_every_tool_failed(db, local_registry):
     job = run_job(db, _job(db, ["exploding"]), "192.0.2.10", registry=local_registry)
     assert job.status == "failed"
-    assert read_results(job.id) == [{"tool": "exploding", "error": "RuntimeError"}]
+    # A fully-failed run carries a run-level reason, not just per-tool ones.
+    err = json.loads(job.error)
+    assert err["step"] == "deploy_tools" and "per-tool results" in err["reason"]
+    # An unexpected crash: a plain reason naming the type, never its raw message.
+    assert read_results(job.id) == [
+        {"tool": "exploding", "step": "deploy_tools",
+         "error": "The tool stopped unexpectedly (RuntimeError)."}
+    ]
     assert CALLS[-1] == "exploding.cleanup"
+
+
+def test_raw_tool_output_in_a_plugin_error_is_never_shown_or_stored(db, local_registry):
+    # A PluginError whose message quotes raw tool output carries a vetted
+    # safe_reason. The raw text may hold patient or system data, so it must
+    # reach neither the API result, results.json nor the run-level error —
+    # only the vetted line does (SCRUM-68, PHI safety).
+    marker = "PATIENT-Jane-Doe-MRN-00042"
+
+    class Noisy(Recorder):
+        name = "noisy"
+
+        def run(self, target_ip):
+            raise PluginError(f"rtiddsspy failed ({marker})",
+                              safe_reason="The RTI diagnostic could not be completed.")
+
+    local_registry.register(Noisy)
+    job = run_job(db, _job(db, ["noisy"]), "192.0.2.10", registry=local_registry)
+
+    assert job.status == "failed"
+    assert read_results(job.id) == [
+        {"tool": "noisy", "step": "deploy_tools",
+         "error": "The RTI diagnostic could not be completed."}   # vetted line, not the raw message
+    ]
+    assert marker not in json.dumps(read_results(job.id))         # not in results.json
+    assert marker not in (job.error or "")                        # not in the run-level error
+    assert marker not in (JobOut.model_validate(job).error.reason or "")  # not in the API response
 
 
 def test_failed_cleanup_is_recorded_and_the_rest_still_run(db, local_registry, caplog):
@@ -333,6 +373,9 @@ def test_failed_cleanup_is_recorded_and_the_rest_still_run(db, local_registry, c
     assert f"job {job.id}: cleanup of plugin leaky failed" in caplog.text
     audit = db.query(models.AuditLogEntry).filter_by(action="plugin_cleanup_failed").one()
     assert audit.detail == f"job={job.id} plugin=leaky error=RuntimeError"
+    # The run-level error names the tool whose leftover needs attention (SCRUM-68).
+    err = json.loads(job.error)
+    assert err["step"] == "cleanup" and err["plugin"] == "leaky" and "leaky" in err["reason"]
 
 
 def test_failed_cleanup_after_a_failed_run_is_still_reported(db, local_registry):
@@ -417,7 +460,8 @@ def test_results_are_kept_for_plugins_that_finished(db, local_registry):
     results = read_results(job.id)
     assert [r["tool"] for r in results] == ["recorder", "exploding"]
     assert results[0]["warnings"] == [] and "error" not in results[0]
-    assert results[1] == {"tool": "exploding", "error": "RuntimeError"}   # type only, not the text
+    assert results[1] == {"tool": "exploding", "step": "deploy_tools",
+                          "error": "The tool stopped unexpectedly (RuntimeError)."}  # type only, not the text
 
 
 def test_plugins_get_their_own_job_folder(db, local_registry):
@@ -434,6 +478,46 @@ def test_startup_marks_interrupted_jobs(db):
     finished = _job(db, ["recorder"])
     finished.status = "done"
     db.commit()
+    running.current_step = "collect_server_logs"
+    db.commit()
     recover_interrupted_jobs(db)
     assert (running.status, finished.status) == ("interrupted", "done")
     assert db.query(models.AuditLogEntry).filter_by(action="job_interrupted").count() == 1
+    # The interrupted run carries a plain reason and the step it stopped at (SCRUM-68).
+    err = json.loads(running.error)
+    assert err["step"] == "collect_server_logs" and "interrupted" in err["reason"].lower()
+    assert finished.error is None
+
+
+def test_a_failing_step_records_the_step_and_a_plain_reason(db, local_registry, monkeypatch):
+    # A failure in a later step (here packaging) fails the whole run and is
+    # reported with that step and a safe reason (SCRUM-68).
+    import app.orchestrator.jobs as jobs_module
+
+    def boom(_db, _job_id):
+        raise RuntimeError("analysis blew up with secret 0xDEADBEEF")
+
+    monkeypatch.setattr(jobs_module, "run_analysis", boom)
+    with pytest.raises(RuntimeError):
+        run_job(db, _job(db, ["recorder"]), "192.0.2.10", registry=local_registry)
+    job = db.query(models.Job).one()
+    assert job.status == "failed"
+    err = json.loads(job.error)
+    assert err["step"] == "package"
+    assert err["reason"] == "The tool stopped unexpectedly (RuntimeError)."
+    assert "DEADBEEF" not in job.error        # the raw message never leaks
+
+
+def test_jobout_exposes_the_run_error(db, local_registry):
+
+    job = run_job(db, _job(db, ["recorder", "second"]), "192.0.2.10",
+                  plugin_options={"second": {"bad": True}}, registry=local_registry)
+    out = JobOut.model_validate(job)
+    assert out.error is not None
+    assert out.error.step == "configure" and out.error.reason == "bad option"
+
+
+def test_a_clean_run_has_no_error(db, local_registry):
+    job = run_job(db, _job(db, ["recorder", "second"]), "192.0.2.10", registry=local_registry)
+    assert job.status == "done" and job.error is None
+    assert JobOut.model_validate(job).error is None

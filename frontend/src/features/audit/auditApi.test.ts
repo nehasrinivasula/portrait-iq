@@ -58,3 +58,10 @@ describe("ACTION_OPTIONS", () => {
     codes.forEach((c) => expect(offered).toContain(c));
   });
 });
+
+describe("pattern detection actions", () => {
+  it("can be filtered to by their readable names", () => {
+    expect(ACTION_OPTIONS).toContainEqual(["findings_run", "Pattern detection run"]);
+    expect(ACTION_OPTIONS).toContainEqual(["findings_coverage_view", "Pattern coverage viewed"]);
+  });
+});

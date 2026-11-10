@@ -1,6 +1,7 @@
 """Pydantic schemas — the API's request/response contracts. Keep these in
 sync with models.py by hand for now; consider generating one from the other
 once the shape stabilizes."""
+import json
 from datetime import datetime, timezone
 from typing import Annotated, Literal, Optional
 
@@ -174,11 +175,19 @@ class PluginListOut(BaseModel):
     load_errors: dict[str, str] = {}   # plugins skipped at startup, and why
 
 
+class RunErrorOut(BaseModel):
+    """Why a run failed, for the field engineer (SCRUM-68)."""
+    step: Optional[str] = None       # the step it failed at, e.g. "deploy_tools"
+    plugin: Optional[str] = None     # the tool involved, when one is
+    reason: str                      # plain language, safe to show
+
+
 class JobOut(BaseModel):
     id: str
     mode: str
     status: str
     current_step: Optional[str]
+    error: Optional[RunErrorOut] = None   # set only on a failed/interrupted run
     created_at: datetime
     finished_at: Optional[datetime]
 
@@ -192,11 +201,35 @@ class JobOut(BaseModel):
         # local, and the run's elapsed timer (SCRUM-41) would be off by hours.
         return v.replace(tzinfo=timezone.utc) if v is not None and v.tzinfo is None else v
 
+    @field_validator("error", mode="before")
+    @classmethod
+    def _parse_error(cls, value):
+        # The Job stores it as a JSON string (or NULL); parse it for the API.
+        if isinstance(value, str):
+            return json.loads(value) if value else None
+        return value
+
 
 class UploadOut(BaseModel):
     upload_id: str
     kind: str
     size_bytes: int
+
+
+class EvidenceEventOut(BaseModel):
+    """One log line a finding rests on. The message is masked for PHI/PII."""
+    event_id: int
+    timestamp: datetime
+    device_id: Optional[str] = None
+    severity: str
+    source_file: Optional[str] = None
+    source_line: Optional[int] = None
+    message: str
+
+
+class DeviceCountOut(BaseModel):
+    device_id: Optional[str] = None
+    count: int
 
 
 class SignalOut(BaseModel):
@@ -208,9 +241,33 @@ class SignalOut(BaseModel):
     status: str
     manual_ref: Optional[str]
     actions: list[str] = []
+    first_seen: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
+    devices: list[DeviceCountOut] = []         # the devices with the most matches
+    devices_total: int = 0                      # how many devices matched at all
+    evidence: list[EvidenceEventOut] = []       # earliest and latest matching events
 
     class Config:
         from_attributes = True
+
+
+class UnmatchedShapeOut(BaseModel):
+    severity: str
+    count: int
+    shape: str                       # the message with numbers and ids folded away
+    example_event_id: int
+    example: str                     # one real message of this shape, PHI/PII masked
+
+
+class CoverageOut(BaseModel):
+    events: int
+    matched_events: int
+    problem_events: int              # ERROR and WARN events
+    problem_matched: int
+    problem_unmatched: int           # the ones no rule explains
+    per_rule: dict[str, int]
+    unmatched: list[UnmatchedShapeOut]
+    unmatched_not_listed: int = 0
 
 
 # --- Log acquisition (SCRUM-43) ---

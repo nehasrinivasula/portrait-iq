@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.analysis.engine import run_analysis
 from app.audit import log_action
 from app.collectors import k8s
-from app.collectors.base import Collector, CollectorResult, PluginError, ResourceLimits
+from app.collectors.base import Collector, CollectorResult, PluginError, ResourceLimits, reason_for
 from app.collectors.registry import PluginRegistry, get_registry
 from app.config import settings
 from app.models import Job
@@ -92,10 +92,15 @@ def run_job(
     started = []
     results: list[dict[str, Any]] = []
     failed_tools = 0
-    cleanup_failed = False
+    cleanup_failures: list[str] = []
 
     try:
         if plugins is None:
+            # Checking and building the selected tools, before anything is
+            # deployed. A bad option fails here; "configure" is the step the
+            # field engineer sees for it.
+            job.current_step = "configure"
+            db.commit()
             plugins = (registry or get_registry()).create_all(tools, limits, plugin_options)
 
         for step in STEPS:
@@ -115,15 +120,21 @@ def run_job(
                     try:
                         _record(job.id, results, plugin.run(target_ip))
                     except (NotImplementedError, PluginError) as e:
-                        # A stub, a bad option or a tool that could not run:
-                        # the message is safe to show.
+                        # A stub, a bad option or a tool that could not run.
+                        # reason_for() yields the safe line (the raw message may
+                        # embed tool output); the full message is logged, not
+                        # shown, so the failure can still be diagnosed.
                         failed_tools += 1
-                        _record(job.id, results, {"tool": plugin.name, "error": str(e) or type(e).__name__})
+                        log.warning("job %s: plugin %s did not run: %s", job.id, plugin.name, e)
+                        _record(job.id, results,
+                                {"tool": plugin.name, "step": step, "error": reason_for(e)})
                     except Exception as e:  # noqa: BLE001
-                        # Type only: an unexpected error's text may hold anything.
+                        # reason_for names the type only: an unexpected error's
+                        # own text may hold anything.
                         failed_tools += 1
                         log.exception("job %s: plugin %s crashed", job.id, plugin.name)
-                        _record(job.id, results, {"tool": plugin.name, "error": type(e).__name__})
+                        _record(job.id, results,
+                                {"tool": plugin.name, "step": step, "error": reason_for(e)})
 
             elif step == "collect_server_logs":
                 # TODO: point ingestion.pipeline.ingest_directory() at wherever
@@ -134,35 +145,59 @@ def run_job(
                 pass  # TODO: same idea, different sources
 
             elif step == "cleanup":
-                cleanup_failed = _cleanup_all(db, job, started)
+                cleanup_failures = _cleanup_all(db, job, started)
 
             elif step == "package":
                 run_analysis(db, job.id)  # writes Signal rows
                 # The zip itself is built on request, from the Export page
                 # (app/packaging, SCRUM-61), so masking can be chosen then.
 
-        if cleanup_failed:
+        if cleanup_failures:
             status = "cleanup_failed"
+            _set_error(job, "cleanup", _cleanup_reason(cleanup_failures),
+                       plugin=cleanup_failures[0] if len(cleanup_failures) == 1 else None)
         elif plugins and failed_tools == len(plugins):
+            # Every tool failed; each tool's own reason is in results.json.
             status = "failed"
+            _set_error(job, "deploy_tools",
+                       "Every selected diagnostic failed; open the per-tool results to see why.")
         elif failed_tools:
             status = "partial"   # some tools ran, some did not: results.json says which
         else:
             status = "done"
         _finish(db, job, status)
 
-    except (NotImplementedError, PluginError):
+    except (NotImplementedError, PluginError) as e:
         # A bad option or an unknown plugin, found before anything ran: a
-        # known failure with a message safe to show, not a crash.
-        cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
-        _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
+        # known failure with a reason safe to show, not a crash. The original
+        # cause is recorded first and wins over any later cleanup failure.
+        _set_error(job, job.current_step, reason_for(e))
+        cleanup_failures = _cleanup_all(db, job, started) or cleanup_failures
+        _finish(db, job, "cleanup_failed" if cleanup_failures else "failed")
 
-    except Exception:
-        cleanup_failed = _cleanup_all(db, job, started) or cleanup_failed
-        _finish(db, job, "cleanup_failed" if cleanup_failed else "failed")
+    except Exception as e:
+        _set_error(job, job.current_step, reason_for(e))
+        cleanup_failures = _cleanup_all(db, job, started) or cleanup_failures
+        _finish(db, job, "cleanup_failed" if cleanup_failures else "failed")
         raise
 
     return job
+
+
+def _set_error(job: Job, step: str | None, reason: str, plugin: str | None = None) -> None:
+    """Record why the run failed, as JSON for JobOut (SCRUM-68). The first
+    reason set wins, so a cleanup failure does not overwrite the original
+    cause of a failed run."""
+    if job.error is None:
+        job.error = json.dumps({"step": step, "plugin": plugin, "reason": reason})
+
+
+def _cleanup_reason(tools: list[str]) -> str:
+    """A safe run-level reason for a cleanup failure, naming the tool(s) whose
+    pod or process may still be running so the field engineer can remove it."""
+    names = ", ".join(tools)
+    return (f"Cleanup did not finish for: {names}. A diagnostic may still be "
+            "running on the system; remove its pod or process by hand.")
 
 
 def job_output_dir(job_id: str) -> Path:
@@ -190,6 +225,8 @@ def recover_interrupted_jobs(db: Session) -> None:
     for job in stale:
         job.status = "interrupted"
         job.finished_at = datetime.utcnow()
+        _set_error(job, job.current_step,
+                   "The run was interrupted before it finished (the backend restarted). Any partial results are kept.")
         log_action(db, "system", "job_interrupted", detail=f"job={job.id} step={job.current_step}")
     db.commit()
     if not settings.sweep_tool_pods_on_startup:
@@ -217,18 +254,19 @@ def _audit_job(db: Session, job: Job, action: str, detail: str) -> None:
     log_action(db, actor, action, detail=f"job={job.id} {detail}", session_id=job.session_id)
 
 
-def _cleanup_all(db: Session, job: Job, started: list[Collector]) -> bool:
+def _cleanup_all(db: Session, job: Job, started: list[Collector]) -> list[str]:
     """Best-effort cleanup in reverse start order, emptying started. One
     plugin's cleanup bug must not skip the others or mask the original
     failure, but it must not go unnoticed either: each failure is logged
-    and audited with the job and plugin name. Returns True if any failed."""
-    failed = False
+    and audited with the job and plugin name. Returns the names of the
+    plugins whose cleanup() raised (empty if all cleaned up)."""
+    failed: list[str] = []
     while started:
         plugin = started.pop()
         try:
             plugin.cleanup()
         except Exception as e:
-            failed = True
+            failed.append(plugin.name)
             log.exception("job %s: cleanup of plugin %s failed", job.id, plugin.name)
             try:
                 log_action(
