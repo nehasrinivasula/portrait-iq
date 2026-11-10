@@ -277,6 +277,16 @@ def test_bad_rows_are_counted_and_valid_devices_are_learned(db, staging, tmp_pat
     assert [d.device_uuid for d in list_known(db)] == [HUB]
 
 
+def test_overwhelmingly_corrupt_acquisition_fails_without_learning_devices(db, staging, tmp_path):
+    bad = tmp_path / "mostly_bad.csv"
+    bad.write_text(HDR + line("2026-10-19T09:00:00.000+0000", "h", HUB, "Hub-01")
+                   + "".join(line("garbage", "h", VIEWER) for _ in range(99)))
+    r = acquire(db, LocalImportSource(), actor="tester", options={"path": str(bad)}, ingest=True)
+    assert r.files[0].status == "failed"
+    assert "99 of 100 rows" in (r.files[0].error or "")
+    assert list_known(db) == []
+
+
 def test_acquire_without_ingest_still_learns_devices(db, staging, tmp_path):
     f = tmp_path / "ok.csv"
     f.write_text(HDR + line("2026-10-19T09:00:00.000+0000", "h", HUB, "Hub-01"))

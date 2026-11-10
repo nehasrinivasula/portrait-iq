@@ -75,6 +75,12 @@ def test_sniff_routes_file_even_when_most_lines_are_malformed(tmp_path):
     assert KubernetesLogParser().sniff(p)
 
 
+def test_sniff_does_not_claim_timestamp_shaped_foreign_lines(tmp_path):
+    p = tmp_path / "damaged.csv"
+    p.write_text("broken header\n2024-99-99T99:99:99Z foreign row\n")
+    assert not KubernetesLogParser().sniff(p)
+
+
 def test_device_override(tmp_path):
     p = tmp_path / "whatever.log"
     p.write_text("2024-06-02T02:00:01Z ok\n")

@@ -38,13 +38,13 @@ export default function JobPanel() {
       {lost && <p className="muted" role="status">Lost contact with the server. Still trying; the run is not affected.</p>}
 
       {logPull && (
-        <div className={`alert ${logPull.state === "error" ? "error" : logPull.state === "done" ? "ok" : "info"}`}
+        <div className={`alert ${logPull.state === "error" ? "error" : logPull.state === "done" ? (logPull.skipped ? "warn" : "ok") : "info"}`}
           role={logPull.state === "error" ? "alert" : "status"}>
           <strong>System logs</strong>
           {logPull.state === "running" && "Collecting…"}
           {logPull.state === "error" && logPull.message}
           {logPull.state === "done" && (
-            <>{logPull.events} events from {logPull.newFiles} new file{logPull.newFiles === 1 ? "" : "s"}.{" "}
+            <>{logPull.events} events from {logPull.newFiles} new file{logPull.newFiles === 1 ? "" : "s"}. {logPull.skipped > 0 && <>{logPull.skipped} malformed log lines skipped. </>}
               <Link to={`/logs?job=${job.id}`}>View these logs</Link></>
           )}
         </div>

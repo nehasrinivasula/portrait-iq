@@ -80,14 +80,21 @@ class KubernetesLogParser(LogParser):
                     if not text.strip():
                         continue
                     seen += 1
-                    if _LINE_RE.match(text):
-                        return True
+                    match = _LINE_RE.match(text)
+                    if match:
+                        try:
+                            parse_timestamp(match.group(1))
+                        except ValueError:
+                            pass
+                        else:
+                            return True
                     if seen >= SNIFF_LINES:
                         break
         except OSError:
             return False
-        # A badly damaged file may contain mostly rejected lines; one valid
-        # timestamped log line is enough to route it to this parser.
+        # One parseable timestamp in the first 20 nonblank lines is enough
+        # to route a badly damaged k8s capture, but a timestamp-shaped token
+        # from another format must not claim the file.
         return False
 
     def parse(self, path: Path, report: Optional[ParseReport] = None) -> Iterator[NormalizedEvent]:

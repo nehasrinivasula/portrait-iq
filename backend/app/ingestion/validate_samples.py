@@ -11,6 +11,10 @@ time span. Exit code is 0 only if EVERY file was recognised, every row was
 accounted for, and no file exceeded --max-reject-rate; otherwise 1 — so it
 can gate a CI job or a pre-push check.
 
+This offline validation gate defaults to 1% rejected rows to catch parser
+regressions. Live ingestion uses a 95% backstop instead: it stores good rows
+from damaged exports and reports every skipped row in the ingest receipt.
+
 This needs no database and no network. Run it whenever a new kind of sample
 arrives (a compute-platform export, a kubectl log from the lab MiniEdge,
 a scrubbed customer file). A parser has not been validated against a source

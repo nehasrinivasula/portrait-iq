@@ -41,7 +41,9 @@ from app.privacy.scanner import scan_columns
 from app.models import NormalizedEvent as EventRow
 
 DEFAULT_PATTERNS = ("*.csv", "*.log")
-DEFAULT_MAX_REJECT_RATE = None  # malformed rows are counted and skipped by default
+# Accept damaged exports while rejecting files that are overwhelmingly not
+# parseable logs. The offline sample validator intentionally uses 1% instead.
+DEFAULT_MAX_REJECT_RATE = 0.95
 DEFAULT_BATCH_SIZE = 5000
 
 

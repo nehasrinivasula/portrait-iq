@@ -81,6 +81,14 @@ def test_many_bad_rows_are_counted_while_good_rows_are_stored(db, tmp_path):
     assert receipt.rows_rejected == 3
 
 
+def test_overwhelmingly_corrupt_file_fails_by_default(db, tmp_path):
+    path = make_csv(tmp_path / "corrupt.csv", good=1, bad=99)
+    with pytest.raises(pipeline.IngestError, match="over the 95.0% limit"):
+        pipeline.ingest_file(path, db)
+    assert count(db) == 0
+    assert db.scalar(select(func.count()).select_from(IngestedFile)) == 0
+
+
 def test_failed_reingest_keeps_the_previous_good_data(db, tmp_path):
     path = make_csv(tmp_path / "a.csv", good=3)
     pipeline.ingest_file(path, db)

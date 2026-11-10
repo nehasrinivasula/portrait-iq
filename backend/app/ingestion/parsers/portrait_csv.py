@@ -82,6 +82,9 @@ class PortraitCsvParser(LogParser):
             i_proc = cols.get("processInfo")
             width = len(header)
 
+            # Acquisition caps staged bytes; ingestion's high reject-rate
+            # backstop handles overwhelmingly corrupt files after accounting
+            # for every row. No separate CSV-error count is needed here.
             while True:
                 start_line = reader.line_num + 1  # first physical line of the next record
                 try:
