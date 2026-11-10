@@ -11,6 +11,23 @@ The dev server proxies `/api` to the backend (`API_TARGET`, see
 `vite.config.ts`). Sign in with the login configured in the backend's
 environment; never put those values in this repository.
 
+## Diagnostic runs after logout or idle lock (SCRUM-94)
+
+Starting a diagnostic creates a server-side job and returns immediately. The
+job continues in the backend after the browser signs out or its session locks;
+it does not depend on the bearer token that started it. In the same browser
+session, Portrait IQ retains only the opaque job ID (not the token) and, after
+the engineer signs in again, restores that job's status, progress, and results
+on the **Run diagnostics** page.
+
+The browser displays **Restoring your previous diagnostic run…** while it
+checks the saved ID. The engineer can explicitly clear a finished run.
+
+This local-demo behavior does not survive a backend/pod restart: an unfinished
+job is marked `interrupted` for safe cleanup. Closing the browser may also
+remove session storage; a future multi-user deployment should add a
+server-side "recent jobs" list with owner authorization.
+
 ## Log filters (SCRUM-54)
 
 The Logs page (`src/features/logs/`) filters stored, normalized events with
