@@ -101,6 +101,9 @@ class Collector(ABC):
     # Shown in the tool-selection UI (SCRUM-40).
     display_name: ClassVar[str] = ""
     description: ClassVar[str] = ""
+    # The run steps in which this tool does work (orchestrator STEPS). A step
+    # no selected tool uses is skipped and shown as such, not flashed past.
+    steps: ClassVar[tuple[str, ...]] = ("deploy_tools",)
 
     def __init__(self, limits: ResourceLimits):
         self.limits = limits

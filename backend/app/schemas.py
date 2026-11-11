@@ -187,6 +187,7 @@ class JobOut(BaseModel):
     mode: str
     status: str
     current_step: Optional[str]
+    skipped_steps: list[str] = []         # steps the selected tools never use
     error: Optional[RunErrorOut] = None   # set only on a failed/interrupted run
     created_at: datetime
     finished_at: Optional[datetime]

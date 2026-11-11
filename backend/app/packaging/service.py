@@ -265,8 +265,6 @@ def build(db: Session, job_id: str) -> PackageStatus:
         shutil.rmtree(work, ignore_errors=True)
         for name in SECTIONS:
             (work / name).mkdir(parents=True, exist_ok=True)
-        for old in out.glob("*.zip"):
-            old.unlink()          # one package per run: a new export replaces the last one
         ctx = _Ctx(db=db, scope=job_id, job=find_job(db, job_id), work=work, status=status)
         for step in status.steps:
             if step.id == "zip":
@@ -553,7 +551,7 @@ def _write_zip(ctx: _Ctx, step: Step) -> None:
                 else:
                     zf.write(path, arc)
         tmp.replace(dest)
-        for old in package_dir(ctx.job.id).glob("*.zip"):
+        for old in package_dir(ctx.scope).glob("*.zip"):
             if old != dest:
                 old.unlink(missing_ok=True)      # one package per run, replaced only once the new one exists
     except OSError as e:

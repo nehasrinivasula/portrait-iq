@@ -29,6 +29,7 @@ export interface Job {
   mode: string;
   status: JobStatus;
   current_step: string | null;
+  skipped_steps?: string[];   // steps the selected tools never use
   error: RunError | null;   // set only on a failed/interrupted run
   created_at: string;
   finished_at: string | null;

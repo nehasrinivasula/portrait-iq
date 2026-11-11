@@ -5,6 +5,7 @@ Device (connect), Job (orchestrator), NormalizedEvent (event store), Signal
 IngestedFile (receipt of what ingestion stored per file), AuditLogEntry (cross-cutting),
 SessionActivity (server-side idle lock).
 """
+import json
 import uuid
 from datetime import datetime
 
@@ -48,6 +49,15 @@ class Job(Base):
     # The request that started this background job. The job can finish after
     # the browser request ends, so these fields preserve its audit ownership.
     requested_by = Column(String, nullable=True)
+
+    @property
+    def skipped_steps(self) -> list[str]:
+        """Steps this run's tool selection never needs (see orchestrator.jobs)."""
+        from app.orchestrator.jobs import skipped_steps
+        try:
+            return skipped_steps(json.loads(self.tools or "[]"))
+        except Exception:  # noqa: BLE001 - a display hint must never break job reads
+            return []
     session_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
