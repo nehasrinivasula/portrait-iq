@@ -93,7 +93,10 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     if (!job || isFinished(job.status)) return;
     const t = window.setTimeout(async () => {
       try {
-        setJob(await getJob(job.id));
+        const next = await getJob(job.id);
+        // Per-tool outcomes appear as each tool finishes, so show them live.
+        if (!isFinished(next.status)) await getResults(job.id).then(setResults).catch(() => undefined);
+        setJob(next);
         setLost(false);
       } catch (e) {
         if (e instanceof ApiError && e.status === 401) return;

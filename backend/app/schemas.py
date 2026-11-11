@@ -187,6 +187,7 @@ class JobOut(BaseModel):
     mode: str
     status: str
     current_step: Optional[str]
+    tools: list[str] = []                 # the tools selected for this run, in run order
     skipped_steps: list[str] = []         # steps the selected tools never use
     error: Optional[RunErrorOut] = None   # set only on a failed/interrupted run
     created_at: datetime
@@ -201,6 +202,17 @@ class JobOut(BaseModel):
         # Stored as naive UTC. Without an offset a browser reads the time as
         # local, and the run's elapsed timer (SCRUM-41) would be off by hours.
         return v.replace(tzinfo=timezone.utc) if v is not None and v.tzinfo is None else v
+
+    @field_validator("tools", mode="before")
+    @classmethod
+    def _parse_tools(cls, value):
+        # Stored as a JSON string (or NULL).
+        if isinstance(value, str):
+            try:
+                return json.loads(value) or []
+            except ValueError:
+                return []
+        return value or []
 
     @field_validator("error", mode="before")
     @classmethod
