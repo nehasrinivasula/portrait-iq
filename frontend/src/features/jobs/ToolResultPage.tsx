@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getJob, getResults, isFinished, listPlugins, type Job, type ToolResult } from "../plugins/api";
+import { runHeadline } from "../plugins/progress";
 import { stepLabel } from "./runStatus";
 import JobResultsPage from "./JobResultsPage";
 import "./jobResults.css";
@@ -44,11 +45,21 @@ function ToolResultPage() {
   const others = (results ?? []).filter((r) => r.tool !== tool);
   const running = job !== null && !isFinished(job.status);
 
+  const [kind, headline] = job ? runHeadline(job.status) : ["info", ""];
+  const failed = mine !== undefined && "error" in mine;
+  const rows: { label: string; word: string; cls: "pass" | "fail" | "warn"; note?: string }[] = !mine ? [] : "error" in mine
+    ? [{ label: name, word: "Fail", cls: "fail", note: mine.error }]
+    : [
+        { label: name, word: "Pass", cls: "pass" as const },
+        ...mine.warnings.map((w) => ({ label: "Warning", word: "Warning", cls: "warn" as const, note: w })),
+        ...mine.artifact_paths.map((p) => ({ label: fileName(p), word: "Saved", cls: "pass" as const })),
+      ];
+
   return (
     <div className="job-results">
       <Link to="/run">Back to Run diagnostics</Link>
       <h1>{name}</h1>
-      <p className="muted">Run <code>{jobId.slice(0, 8)}</code></p>
+      <p className="muted">Run <code>{jobId.slice(0, 8)}</code> · {name}'s result for this run.</p>
 
       {error && (
         <div className="alert error" role="alert">
@@ -57,52 +68,53 @@ function ToolResultPage() {
         </div>
       )}
       {!error && !job && <p className="muted" role="status">Loading…</p>}
-
-      {job && !mine && (
-        <p className="muted" role="status">
-          {running ? `${name} has not finished yet.` : `${name} produced no result in this run. It may not have been selected, or the run stopped before it started.`}
-        </p>
+      {job && (
+        <div className={`alert ${kind}`} role={kind === "error" ? "alert" : "status"}>
+          <strong>{headline}</strong>
+          {running && job.current_step && stepLabel(job.current_step)}
+        </div>
       )}
-
       {mine && "error" in mine && (
-        <section aria-labelledby="fail-head">
-          <div className="alert error" role="alert">
-            <strong id="fail-head">{name} failed{stepLabel(mine.step) ? ` while ${stepLabel(mine.step)!.toLowerCase()}` : ""}</strong>
-            {mine.error}
-          </div>
-          <h2>What to do</h2>
-          <ul>
-            <li>Fix the cause above, then run {name} again from <Link to="/run">Run diagnostics</Link>.</li>
-            {others.some((r) => !("error" in r)) && <li>The other tools in this run finished, and their results are kept.</li>}
-            <li>If it keeps failing, the run's audit timeline records every step, and the export includes this error.</li>
-          </ul>
-        </section>
+        <div className="alert error" role="alert">
+          <strong>{name} could not run{stepLabel(mine.step) ? ` while ${stepLabel(mine.step)!.toLowerCase()}` : ""}</strong>
+          {mine.error}
+        </div>
       )}
 
-      {mine && !("error" in mine) && (
-        <section aria-labelledby="ok-head">
-          <h2 id="ok-head">Finished</h2>
-          <p>{mine.summary || "No summary was reported."}</p>
-          {mine.warnings.map((w) => <div key={w} className="alert warn" role="status">{w}</div>)}
-          <h2>Files</h2>
-          {mine.artifact_paths.length > 0
-            ? <ul>{mine.artifact_paths.map((p) => <li key={p}><code>{fileName(p)}</code></li>)}</ul>
-            : <p className="muted">This tool saved no files.</p>}
-          <p className="muted">Everything it saved is included when you export the run.</p>
+      {mine ? (
+        <section aria-labelledby="result-head">
+          <h2 id="result-head">{failed ? `${name} failed` : (mine as { summary: string }).summary || `${name} finished`}</h2>
+          <ol className="job-results-list">
+            {rows.map((r, i) => (
+              <li key={`${i}-${r.label}`} className={`job-check ${r.cls}`}>
+                <span>{r.label}</span>
+                <strong>{r.word}</strong>
+                {r.note && <p>{r.note}</p>}
+              </li>
+            ))}
+          </ol>
+          {failed && (
+            <p className="muted">
+              Fix the cause above, then run {name} again from <Link to="/run">Run diagnostics</Link>.
+              {others.some((r) => !("error" in r)) && " The other tools in this run finished, and their results are kept."}
+            </p>
+          )}
         </section>
+      ) : job && !error && (
+        <p className="muted">{running ? `${name} has not finished yet…` : `${name} produced no result in this run. It may not have been selected, or the run stopped before it started.`}</p>
       )}
 
       {others.length > 0 && (
         <section aria-labelledby="others-head">
           <h2 id="others-head">Other tools in this run</h2>
-          <ul>
+          <ol className="job-results-list">
             {others.map((r) => (
-              <li key={r.tool}>
-                <Link to={`/jobs/${encodeURIComponent(jobId)}/results/${encodeURIComponent(r.tool)}`}>{r.tool}</Link>{" "}
-                {"error" in r ? "Failed" : "Finished"}
+              <li key={r.tool} className={`job-check ${"error" in r ? "fail" : "pass"}`}>
+                <Link to={`/jobs/${encodeURIComponent(jobId)}/results/${encodeURIComponent(r.tool)}`}>{r.tool}</Link>
+                <strong>{"error" in r ? "Fail" : "Pass"}</strong>
               </li>
             ))}
-          </ul>
+          </ol>
         </section>
       )}
       {job && isFinished(job.status) && <p><Link to={`/jobs/${encodeURIComponent(jobId)}/export?from=run`}>Export results</Link></p>}
