@@ -10,3 +10,5 @@
 .job-check p { flex-basis: 100%; margin: 0; }
 .job-check strong { color: var(--ok); }
 .job-check.fail strong { color: var(--error); }
+.job-check.warn { border-left-color: var(--warn); background: var(--warn-bg); }
+.job-check.warn strong { color: inherit; }
