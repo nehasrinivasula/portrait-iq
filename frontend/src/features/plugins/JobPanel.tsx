@@ -123,19 +123,24 @@ function RunClock({ job, finished }: { job: Job; finished: boolean }) {
   );
 }
 
-/** One segment per step, filled as the run advances, so all six stay visible
- * and progress reads as movement along the bar. */
+/** All six steps, top to bottom, each with a dot: filled once done, ringed
+ * while current, hollow while waiting, and dashed with a note when the
+ * selected tools never use it. */
 function StepList({ current, skipped = [] }: { current: string | null; skipped?: string[] }) {
   const { position, total, steps } = stepProgress(current, skipped);
-  const label = steps.find((s) => s.state === "current")?.label;
   return (
-    <div className="run-steps">
-      <p className="muted">{skipped.length > 0 && `${skipped.length} of ${total} steps not needed for the selected tools. `}{position ? `Step ${position} of ${total}: ${label}` : "Preparing"}</p>
-      <div className="run-steps-bar" role="progressbar" aria-label="Run progress"
-        aria-valuemin={0} aria-valuemax={total} aria-valuenow={position ? position - 1 : 0}
-        aria-valuetext={position ? `Step ${position} of ${total}: ${label}` : "Preparing"}>
-        {steps.map((s) => <span key={s.step} data-state={s.state} title={s.state === "skipped" ? `${s.label}: not needed for this run` : s.label} />)}
-      </div>
+    <div className="run-steps" aria-live="off">
+      {position && <p className="muted">Step {position} of {total}</p>}
+      <ol>
+        {steps.map((s) => (
+          <li key={s.step} data-state={s.state} aria-current={s.state === "current" ? "step" : undefined}>
+            <span className="step-dot" aria-hidden="true" />
+            {s.label}
+            {s.state === "done" && <span className="visually-hidden"> (done)</span>}
+            {s.state === "skipped" && <span className="muted"> (not needed for this run)</span>}
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
