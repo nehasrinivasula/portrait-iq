@@ -140,7 +140,7 @@ function useToolNames(): Record<string, string> {
 }
 
 /** One row per selected tool under "Running the diagnostics": waiting, running,
- * then passed or failed with the plain reason, each opening that tool's details. */
+ * then Pass or Fail. Status only: the reason and the details open from the results once the run ends. */
 function ToolRows({ job, results, stepIsCurrent }: { job: Job; results: ToolResult[] | null; stepIsCurrent: boolean }) {
   const names = useToolNames();
   const tools = job.tools ?? [];
@@ -157,8 +157,6 @@ function ToolRows({ job, results, stepIsCurrent }: { job: Job; results: ToolResu
           <li key={t} data-state={state.toLowerCase()}>
             <span>{names[t] ?? t}</span>
             <strong className="tool-state">{state}</strong>
-            {failed && <span className="tool-reason">{(r as { error: string }).error}</span>}
-            {r && <Link to={toolDetailsPath(job.id, t)}>View details</Link>}
           </li>
         );
       })}
