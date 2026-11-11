@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { apiFetch } from "../../api";
 import { getJob, isFinished, type Job } from "../plugins/api";
 import { runHeadline, stepLabel } from "../plugins/progress";
+import { runErrorText } from "../jobs/runStatus";
 import { netshootSummary, type PluginResult } from "./netshootResults";
 import "./jobResults.css";
 
@@ -77,7 +78,7 @@ export default function JobResultsPage() {
             {checks.map((check, index) => (
               <li key={`${index}-${check.label}`} className={`job-check ${check.status}`}>
                 <span>{check.label}</span>
-                <strong><span aria-hidden="true">{check.status === "pass" ? "✓ " : "✗ "}</span>{check.status === "pass" ? "Pass" : "Fail"}</strong>
+                <strong>{check.status === "pass" ? "Pass" : "Fail"}</strong>
                 {check.status === "fail" && check.reason && <p>{check.reason}</p>}
               </li>
             ))}

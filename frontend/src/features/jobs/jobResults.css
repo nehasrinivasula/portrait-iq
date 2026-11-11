@@ -8,3 +8,7 @@
 .job-check { background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--ok); border-radius: 6px; padding: 10px 14px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; }
 .job-check.fail { border-left-color: var(--error); background: var(--error-bg); }
 .job-check p { flex-basis: 100%; margin: 0; }
+.job-check strong { color: var(--ok); }
+.job-check.fail strong { color: var(--error); }
+.job-check.warn { border-left-color: var(--warn); background: var(--warn-bg); }
+.job-check.warn strong { color: inherit; }

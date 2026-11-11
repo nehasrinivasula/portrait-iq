@@ -34,12 +34,39 @@ NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 
 
 class PluginError(Exception):
-    """A plugin failure with a message safe to show the field engineer:
-    it says what went wrong and never contains a secret value."""
+    """A plugin failure. The message says what went wrong and is, by default,
+    vetted and safe to show the field engineer.
+
+    Some failures can only be explained by quoting raw tool output (a pod's
+    stderr, rtiddsspy's last line, a tshark error). redact() scrubs known
+    secrets from that text but cannot guarantee it is free of patient or
+    system data, so it must never reach the browser. For those, pass
+    safe_reason: a fixed, vetted sentence shown in the UI in place of the
+    message, while the full message stays in logs and diagnostic artifacts
+    only (SCRUM-68)."""
+
+    def __init__(self, message: str = "", *, safe_reason: str | None = None):
+        super().__init__(message)
+        self.safe_reason = safe_reason
 
 
 class PluginConfigError(PluginError):
     """configure() was given options the plugin does not accept."""
+
+
+def reason_for(exc: BaseException) -> str:
+    """A short, plain-language reason for a run failure, safe to show the
+    field engineer (SCRUM-68). A PluginError that embeds raw tool output
+    carries a vetted safe_reason, shown instead of the raw text; other
+    PluginError messages are written to be shown. An unexpected error's own
+    text may hold anything, so only its type is named, never its message."""
+    if isinstance(exc, PluginError):
+        if exc.safe_reason:                       # message embeds raw output: show the vetted line
+            return exc.safe_reason
+        return str(exc) or f"The tool could not run ({type(exc).__name__})."
+    if isinstance(exc, NotImplementedError):
+        return "This diagnostic isn't available yet."
+    return f"The tool stopped unexpectedly ({type(exc).__name__})."
 
 
 @dataclass
@@ -74,6 +101,9 @@ class Collector(ABC):
     # Shown in the tool-selection UI (SCRUM-40).
     display_name: ClassVar[str] = ""
     description: ClassVar[str] = ""
+    # The run steps in which this tool does work (orchestrator STEPS). A step
+    # no selected tool uses is skipped and shown as such, not flashed past.
+    steps: ClassVar[tuple[str, ...]] = ("deploy_tools",)
 
     def __init__(self, limits: ResourceLimits):
         self.limits = limits

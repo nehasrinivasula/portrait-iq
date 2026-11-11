@@ -177,7 +177,7 @@ function Review({ preview: p, mask, onMask, starting, startError, onStart, onSho
               <ul className="export-tools">
                 {p.tools.map((t) => (
                   <li key={t.tool} data-ok={t.ok}>
-                    <span aria-hidden="true">{t.ok ? "✓" : "✗"}</span> {t.tool}{" "}
+                    <strong>{t.tool}</strong> <span className="tool-status">{t.ok ? "Pass" : "Fail"}</span>{" "}
                     {t.ok ? <span className="muted">{t.files} file{t.files === 1 ? "" : "s"}</span>
                       : <span>Did not finish during the run: {t.error}. Its error is included.</span>}
                   </li>

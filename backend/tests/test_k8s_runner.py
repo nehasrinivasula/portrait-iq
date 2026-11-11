@@ -10,7 +10,7 @@ from kubernetes import stream as k8s_stream
 from kubernetes.client.exceptions import ApiException
 
 from app.collectors import k8s
-from app.collectors.base import PluginError, ResourceLimits
+from app.collectors.base import PluginError, ResourceLimits, reason_for
 
 LIMITS = ResourceLimits(cpu_pct=50, mem_mb=512, max_output_mb=100)
 
@@ -97,6 +97,36 @@ def test_create_failure_says_why(runner, api):
     with pytest.raises(PluginError, match="could not create the netshoot pod: Forbidden"):
         runner.create(name="p", tool="netshoot", job_id="j", image="i", command=["x"],
                       deadline_s=10, limits=LIMITS)
+
+
+# A Kubernetes API message or a pod's pending reason is dynamic cluster text
+# (RBAC subjects, node and scheduler detail); redact() does not see it. Like
+# raw tool output, it stays in the raw message for logging but must never be
+# what reason_for() shows the field engineer (SCRUM-68, PR #37 review).
+MARKER = "0/1 nodes: host node-7 reserved for PATIENT-WARD-3"
+
+
+def test_pod_create_error_carries_a_safe_reason_without_the_api_message(runner, api):
+    def forbidden(*a, **kw):
+        raise ApiException(status=403, reason=MARKER)
+    api.create_namespaced_pod = forbidden
+    with pytest.raises(PluginError) as exc_info:
+        runner.create(name="p", tool="netshoot", job_id="j", image="i", command=["x"],
+                      deadline_s=10, limits=LIMITS)
+    e = exc_info.value
+    assert MARKER in str(e)                 # raw message kept for logging
+    assert e.safe_reason == "Could not start the diagnostic's pod."
+    assert MARKER not in reason_for(e)      # but never shown to the engineer
+
+
+def test_stuck_pod_reason_does_not_leak_the_pod_status_detail(runner, api):
+    api.pods["p"] = [pod("Pending", scheduled=("Unschedulable", MARKER))]
+    with pytest.raises(PluginError) as exc_info:
+        runner.wait_running("p", 0)
+    e = exc_info.value
+    assert MARKER in str(e)
+    assert e.safe_reason == "The diagnostic's pod did not start in time."
+    assert MARKER not in reason_for(e)
 
 
 def test_wait_running(runner, api):
