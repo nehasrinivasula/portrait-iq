@@ -32,10 +32,10 @@ export interface StepProgress {
   steps: { step: string; label: string; state: StepState }[];
 }
 
-export function stepProgress(current: string | null, skipped: readonly string[] = []): StepProgress {
-  const i = current ? STEPS.indexOf(current as (typeof STEPS)[number]) : -1;
+export function stepProgress(current: string | null, skipped: readonly string[] = [], complete = false): StepProgress {
+  const i = complete ? STEPS.length : current ? STEPS.indexOf(current as (typeof STEPS)[number]) : -1;
   return {
-    position: i >= 0 ? i + 1 : null,
+    position: i >= 0 && i < STEPS.length ? i + 1 : null,
     total: STEPS.length,
     steps: STEPS.map((step, n) => ({
       step,
@@ -43,6 +43,22 @@ export function stepProgress(current: string | null, skipped: readonly string[] 
       state: skipped.includes(step) ? "skipped" : i < 0 || n > i ? "upcoming" : n < i ? "done" : "current",
     })),
   };
+}
+
+/** Index the run has really reached: -1 before the first step, STEPS.length
+ * once every step is done. */
+export function stepIndex(current: string | null, complete: boolean): number {
+  return complete ? STEPS.length : current ? STEPS.indexOf(current as (typeof STEPS)[number]) : -1;
+}
+
+/** The next index to show on the way from `shown` to `target`, one step at a
+ * time and passing over steps the run skips, so each step gets its moment on
+ * screen even when the server finished it between two polls. */
+export function nextPaced(shown: number, target: number, skipped: readonly string[] = []): number {
+  for (let n = shown + 1; n < target; n++) {
+    if (n >= STEPS.length || !skipped.includes(STEPS[n])) return n;
+  }
+  return Math.max(shown, target);
 }
 
 /** Parses an API timestamp. Times without an offset are UTC (the backend
