@@ -28,12 +28,16 @@
 .seg.option .opt-hint { font-weight: 400; }
 .seg[data-state="checked"] .opt-hint { color: var(--on-primary); }
 .run-clock { margin: 0; font-variant-numeric: tabular-nums; }
-.run-steps-bar { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-top: 6px; }
-.run-steps-bar span { height: 8px; border-radius: 4px; background: var(--line); }
-.run-steps-bar span[data-state="done"] { background: var(--primary); }
-.run-steps-bar span[data-state="current"] { background: var(--primary); opacity: .55; animation: run-step-pulse 1.4s ease-in-out infinite; }
-.run-steps-bar span[data-state="skipped"] { background: transparent; border: 1px dashed var(--line); }
-@keyframes run-step-pulse { 50% { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .run-steps-bar span[data-state="current"] { animation: none; } }
+.run-steps ol { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; }
+.run-steps li { display: flex; gap: 10px; align-items: center; }
+.run-steps .step-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--muted); box-sizing: border-box; flex: none; }
+.run-steps li[data-state="done"] { color: var(--muted); }
+.run-steps li[data-state="done"] .step-dot { background: var(--primary); border-color: var(--primary); }
+.run-steps li[data-state="current"] { font-weight: 600; }
+.run-steps li[data-state="current"] .step-dot { background: var(--primary); border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 30%, transparent); animation: run-step-pulse 1.4s ease-in-out infinite; }
+.run-steps li[data-state="upcoming"], .run-steps li[data-state="skipped"] { color: var(--muted); }
+.run-steps li[data-state="skipped"] .step-dot { border-style: dashed; opacity: .6; }
+@keyframes run-step-pulse { 50% { box-shadow: 0 0 0 5px transparent; } }
+@media (prefers-reduced-motion: reduce) { .run-steps li[data-state="current"] .step-dot { animation: none; } }
 .run-steps .muted { margin: 0; }
 .job-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
