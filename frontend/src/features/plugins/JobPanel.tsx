@@ -3,14 +3,45 @@ import { Link } from "react-router-dom";
 import { isFinished, type Job } from "./api";
 import { useJobs } from "../jobs/JobsContext";
 import { runErrorText, stepLabel as errorStepLabel } from "../jobs/runStatus";
-import { formatElapsed, parseServerTime, runHeadline, stepLabel, stepProgress } from "./progress";
+import { formatElapsed, nextPaced, parseServerTime, runHeadline, STEPS, stepIndex, stepLabel, stepProgress } from "./progress";
+
+/** Least time each step stays on screen, so a person can follow a run whose
+ * steps finish faster than the page polls. */
+const STEP_MIN_MS = 900;
+
+/** The step index to show: trails the run's real step, one step per STEP_MIN_MS.
+ * A failed or interrupted run, or reduced-motion, shows the truth at once. */
+function usePacedStep(job: Job | null): number {
+  const calm = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const reached = job ? job.status === "failed" || job.status === "interrupted" : false;
+  const complete = job ? isFinished(job.status) && !reached : false;
+  const target = job ? stepIndex(job.current_step, complete) : -1;
+  const instant = calm || reached;
+  const skipped = job?.skipped_steps ?? [];
+  const [shown, setShown] = useState(target);
+  const id = job?.id;
+  useEffect(() => { setShown(target); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (instant) { if (shown !== target) setShown(target); return; }
+    if (shown >= target) { if (shown > target) setShown(target); return; }
+    const t = window.setTimeout(() => setShown(nextPaced(shown, target, skipped)), STEP_MIN_MS);
+    return () => window.clearTimeout(t);
+  }, [shown, target, instant, skipped.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
+  return instant ? target : shown;
+}
 
 export default function JobPanel() {
   const { job, results, lost, logPull, clear } = useJobs();
+  const shown = usePacedStep(job);
   if (!job) return null;
-  const [kind, headline] = runHeadline(job.status);
-  const step = job.current_step ? stepLabel(job.current_step) : null;
-  const finished = isFinished(job.status);
+  const realFinished = isFinished(job.status);
+  const complete = realFinished && job.status !== "failed" && job.status !== "interrupted";
+  // A run can be done before the bar has caught up: keep it "running" until it has.
+  const settling = complete && shown < STEPS.length;
+  const finished = realFinished && !settling;
+  const [kind, headline] = runHeadline(settling ? "running" : job.status);
+  const shownStep = shown >= 0 && shown < STEPS.length ? STEPS[shown] : null;
+  const step = (settling || !realFinished ? shownStep : job.current_step) ? stepLabel((settling || !realFinished ? shownStep : job.current_step)!) : null;
   const stopped = job.status === "failed" || job.status === "interrupted";
 
   return (
@@ -25,7 +56,7 @@ export default function JobPanel() {
         {stopped && step && `Stopped at: ${step}.`}
       </div>
       <RunClock job={job} finished={finished} />
-      {!finished && <StepList current={job.current_step} skipped={job.skipped_steps} />}
+      {!finished && <StepList current={shownStep} skipped={job.skipped_steps} />}
       {lost && <p className="muted" role="status">Lost contact with the server. Still trying; the run is not affected.</p>}
 
       {logPull && (
@@ -41,7 +72,7 @@ export default function JobPanel() {
         </div>
       )}
 
-      {results && results.length > 0 && (
+      {finished && results && results.length > 0 && (
         <ul className="results">
           {results.map((r) => (
             <li key={r.tool} className="card">
