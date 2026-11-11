@@ -124,8 +124,7 @@ function RunClock({ job, finished }: { job: Job; finished: boolean }) {
 }
 
 /** All six steps, top to bottom, each with a dot: filled once done, ringed
- * while current, hollow while waiting, and dashed with a note when the
- * selected tools never use it. */
+ * while current, hollow while waiting. Only the steps this run uses. */
 function StepList({ current, skipped = [] }: { current: string | null; skipped?: string[] }) {
   const { position, total, steps } = stepProgress(current, skipped);
   return (
@@ -137,7 +136,6 @@ function StepList({ current, skipped = [] }: { current: string | null; skipped?:
             <span className="step-dot" aria-hidden="true" />
             {s.label}
             {s.state === "done" && <span className="visually-hidden"> (done)</span>}
-            {s.state === "skipped" && <span className="muted"> (not needed for this run)</span>}
           </li>
         ))}
       </ol>
