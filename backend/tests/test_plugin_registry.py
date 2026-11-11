@@ -521,3 +521,10 @@ def test_a_clean_run_has_no_error(db, local_registry):
     job = run_job(db, _job(db, ["recorder", "second"]), "192.0.2.10", registry=local_registry)
     assert job.status == "done" and job.error is None
     assert JobOut.model_validate(job).error is None
+
+
+def test_skipped_steps_are_the_tool_steps_no_selected_tool_uses():
+    from app.orchestrator.jobs import skipped_steps
+    assert skipped_steps([]) == []   # nothing selected: the full walk-through
+    assert skipped_steps(["netshoot"]) == ["collect_server_logs", "collect_network_diagnostics", "collect_grafana_health"]
+    assert skipped_steps(["nope"]) == []   # unknown tool fails at "configure"; hide nothing

@@ -10,8 +10,8 @@
 .export-result-head:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
 .export-list { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 6px; }
 .export-tools { list-style: none; padding: 0; margin: 6px 0 0; display: grid; gap: 4px; }
-.export-tools li[data-ok="true"] > span[aria-hidden] { color: var(--ok); }
-.export-tools li[data-ok="false"] > span[aria-hidden] { color: var(--error); }
+.export-tools li[data-ok="true"] .tool-status { color: var(--ok); }
+.export-tools li[data-ok="false"] .tool-status { color: var(--error); }
 .export-inline-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .export-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 

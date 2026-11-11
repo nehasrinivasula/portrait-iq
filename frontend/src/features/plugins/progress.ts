@@ -22,7 +22,7 @@ export const STEP_LABEL: Record<string, string> = {
 
 export const stepLabel = (step: string) => STEP_LABEL[step] ?? step;
 
-export type StepState = "done" | "current" | "upcoming";
+export type StepState = "done" | "current" | "upcoming" | "skipped";
 
 export interface StepProgress {
   /** 1-based position of the current step, or null before the first step
@@ -32,7 +32,7 @@ export interface StepProgress {
   steps: { step: string; label: string; state: StepState }[];
 }
 
-export function stepProgress(current: string | null): StepProgress {
+export function stepProgress(current: string | null, skipped: readonly string[] = []): StepProgress {
   const i = current ? STEPS.indexOf(current as (typeof STEPS)[number]) : -1;
   return {
     position: i >= 0 ? i + 1 : null,
@@ -40,7 +40,7 @@ export function stepProgress(current: string | null): StepProgress {
     steps: STEPS.map((step, n) => ({
       step,
       label: stepLabel(step),
-      state: i < 0 || n > i ? "upcoming" : n < i ? "done" : "current",
+      state: skipped.includes(step) ? "skipped" : i < 0 || n > i ? "upcoming" : n < i ? "done" : "current",
     })),
   };
 }

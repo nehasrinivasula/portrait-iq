@@ -36,6 +36,24 @@ STEPS = [
     "package",
 ]
 
+# Steps that exist for the selected tools; cleanup and package always run.
+TOOL_STEPS = ("deploy_tools", "collect_server_logs", "collect_network_diagnostics", "collect_grafana_health")
+
+
+def skipped_steps(tools: list[str], registry=None) -> list[str]:
+    """Tool steps none of the selected tools uses, in run order."""
+    if not tools:
+        return []              # nothing selected: keep the full walk-through
+    reg = registry or get_registry()
+    used: set[str] = set()
+    for name in tools:
+        try:
+            used.update(reg.get(name).steps)
+        except PluginError:
+            return []          # unknown tool: it fails at "configure"; skip nothing
+    return [s for s in TOOL_STEPS if s not in used]
+
+
 def create_job(
     db: Session,
     mode: str,
@@ -103,7 +121,10 @@ def run_job(
             db.commit()
             plugins = (registry or get_registry()).create_all(tools, limits, plugin_options)
 
+        skipped = set(skipped_steps(tools, registry))
         for step in STEPS:
+            if step in skipped:
+                continue        # no selected tool uses it; the UI shows it as not needed
             job.current_step = step
             db.commit()
             _audit_job(db, job, "job_step", f"step={step}")

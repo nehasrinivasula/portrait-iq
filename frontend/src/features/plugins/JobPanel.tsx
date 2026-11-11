@@ -25,7 +25,7 @@ export default function JobPanel() {
         {stopped && step && `Stopped at: ${step}.`}
       </div>
       <RunClock job={job} finished={finished} />
-      {!finished && <StepList current={job.current_step} />}
+      {!finished && <StepList current={job.current_step} skipped={job.skipped_steps} />}
       {lost && <p className="muted" role="status">Lost contact with the server. Still trying; the run is not affected.</p>}
 
       {logPull && (
@@ -92,20 +92,19 @@ function RunClock({ job, finished }: { job: Job; finished: boolean }) {
   );
 }
 
-function StepList({ current }: { current: string | null }) {
-  const { position, total, steps } = stepProgress(current);
+/** One segment per step, filled as the run advances, so all six stay visible
+ * and progress reads as movement along the bar. */
+function StepList({ current, skipped = [] }: { current: string | null; skipped?: string[] }) {
+  const { position, total, steps } = stepProgress(current, skipped);
+  const label = steps.find((s) => s.state === "current")?.label;
   return (
-    <div className="run-steps" aria-live="off">
-      {position && <p className="muted">Step {position} of {total}</p>}
-      <ol>
-        {steps.map((s) => (
-          <li key={s.step} data-state={s.state} aria-current={s.state === "current" ? "step" : undefined}>
-            <span aria-hidden="true">{s.state === "done" ? "✓" : s.state === "current" ? "●" : "○"}</span>
-            {s.label}
-            {s.state === "done" && <span className="visually-hidden"> (done)</span>}
-          </li>
-        ))}
-      </ol>
+    <div className="run-steps">
+      <p className="muted">{skipped.length > 0 && `${skipped.length} of ${total} steps not needed for the selected tools. `}{position ? `Step ${position} of ${total}: ${label}` : "Preparing"}</p>
+      <div className="run-steps-bar" role="progressbar" aria-label="Run progress"
+        aria-valuemin={0} aria-valuemax={total} aria-valuenow={position ? position - 1 : 0}
+        aria-valuetext={position ? `Step ${position} of ${total}: ${label}` : "Preparing"}>
+        {steps.map((s) => <span key={s.step} data-state={s.state} title={s.state === "skipped" ? `${s.label}: not needed for this run` : s.label} />)}
+      </div>
     </div>
   );
 }

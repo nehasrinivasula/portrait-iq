@@ -78,7 +78,7 @@ export default function JobResultsPage() {
             {checks.map((check, index) => (
               <li key={`${index}-${check.label}`} className={`job-check ${check.status}`}>
                 <span>{check.label}</span>
-                <strong><span aria-hidden="true">{check.status === "pass" ? "✓ " : "✗ "}</span>{check.status === "pass" ? "Pass" : "Fail"}</strong>
+                <strong>{check.status === "pass" ? "Pass" : "Fail"}</strong>
                 {check.status === "fail" && check.reason && <p>{check.reason}</p>}
               </li>
             ))}
