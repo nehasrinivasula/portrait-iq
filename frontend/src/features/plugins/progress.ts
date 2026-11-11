@@ -22,7 +22,7 @@ export const STEP_LABEL: Record<string, string> = {
 
 export const stepLabel = (step: string) => STEP_LABEL[step] ?? step;
 
-export type StepState = "done" | "current" | "upcoming" | "skipped";
+export type StepState = "done" | "current" | "upcoming";
 
 export interface StepProgress {
   /** 1-based position of the current step, or null before the first step
@@ -33,16 +33,16 @@ export interface StepProgress {
 }
 
 export function stepProgress(current: string | null, skipped: readonly string[] = [], complete = false): StepProgress {
-  const i = complete ? STEPS.length : current ? STEPS.indexOf(current as (typeof STEPS)[number]) : -1;
-  return {
-    position: i >= 0 && i < STEPS.length ? i + 1 : null,
-    total: STEPS.length,
-    steps: STEPS.map((step, n) => ({
-      step,
-      label: stepLabel(step),
-      state: skipped.includes(step) ? "skipped" : i < 0 || n > i ? "upcoming" : n < i ? "done" : "current",
-    })),
-  };
+  const i = stepIndex(current, complete);
+  // Only the steps this run uses are listed; the ones no selected tool needs are left out.
+  const shown = STEPS.map((step, n) => ({ step, n })).filter(({ step }) => !skipped.includes(step));
+  const steps = shown.map(({ step, n }) => ({
+    step,
+    label: stepLabel(step),
+    state: (i < 0 || n > i ? "upcoming" : n < i ? "done" : "current") as StepState,
+  }));
+  const at = steps.findIndex((s) => s.state === "current");
+  return { position: at >= 0 ? at + 1 : null, total: steps.length, steps };
 }
 
 /** Index the run has really reached: -1 before the first step, STEPS.length

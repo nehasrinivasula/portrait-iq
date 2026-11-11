@@ -35,8 +35,7 @@
 .run-steps li[data-state="done"] .step-dot { background: var(--primary); border-color: var(--primary); }
 .run-steps li[data-state="current"] { font-weight: 600; }
 .run-steps li[data-state="current"] .step-dot { background: var(--primary); border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 30%, transparent); animation: run-step-pulse 1.4s ease-in-out infinite; }
-.run-steps li[data-state="upcoming"], .run-steps li[data-state="skipped"] { color: var(--muted); }
-.run-steps li[data-state="skipped"] .step-dot { border-style: dashed; opacity: .6; }
+.run-steps li[data-state="upcoming"] { color: var(--muted); }
 @keyframes run-step-pulse { 50% { box-shadow: 0 0 0 5px transparent; } }
 @media (prefers-reduced-motion: reduce) { .run-steps li[data-state="current"] .step-dot { animation: none; } }
 .run-steps .muted { margin: 0; }
