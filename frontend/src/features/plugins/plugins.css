@@ -40,3 +40,12 @@
 @media (prefers-reduced-motion: reduce) { .run-steps li[data-state="current"] .step-dot { animation: none; } }
 .run-steps .muted { margin: 0; }
 .job-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.run-steps li { flex-wrap: wrap; }
+.tool-rows { list-style: none; margin: 4px 0 2px 20px; padding: 0; display: grid; gap: 4px; flex-basis: 100%; font-weight: 400; }
+.tool-rows li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.tool-rows .tool-state { font-weight: 600; }
+.tool-rows li[data-state="pass"] .tool-state { color: var(--ok); }
+.tool-rows li[data-state="fail"] .tool-state { color: var(--error); }
+.tool-rows li[data-state="running"] .tool-state { color: var(--primary); }
+.tool-rows li[data-state="waiting"] { color: var(--muted); }
+.tool-rows .tool-reason { flex-basis: 100%; color: var(--muted); }

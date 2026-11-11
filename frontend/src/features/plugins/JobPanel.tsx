@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { isFinished, type Job } from "./api";
+import { isFinished, listPlugins, type Job, type ToolResult } from "./api";
 import { useJobs } from "../jobs/JobsContext";
 import { runErrorText, stepLabel as errorStepLabel } from "../jobs/runStatus";
 import { formatElapsed, nextPaced, parseServerTime, runHeadline, STEPS, stepIndex, stepLabel, stepProgress } from "./progress";
@@ -56,7 +56,8 @@ export default function JobPanel() {
         {stopped && step && `Stopped at: ${step}.`}
       </div>
       <RunClock job={job} finished={finished} />
-      {!finished && <StepList current={shownStep} skipped={job.skipped_steps} />}
+      {!finished && <StepList current={shownStep} skipped={job.skipped_steps}
+        under={{ deploy_tools: <ToolRows job={job} results={results} stepIsCurrent={shownStep === "deploy_tools"} /> }} />}
       {lost && <p className="muted" role="status">Lost contact with the server. Still trying; the run is not affected.</p>}
 
       {logPull && (
@@ -81,11 +82,12 @@ export default function JobPanel() {
                 <div className="alert error" role="alert">
                   <strong>Failed{errorStepLabel(r.step) ? ` — ${errorStepLabel(r.step)}` : ""}</strong>
                   {r.error}
+                  {" "}<Link to={toolDetailsPath(job.id, r.tool)}>View details</Link>
                 </div>
               ) : (
                 <>
                   <p>{r.summary}</p>
-                  {r.tool === "netshoot" && <Link to={`/jobs/${encodeURIComponent(job.id)}/results`}>View network checks</Link>}
+                  <Link to={toolDetailsPath(job.id, r.tool)}>{r.tool === "netshoot" ? "View network checks" : "View details"}</Link>
                   {r.warnings.map((w) => <div key={w} className="alert warn" role="status">{w}</div>)}
                 </>
               )}
@@ -123,9 +125,50 @@ function RunClock({ job, finished }: { job: Job; finished: boolean }) {
   );
 }
 
+export const toolDetailsPath = (jobId: string, tool: string) =>
+  `/jobs/${encodeURIComponent(jobId)}/results/${encodeURIComponent(tool)}`;
+
+/** Display names for the tools, loaded once; the tool id is the fallback. */
+function useToolNames(): Record<string, string> {
+  const [names, setNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let live = true;
+    listPlugins().then((l) => { if (live) setNames(Object.fromEntries(l.plugins.map((p) => [p.name, p.display_name || p.name]))); }).catch(() => undefined);
+    return () => { live = false; };
+  }, []);
+  return names;
+}
+
+/** One row per selected tool under "Running the diagnostics": waiting, running,
+ * then passed or failed with the plain reason, each opening that tool's details. */
+function ToolRows({ job, results, stepIsCurrent }: { job: Job; results: ToolResult[] | null; stepIsCurrent: boolean }) {
+  const names = useToolNames();
+  const tools = job.tools ?? [];
+  if (tools.length === 0) return null;
+  const byTool = new Map((results ?? []).map((r) => [r.tool, r]));
+  const runningTool = stepIsCurrent ? tools.find((t) => !byTool.has(t)) : undefined;
+  return (
+    <ul className="tool-rows">
+      {tools.map((t) => {
+        const r = byTool.get(t);
+        const failed = r !== undefined && "error" in r;
+        const state = r ? (failed ? "Fail" : "Pass") : t === runningTool ? "Running" : "Waiting";
+        return (
+          <li key={t} data-state={state.toLowerCase()}>
+            <span>{names[t] ?? t}</span>
+            <strong className="tool-state">{state}</strong>
+            {failed && <span className="tool-reason">{(r as { error: string }).error}</span>}
+            {r && <Link to={toolDetailsPath(job.id, t)}>View details</Link>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 /** All six steps, top to bottom, each with a dot: filled once done, ringed
  * while current, hollow while waiting. Only the steps this run uses. */
-function StepList({ current, skipped = [] }: { current: string | null; skipped?: string[] }) {
+function StepList({ current, skipped = [], under = {} }: { current: string | null; skipped?: string[]; under?: Record<string, ReactNode> }) {
   const { position, total, steps } = stepProgress(current, skipped);
   return (
     <div className="run-steps" aria-live="off">
@@ -136,6 +179,7 @@ function StepList({ current, skipped = [] }: { current: string | null; skipped?:
             <span className="step-dot" aria-hidden="true" />
             {s.label}
             {s.state === "done" && <span className="visually-hidden"> (done)</span>}
+            {under[s.step]}
           </li>
         ))}
       </ol>
