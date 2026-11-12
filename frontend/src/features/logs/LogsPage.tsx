@@ -4,7 +4,7 @@ import ImportLogs from "./ImportLogs";
 import LogFilters from "./LogFilters";
 import LogTable from "./LogTable";
 import { activeFilters, removeFilter } from "./activeFilters";
-import { emptyFilter, getFacets, type Facets, type LogFilter } from "./logsApi";
+import { emptyFilter, getCollectionSummary, getFacets, type CollectionSummary, type Facets, type LogFilter } from "./logsApi";
 import { defaultTimeFrame, filterRange, type TimeFrameChoice } from "./timeframe";
 import PrivacyPanel from "../privacy/PrivacyPanel";
 import { noPrivacyOptions, type PrivacyOptions } from "../privacy/privacyApi";
@@ -33,6 +33,16 @@ export default function LogsPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [total, setTotal] = useState<number | null>(null);
   const [privacy, setPrivacy] = useState<PrivacyOptions>(noPrivacyOptions);
+  const [collection, setCollection] = useState<CollectionSummary | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setCollection(null);
+    getCollectionSummary(jobId ?? "unassigned")
+      .then((summary) => { if (live) setCollection(summary); })
+      .catch(() => { if (live) setCollection(null); });
+    return () => { live = false; };
+  }, [jobId, reloadKey]);
 
   // A custom range that is half-typed or invalid keeps the last good one applied.
   const lastRange = useRef<{ since: string | null; until: string | null }>({ since: null, until: null });
@@ -73,6 +83,13 @@ export default function LogsPage() {
           Showing logs from run <code>{jobId.slice(0, 8)}</code>{" "}
           <button className="btn ghost" onClick={() => setParams({})}>Show all logs</button>
         </p>
+      )}
+
+      {collection && collection.rows_rejected > 0 && (
+        <div className="alert warn" role="alert">
+          <strong>Malformed log lines skipped</strong>
+          {collection.rows_rejected} of {collection.rows_read} lines in {jobId ? "this run" : "locally imported logs"} could not be parsed. Valid events remain available below.
+        </div>
       )}
 
       <PrivacyPanel jobId={jobId} options={privacy} onOptions={setPrivacy} reloadKey={reloadKey}

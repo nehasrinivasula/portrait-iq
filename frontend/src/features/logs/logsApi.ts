@@ -98,6 +98,16 @@ export interface AcquisitionResult {
   files: { name: string; status: string; events?: number | null; rows_rejected?: number | null; error?: string | null }[];
 }
 
+export interface CollectionSummary {
+  job_id: string;
+  rows_read: number;
+  rows_rejected: number;
+}
+
+/** Stored ingestion receipt; unlike a toast, its skipped count survives reloads. */
+export const getCollectionSummary = (jobId: string) =>
+  apiFetch<CollectionSummary>(`/api/logs/collections/${encodeURIComponent(jobId)}`);
+
 export function importLogFiles(files: File[]) {
   const body = new FormData();
   files.forEach((f) => body.append("files", f));
