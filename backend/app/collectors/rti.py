@@ -113,17 +113,28 @@ class RtiCollector(Collector):
         role, nodeport = WAN_BY_DOMAIN[self.domain]
         public_address = settings.rti_wan_public_address or node_ip or target_ip
         router_host = settings.rti_wan_router_host or target_ip or node_ip
-        local_port = nodeport + settings.rti_wan_local_port_offset
+        offset = settings.rti_wan_local_port_offset
         peer = settings.rti_peer or f"udpv4_wan://{router_host}:{nodeport}"
         profile = settings.rti_qos_profile or f"AxoneNetQoSLibrary::umfwan_server_{role}_qos"
         # DDS_SECURE=secure selects the secured QoS chain (the image env ships
         # 'unsecure'); the DDS_RTWAN_SERVER_* vars fill the $()s the WAN profile
         # reads. `env` adds them to the exec without a shell.
+        #
+        # The shared -WithWAN QoS file references the WAN server port of every
+        # UMF domain (LOGGER, SOURCEPOD, VIEWPOD), and RTI expands every $() in
+        # the file when it parses it -- before any profile is chosen -- so all
+        # three must be defined or the whole file fails to parse, even though we
+        # drive one domain. (A run with only the selected domain's port set died
+        # on the bench with "Undefined environment variable
+        # DDS_RTWAN_SERVER_PORT_LOGGER".)
         argv = [
             "env",
             "DDS_SECURE=secure",
             f"DDS_RTWAN_SERVER_PUBLIC_ADDRESS={public_address}",
-            f"DDS_RTWAN_SERVER_PORT_{role.upper()}={local_port}",
+        ]
+        for r, np in WAN_BY_DOMAIN.values():
+            argv.append(f"DDS_RTWAN_SERVER_PORT_{r.upper()}={np + offset}")
+        argv += [
             "timeout", str(self.duration_s), "rtiddsspy",
             "-domainId", str(self.domain), "-peer", peer,
         ]

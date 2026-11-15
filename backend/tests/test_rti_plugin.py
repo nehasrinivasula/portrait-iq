@@ -115,6 +115,21 @@ def test_wan_profile_port_and_peer_are_per_domain(tmp_path, monkeypatch, enabled
         assert f"DDS_RTWAN_SERVER_PORT_{role.upper()}={nodeport + 100}" in argv
 
 
+def test_every_domain_wan_port_is_defined_so_the_shared_qos_file_parses(tmp_path, monkeypatch, enabled):
+    # The -WithWAN QoS file references every domain's DDS_RTWAN_SERVER_PORT_*,
+    # and RTI expands them all when it parses the file (before a profile is
+    # chosen), so every one must be set even though a single domain is driven.
+    # Regression: setting only the selected domain's port made the whole file
+    # fail to parse on the bench ("Undefined environment variable
+    # DDS_RTWAN_SERVER_PORT_LOGGER").
+    runner = FakeRunner()
+    configured(tmp_path, monkeypatch, runner, domain=12).run("192.0.2.10")
+    argv = runner.execs[0]
+    assert "DDS_RTWAN_SERVER_PORT_LOGGER=32107" in argv      # 32007 + offset 100
+    assert "DDS_RTWAN_SERVER_PORT_SOURCEPOD=32113" in argv   # 32013 + offset 100
+    assert "DDS_RTWAN_SERVER_PORT_VIEWPOD=32115" in argv     # 32015 + offset 100
+
+
 def test_no_security_secret_is_mounted_by_default(tmp_path, monkeypatch, enabled):
     runner = FakeRunner()
     configured(tmp_path, monkeypatch, runner, duration_s=20).run("192.0.2.10")
