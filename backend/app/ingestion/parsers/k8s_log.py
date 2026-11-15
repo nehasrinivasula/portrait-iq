@@ -46,7 +46,6 @@ _LEADING_RE = re.compile(
 _GLOG_LEVELS = {"I": "INFO", "W": "WARN", "E": "ERROR", "F": "ERROR"}
 
 SNIFF_LINES = 20
-SNIFF_MIN_FRACTION = 0.9
 
 
 def infer_severity(message: str) -> Optional[str]:
@@ -74,20 +73,29 @@ class KubernetesLogParser(LogParser):
 
     def sniff(self, path: Path) -> bool:
         try:
-            seen = matched = 0
+            seen = 0
             with open_text(path) as fh:
                 for text in fh:
                     text = text.rstrip("\r\n")
                     if not text.strip():
                         continue
                     seen += 1
-                    if _LINE_RE.match(text):
-                        matched += 1
+                    match = _LINE_RE.match(text)
+                    if match:
+                        try:
+                            parse_timestamp(match.group(1))
+                        except ValueError:
+                            pass
+                        else:
+                            return True
                     if seen >= SNIFF_LINES:
                         break
         except OSError:
             return False
-        return seen > 0 and matched / seen >= SNIFF_MIN_FRACTION
+        # One parseable timestamp in the first 20 nonblank lines is enough
+        # to route a badly damaged k8s capture, but a timestamp-shaped token
+        # from another format must not claim the file.
+        return False
 
     def parse(self, path: Path, report: Optional[ParseReport] = None) -> Iterator[NormalizedEvent]:
         path = Path(path)

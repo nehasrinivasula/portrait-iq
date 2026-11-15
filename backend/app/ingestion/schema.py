@@ -38,6 +38,7 @@ from typing import Optional
 UTC = timezone.utc
 
 SEVERITIES = ("DEBUG", "INFO", "WARN", "ERROR")
+MESSAGE_KINDS = ("request", "reply", "response", "publish", "timeout")
 
 
 class EventValidationError(ValueError):
@@ -127,6 +128,13 @@ class NormalizedEvent:
     message: str
     source_file: Optional[str] = None
     source_line: Optional[int] = None
+    # Free-text message parsing (ingestion/messages.py). All optional: most
+    # lines are not part of a request/reply/publish exchange.
+    component: Optional[str] = None        # class / source file, from sourceInfo
+    message_kind: Optional[str] = None     # request | reply | response | publish | timeout
+    command: Optional[str] = None
+    correlation_id: Optional[str] = None   # ties a request to its reply
+    status: Optional[str] = None           # outcome a reply reports, e.g. "ack"
 
     def validate(self) -> None:
         """Raise EventValidationError if this event breaks the format.
@@ -143,7 +151,10 @@ class NormalizedEvent:
             raise EventValidationError(f"source {self.source!r} is not a lowercase slug")
         if not isinstance(self.message, str):
             raise EventValidationError("message must be a str (use '' for none)")
-        for name in ("device_id", "category", "process", "source_file"):
+        if self.message_kind is not None and self.message_kind not in MESSAGE_KINDS:
+            raise EventValidationError(f"message_kind {self.message_kind!r} not in {MESSAGE_KINDS}")
+        for name in ("device_id", "category", "process", "source_file",
+                     "component", "command", "correlation_id", "status"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value or value != value.strip()):
                 raise EventValidationError(f"{name} must be None or a non-empty, stripped str")
@@ -170,6 +181,11 @@ def make_event(
     process: Optional[str] = None,
     source_file: Optional[str] = None,
     source_line: Optional[int] = None,
+    component: Optional[str] = None,
+    message_kind: Optional[str] = None,
+    command: Optional[str] = None,
+    correlation_id: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> NormalizedEvent:
     """The only way parsers should construct events. Normalizes what can be
     normalized (UTC, severity aliases, blank -> None) and raises
@@ -190,6 +206,11 @@ def make_event(
         message="" if message is None else str(message),
         source_file=_clean(source_file),
         source_line=source_line,
+        component=_clean(component),
+        message_kind=_clean(message_kind),
+        command=_clean(command),
+        correlation_id=_clean(correlation_id),
+        status=_clean(status),
     )
     event.validate()
     return event

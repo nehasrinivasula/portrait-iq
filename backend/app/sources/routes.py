@@ -53,7 +53,8 @@ def _to_out(result: AcquisitionResult) -> AcquisitionOut:
         failed=result.count("failed"),
         over_budget=result.count("over_budget"),
         bytes_staged=result.bytes_staged,
-        files=[FileOutcomeOut(name=f.name, status=f.status, size=f.size, events=f.events, error=f.error)
+        files=[FileOutcomeOut(name=f.name, status=f.status, size=f.size, events=f.events,
+                              rows_rejected=f.rows_rejected, reject_reasons=f.reject_reasons, error=f.error)
                for f in result.files],
         notes=result.notes,
     )

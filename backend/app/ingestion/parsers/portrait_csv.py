@@ -15,6 +15,10 @@ Mapping to the common format:
                 placeholder "unsetFriendlyName"
   category   <- eventCategory       (e.g. General, PerfData)
   process    <- processInfo without its "[pid:n]" suffix
+  component  <- sourceInfo's class (or source file), e.g. ConfigMessageProcessor
+  message_kind / command / correlation_id / status
+             <- parsed from description by ingestion/messages.py (non-PerfData
+                rows only; most rows have none)
   message    <- description
 
 Performance data (eventCategory == PerfData) is deliberately KEPT, even
@@ -35,6 +39,7 @@ import re
 from pathlib import Path
 from typing import Iterator, Optional
 
+from app.ingestion.messages import classify, component_from_source_info
 from app.ingestion.parsers.base import LogParser, ParseReport, UnrecognizedLogFormat, open_text
 from app.ingestion.schema import EventValidationError, NormalizedEvent, make_event, normalize_severity, parse_timestamp
 
@@ -44,9 +49,6 @@ _PROC_SUFFIX = re.compile(r"\[.*$|:\d+:.*$")
 _PLACEHOLDER_NAMES = {"", "unsetFriendlyName"}
 
 REQUIRED_COLUMNS = ("timeStampAndOffset", "logLevel", "hostName", "eventCategory", "description")
-# If this many malformed rows occur, the file is almost certainly not a
-# Portrait CSV at all; stop instead of grinding through it.
-MAX_CSV_ERRORS = 1000
 
 
 class PortraitCsvParser(LogParser):
@@ -83,9 +85,12 @@ class PortraitCsvParser(LogParser):
             i_host, i_cat, i_msg = cols["hostName"], cols["eventCategory"], cols["description"]
             i_friendly = cols.get("friendlyName")
             i_proc = cols.get("processInfo")
+            i_src = cols.get("sourceInfo")
             width = len(header)
-            csv_errors = 0
 
+            # Acquisition caps staged bytes; ingestion's high reject-rate
+            # backstop handles overwhelmingly corrupt files after accounting
+            # for every row. No separate CSV-error count is needed here.
             while True:
                 start_line = reader.line_num + 1  # first physical line of the next record
                 try:
@@ -95,9 +100,6 @@ class PortraitCsvParser(LogParser):
                 except csv.Error as exc:
                     report.rows_read += 1
                     report.reject(start_line, "csv_error", str(exc))
-                    csv_errors += 1
-                    if csv_errors > MAX_CSV_ERRORS:
-                        raise UnrecognizedLogFormat(f"{path.name}: too many malformed rows")
                     continue
 
                 if not row:  # blank line: not a record
@@ -123,6 +125,9 @@ class PortraitCsvParser(LogParser):
                 friendly = row[i_friendly].strip() if i_friendly is not None else ""
                 device = row[i_host] if friendly in _PLACEHOLDER_NAMES else friendly
                 process = _PROC_SUFFIX.sub("", row[i_proc]) if i_proc is not None else None
+                component = component_from_source_info(row[i_src]) if i_src is not None else None
+                # PerfData (about 2/3 of rows) is numeric telemetry, never an exchange.
+                info = classify(row[i_msg], component, severity) if row[i_cat] != "PerfData" else None
 
                 try:
                     yield make_event(
@@ -135,6 +140,11 @@ class PortraitCsvParser(LogParser):
                         process=process,
                         source_file=path.name,
                         source_line=start_line,
+                        component=component,
+                        message_kind=info.kind if info else None,
+                        command=info.command if info else None,
+                        correlation_id=info.correlation_id if info else None,
+                        status=info.status if info else None,
                     )
                 except EventValidationError as exc:
                     report.reject(start_line, "invalid_event", str(exc))

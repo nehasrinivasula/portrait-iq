@@ -95,7 +95,7 @@ export interface AcquisitionResult {
   already_acquired: number;
   failed: number;
   over_budget: number;
-  files: { name: string; status: string; events?: number | null; error?: string | null }[];
+  files: { name: string; status: string; events?: number | null; rows_rejected?: number | null; error?: string | null }[];
 }
 
 export function importLogFiles(files: File[]) {

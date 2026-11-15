@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { apiFetch, setUnauthorizedHandler, tokenStore } from "../api";
+import { apiFetch, setUnauthorizedHandler, tokenStore, type SignOutReason } from "../api";
 
 // Real policy is 5 idle minutes (backend SESSION_IDLE_TIMEOUT_SECONDS). The demo
 // uses 75s so the 60s warning appears after 15s of inactivity.
@@ -15,7 +15,7 @@ interface AuthState {
   user: User | null;
   ready: boolean;
   login: (username: string, password: string) => Promise<void>;
-  logout: (reason?: "idle" | "expired") => void;
+  logout: (reason?: "idle" | SignOutReason) => void;
   notice: string | null;
   /** Seconds until idle sign-out; null until the final minute. */
   idleSecondsLeft: number | null;
@@ -35,7 +35,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [idleSecondsLeft, setIdleSecondsLeft] = useState<number | null>(null);
   const lastActivity = useRef(Date.now());
 
-  const logout = useCallback((reason?: "idle" | "expired") => {
+  const logout = useCallback((reason?: "idle" | SignOutReason) => {
     tokenStore.clear();
     setUser(null);
     setNotice(
@@ -43,16 +43,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ? `You were signed out after ${IDLE_LABEL} of inactivity.`
         : reason === "expired"
           ? "Your session expired. Please sign in again."
-          : null,
+          : reason === "locked"
+            ? "Your session was locked after inactivity. Sign in again to unlock."
+            : null,
     );
   }, []);
 
   useEffect(() => {
-    setUnauthorizedHandler(() => logout("expired"));
+    setUnauthorizedHandler(logout);
     return () => setUnauthorizedHandler(null);
   }, [logout]);
 
-  // Restore a session after refresh.
+  // Restore a session after refresh. A session the server locked answers 423,
+  // which signs out through the handler above with the "locked" notice.
   useEffect(() => {
     if (!tokenStore.get()) return setReady(true);
     apiFetch<User>("/api/auth/me")

@@ -30,7 +30,7 @@ HEADER = (
 
 
 @pytest.fixture
-def env():
+def env(monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
@@ -44,6 +44,8 @@ def env():
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = lambda: User(id="tester", name="Tester")
+    # Overridden users carry no login session, which the idle lock refuses.
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)
     seed = Session()
     # No `with`: that would run the app's startup and create the real portrait_iq.db.
     yield TestClient(app), seed
@@ -99,7 +101,7 @@ def test_every_log_route_needs_a_signed_in_user(env):
 
 def test_a_locked_session_cannot_read_logs(env, monkeypatch):
     client, _ = env
-    monkeypatch.setattr("app.storage.routes.is_locked", lambda user_id: True)
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: True)
     assert client.get("/api/logs/events").status_code == 423
 
 
