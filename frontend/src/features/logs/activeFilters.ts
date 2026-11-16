@@ -1,4 +1,5 @@
 import type { LogFilter } from "./logsApi";
+import { validateFilterValue } from "../../validation";
 import { PRESETS, type TimeFrameChoice } from "./timeframe";
 
 // One removable chip per applied filter (SCRUM-54), so the engineer sees what
@@ -26,8 +27,8 @@ export function activeFilters(frame: TimeFrameChoice, filter: LogFilter): Active
   if (frame.preset !== "any") out.push({ id: "date", label: "Date", value: dateText(frame) });
   filter.sources.forEach((s) => out.push({ id: `source:${s}`, label: "Source", value: s }));
   filter.severities.forEach((s) => out.push({ id: `severity:${s}`, label: "Level", value: s }));
-  if (filter.value.trim()) out.push({ id: "value", label: COLUMN_LABELS[filter.column], value: filter.value.trim() });
-  if (filter.q.trim()) out.push({ id: "q", label: "Message has", value: filter.q.trim() });
+  if (filter.value.trim() && !validateFilterValue(filter.value, "value")) out.push({ id: "value", label: COLUMN_LABELS[filter.column], value: filter.value.trim() });
+  if (filter.q.trim() && !validateFilterValue(filter.q, "search text")) out.push({ id: "q", label: "Message has", value: filter.q.trim() });
   return out;
 }
 

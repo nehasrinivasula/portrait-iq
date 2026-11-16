@@ -1,4 +1,5 @@
 import { apiFetch } from "../../api";
+import { validateFilterValue } from "../../validation";
 import { privacyParams, type PrivacyOptions, type SensitiveFlag } from "../privacy/privacyApi";
 
 // Log search (PR #10): GET /api/logs/events, /facets. Times are UTC ISO.
@@ -66,9 +67,10 @@ export function filterParams(f: LogFilter): URLSearchParams {
   if (f.until) p.set("until", f.until);
   f.sources.forEach((s) => p.append("source", s));
   f.severities.forEach((s) => p.append("severity", s));
+  // A value that fails validation is not sent (the field shows why), so the table keeps its last good result.
   const v = f.value.trim();
-  if (v) p.set(f.column === "process" ? "process" : f.column, v);
-  if (f.q.trim()) p.set("q", f.q.trim());
+  if (v && !validateFilterValue(v, "value")) p.set(f.column === "process" ? "process" : f.column, v);
+  if (f.q.trim() && !validateFilterValue(f.q, "search text")) p.set("q", f.q.trim());
   if (f.jobId) p.set("job_id", f.jobId);
   return p;
 }

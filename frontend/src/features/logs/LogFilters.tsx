@@ -3,6 +3,8 @@ import * as Label from "@radix-ui/react-label";
 import * as ToggleGroup from "@radix-ui/react-toggle-group";
 import TimeFramePicker from "./TimeFramePicker";
 import type { TimeFrameChoice } from "./timeframe";
+import FieldError, { fieldA11y } from "../../ui/FieldError";
+import { validateFilterValue } from "../../validation";
 import type { ActiveFilter } from "./activeFilters";
 import type { Facets, FieldColumn, LogFilter, Severity } from "./logsApi";
 
@@ -29,6 +31,8 @@ interface Props {
 export default function LogFilters({ frame, onFrame, filter, onFilter, facets, active, onRemove, onClear }: Props) {
   const uid = useId();
   const set = (patch: Partial<LogFilter>) => onFilter({ ...filter, ...patch });
+  const valueError = validateFilterValue(filter.value, "value");
+  const qError = validateFilterValue(filter.q, "search text");
   const options =
     filter.column === "device" ? facets?.devices : filter.column === "category" ? facets?.categories : undefined;
 
@@ -68,13 +72,16 @@ export default function LogFilters({ frame, onFrame, filter, onFilter, facets, a
         <div className="field">
           <Label.Root htmlFor={`${uid}-val`}>Equals</Label.Root>
           <input id={`${uid}-val`} list={options ? `${uid}-opts` : undefined} value={filter.value} autoComplete="off"
-            placeholder={options ? "Pick or type a value" : "Type a value"} onChange={(e) => set({ value: e.target.value })} />
+            placeholder={options ? "Pick or type a value" : "Type a value"} onChange={(e) => set({ value: e.target.value })}
+            {...fieldA11y(`${uid}-val`, valueError)} />
+          <FieldError id={`${uid}-val-err`} error={valueError} />
           {options && <datalist id={`${uid}-opts`}>{options.filter((o) => o.value).map((o) => <option key={o.value} value={o.value!} />)}</datalist>}
         </div>
         <div className="field grow">
           <Label.Root htmlFor={`${uid}-q`}>Search messages</Label.Root>
           <input id={`${uid}-q`} type="search" value={filter.q} autoComplete="off" placeholder="Words in the log message"
-            onChange={(e) => set({ q: e.target.value })} />
+            onChange={(e) => set({ q: e.target.value })} {...fieldA11y(`${uid}-q`, qError)} />
+          <FieldError id={`${uid}-q-err`} error={qError} />
         </div>
         <button type="button" className="btn ghost" onClick={onClear} disabled={active.length === 0}>
           Clear filters{active.length ? ` (${active.length})` : ""}
