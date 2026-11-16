@@ -6,14 +6,27 @@ from datetime import datetime, timezone
 from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+from app.validation import has_control_chars
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    # Bounds only; the password is never trimmed or character-checked.
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=256)
+
+    @field_validator("username")
+    @classmethod
+    def _username_clean(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Enter your username.")
+        if has_control_chars(v):
+            raise ValueError("Username can't contain control or invisible characters.")
+        return v
 
 
 class TokenResponse(BaseModel):

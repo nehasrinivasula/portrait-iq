@@ -47,6 +47,7 @@ from app.schemas import (
     UploadOut,
 )
 from app.secrets_loader import redaction_scope
+from app.validation import ValidationFailure, validate_ipv4
 
 log = logging.getLogger(__name__)
 
@@ -210,6 +211,11 @@ def start_job(
     """Validates the selection, creates the job and returns it "queued".
     The job runs after the response is sent; poll GET /jobs/{id}. It keeps
     running if the UI session locks (S-2)."""
+
+    try:
+        target_ip = validate_ipv4(target_ip)
+    except ValidationFailure as e:
+        raise HTTPException(400, str(e))
 
     limits = ResourceLimits(
         cpu_pct=req.cpu_limit_pct or settings.default_cpu_limit_pct,

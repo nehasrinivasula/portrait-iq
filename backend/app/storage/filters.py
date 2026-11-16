@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 from app.ingestion.schema import MESSAGE_KINDS, SEVERITIES
+from app.validation import ValidationFailure, clean_text
 
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 1000
@@ -42,6 +43,18 @@ def _clean(values: Optional[Iterable[str]]) -> tuple[str, ...]:
         if v:
             seen[v] = None
     return tuple(seen)
+
+
+def _checked(value: Optional[str], label: str) -> Optional[str]:
+    """One free-text filter value: trimmed, length-capped, no control characters."""
+    try:
+        return clean_text(value, label, max_length=MAX_TEXT_LENGTH)
+    except ValidationFailure as e:
+        raise FilterError(str(e)) from None
+
+
+def _checked_list(values: Optional[Iterable[str]], label: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(v for v in (_checked(x, label) for x in values or ()) if v))
 
 
 @dataclass(frozen=True)
@@ -132,9 +145,7 @@ def build_filter(
         if k not in MESSAGE_KINDS:
             raise FilterError(f"Unknown message kind '{k}'. Use one of: {', '.join(MESSAGE_KINDS)}.")
 
-    text = (text or "").strip() or None
-    if text and len(text) > MAX_TEXT_LENGTH:
-        raise FilterError(f"Search text is limited to {MAX_TEXT_LENGTH} characters.")
+    text = _checked(text, "search text")
 
     kinds = _clean(flag_categories)
     from app.privacy.scanner import CATEGORY_LABELS
@@ -145,20 +156,20 @@ def build_filter(
     return EventFilter(
         since=since,
         until=until,
-        job_id=(job_id or "").strip() or None,
-        devices=_clean(devices),
-        sources=_clean(sources),
-        categories=_clean(categories),
+        job_id=_checked(job_id, "job id"),
+        devices=_checked_list(devices, "device"),
+        sources=_checked_list(sources, "source"),
+        categories=_checked_list(categories, "category"),
         severities=tuple(dict.fromkeys(levels)),
         min_severity=min_level,
-        process=(process or "").strip() or None,
-        source_file=(source_file or "").strip() or None,
+        process=_checked(process, "process"),
+        source_file=_checked(source_file, "source file"),
         text=text,
         flagged=flagged,
         flag_categories=kinds,
         message_kinds=message_kind_list,
-        components=_clean(components),
-        correlation_id=(correlation_id or "").strip().lower() or None,
+        components=_checked_list(components, "component"),
+        correlation_id=(_checked(correlation_id, "correlation id") or "").lower() or None,
     )
 
 

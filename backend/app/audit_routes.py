@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.audit import log_action
 from app.auth import User, get_active_user
 from app.db import get_db
+from app.validation import MAX_ID, ValidationFailure, clean_text
 from app.models import AuditLogEntry
 from app.schemas import AuditLogEntryOut, AuditLogPageOut
 
@@ -51,6 +52,12 @@ def list_audit_log(
     records. Callers deliberately never write passwords, tokens, raw logs, or
     log-search text into an audit description.
     """
+    try:
+        session_id = clean_text(session_id, "session id", max_length=MAX_ID)
+        actor = clean_text(actor, "user", max_length=MAX_ID)
+        action = clean_text(action, "action", max_length=MAX_ID)
+    except ValidationFailure as e:
+        raise HTTPException(400, str(e))
     normalized_since = _normalize_query_time(since) if since else None
     normalized_until = _normalize_query_time(until) if until else None
     if normalized_since and normalized_until and normalized_since >= normalized_until:

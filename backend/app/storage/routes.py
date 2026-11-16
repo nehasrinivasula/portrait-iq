@@ -36,7 +36,8 @@ from app.privacy.scanner import (
 from app.storage.completeness import PROBLEM
 from app.storage import events as store
 from app.storage import sequences
-from app.storage.filters import DEFAULT_LIMIT, MAX_LIMIT, UNASSIGNED, EventFilter, FilterError, build_filter
+from app.validation import ValidationFailure, clean_text
+from app.storage.filters import DEFAULT_LIMIT, MAX_LIMIT, MAX_TEXT_LENGTH, UNASSIGNED, EventFilter, FilterError, build_filter
 from app.storage.schemas import (
     CollectionOut, CollectionSummaryOut, CommandStatsOut, FacetsOut, FacetValueOut, FileSummaryOut, IssueOut,
     FlagCountOut, LogEventOut, LogPageOut, PrivacyCategoryOut, PrivacyFileOut, PrivacyReportOut, RescanOut,
@@ -72,6 +73,15 @@ def _filter(
             message_kinds=message_kind, components=component, correlation_id=correlation_id,
         )
     except FilterError as e:
+        raise HTTPException(400, str(e))
+
+
+def _with_job(f: EventFilter, job_id: Optional[str]) -> EventFilter:
+    if not job_id:
+        return f
+    try:
+        return replace(f, job_id=clean_text(job_id, "job id", max_length=MAX_TEXT_LENGTH))
+    except ValidationFailure as e:
         raise HTTPException(400, str(e))
 
 
@@ -189,7 +199,7 @@ def search_events(
 ):
     """Search every stored event across all sources and devices in one query.
     Newest first by default."""
-    f = replace(f, job_id=job_id.strip() or None) if job_id else f
+    f = _with_job(f, job_id)
     return _page(db, user, f, limit=limit, order=order, cursor=cursor, action="logs_search", detail="", mask=mask)
 
 
@@ -202,7 +212,7 @@ def get_facets(
     db: Session = Depends(get_db),
     user: User = Depends(get_active_user),
 ):
-    f = replace(f, job_id=job_id.strip() or None) if job_id else f
+    f = _with_job(f, job_id)
     r = store.facets(db, f)
     log_action(
         db, user.id, "logs_facets_view",
@@ -237,7 +247,7 @@ def get_sequences(
     bad = [s for s in state if s not in sequences.STATES]
     if bad:
         raise HTTPException(400, f"Unknown state '{bad[0]}'. Use one of: {', '.join(sequences.STATES)}.")
-    f = replace(f, job_id=job_id.strip() or None) if job_id else f
+    f = _with_job(f, job_id)
     window_end = f.until or datetime.now(timezone.utc).replace(tzinfo=None)
     try:
         seqs = sequences.find_sequences(db, f, now=window_end)
