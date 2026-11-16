@@ -1,11 +1,7 @@
 // Pure helpers for the Run page: validation (D-9) and building the
 // plugin_options payload. Limits mirror backend/app/collectors/*.py.
 
-const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
-export const validateTargetIp = (v: string): string | null =>
-  !v.trim() ? "Enter the IP address of the Portrait Mobile server."
-  : IPV4.test(v.trim()) ? null
-  : "Enter a valid IPv4 address, for example 192.168.0.3.";
+export { validateTargetIp } from "../../validation";
 
 /** Each live tool's length limits (tshark.py: 5 to 900 s; rti.py: 10 to 300 s). */
 export interface DurationLimits { min: number; max: number }
