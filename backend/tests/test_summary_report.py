@@ -91,7 +91,7 @@ def test_findings_are_found_even_when_pattern_detection_never_ran(db):
     s = build_summary(db, "job-1")
     assert s.analysis == "not_run"
     ping = next(f for f in s.findings if f.rule_id == "ping_timeout")
-    assert ping.count == 2 and not ping.saved and ping.actions and ping.status == "unconfirmed"
+    assert ping.count == 2 and not ping.saved and ping.actions and ping.status == "not_checked"
     assert not any("ping scheduler" in g.message for g in s.other_errors)
     md = render_markdown(s)
     assert "Pattern detection has not run" in md and "No known problem patterns" not in md

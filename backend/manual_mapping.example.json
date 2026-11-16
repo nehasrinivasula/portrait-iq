@@ -1,0 +1,18 @@
+{
+  "_comment": "Example only: made-up documents and sections. Copy it OUTSIDE the repo, fill it in from the real manuals, and point MANUAL_MAPPING_FILE at it. Never commit the real file or the manuals.",
+  "version": "example-1",
+  "rules": {
+    "ping_timeout": {
+      "status": "confirmed",
+      "document": "Example Service Manual",
+      "section": "9.9 Example section",
+      "page": 1,
+      "actions": ["Example step from the manual"],
+      "reviewed_by": "for the team's records only; never copied into the app"
+    },
+    "hidepid": {
+      "status": "no_match",
+      "searched": ["Example Service Manual", "Example Installation Guide"]
+    }
+  }
+}

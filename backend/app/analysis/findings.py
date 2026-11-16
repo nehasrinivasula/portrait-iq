@@ -6,6 +6,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.analysis.text import masked
+from app.knowledge.lookup import CONFIRMED, status_label, stored_outcome
 from app.models import NormalizedEvent as E
 from app.models import Signal, SignalEvidence
 from app.schemas import DeviceCountOut, EvidenceEventOut, SignalOut
@@ -42,9 +43,13 @@ def findings_for(db: Session, job_id: str) -> list[SignalOut]:
                 severity=e.severity, source_file=e.source_file, source_line=e.source_line,
                 message=masked(e.message or ""),
             ))
+        status, ref = stored_outcome(s.status, s.manual_ref)
         out.append(SignalOut(
-            id=s.id, rule_id=s.rule_id, title=s.title, severity=s.severity, count=s.count, status=s.status,
-            manual_ref=s.manual_ref, actions=json.loads(s.actions_json or "[]"),
+            id=s.id, rule_id=s.rule_id, title=s.title, severity=s.severity, count=s.count,
+            status=status, status_label=status_label(status), manual_ref=ref,
+            lookup_note=None if status == CONFIRMED else s.lookup_note,
+            checked_at=_utc(s.checked_at), knowledge_version=s.knowledge_version,
+            actions=json.loads(s.actions_json or "[]"),
             first_seen=_utc(s.first_seen), last_seen=_utc(s.last_seen),
             devices=[DeviceCountOut(device_id=d or None, count=n) for d, n in devices.get("top", [])],
             devices_total=int(devices.get("total", 0) or 0),

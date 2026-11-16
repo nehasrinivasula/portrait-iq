@@ -8,6 +8,7 @@ never held in memory, and every event is offered to every rule: an event may sup
 finding. Running it again replaces the collection's earlier signals instead of adding duplicates.
 """
 import json
+from datetime import datetime
 from typing import Iterable, Optional
 
 from sqlalchemy import select
@@ -15,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.analysis.rules import RULES
 from app.analysis.scan import EventRow, scan
-from app.knowledge.lookup import lookup_signal
+from app.knowledge.lookup import CONFIRMED, safe_lookup
 from app.models import NormalizedEvent as E
 from app.models import Signal, SignalEvidence
 
@@ -61,19 +62,18 @@ def run_analysis(db: Session, job_id: str, rules: tuple = RULES) -> list[Signal]
             title=rule.title_template.format(n=acc.count),
             severity=rule.severity,
             count=acc.count,
-            status="unconfirmed",
             actions_json=json.dumps(list(rule.draft_actions)),
             first_seen=evidence[0][0] if evidence else None,
             last_seen=evidence[-1][0] if evidence else None,
             devices_json=json.dumps({"total": len(acc.devices), "top": [[d, n] for d, n in top]}),
         )
-        # Ask the knowledge layer if it has a real manual match. Today this always comes back
-        # unconfirmed - see knowledge/lookup.py - but the call site is here so wiring in real
-        # manuals later is a one-file change.
-        match = lookup_signal(rule.id)
-        signal.status = match.status
-        signal.manual_ref = match.manual_ref
-        if match.actions:
+        # Label it with the real outcome of the manual lookup (knowledge/lookup.py): confirmed
+        # only with a reference, and the manual's steps only then; otherwise the rule's drafts.
+        match = safe_lookup(rule.id)
+        signal.status, signal.manual_ref = match.status, match.manual_ref
+        signal.lookup_note, signal.knowledge_version = match.note, match.version
+        signal.checked_at = datetime.utcnow()
+        if match.status == CONFIRMED and match.actions:
             signal.actions_json = json.dumps(match.actions)
         db.add(signal)
         db.flush()                                    # gives the signal its id

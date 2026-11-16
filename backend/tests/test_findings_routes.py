@@ -77,7 +77,7 @@ def test_running_the_rules_returns_findings_with_evidence(env):
     findings = {f["rule_id"]: f for f in response.json()}
     assert set(findings) == {"ping_timeout", "dds_security"}
     ping = findings["ping_timeout"]
-    assert ping["count"] == 7 and ping["status"] == "unconfirmed" and ping["actions"]
+    assert ping["count"] == 7 and ping["status"] == "not_checked" and ping["status_label"] == "Not checked against a manual" and ping["actions"]
     assert ping["first_seen"].startswith("2024-06-02T10:01:00") and ping["last_seen"].startswith("2024-06-02T10:07:00")
     assert ping["devices"] == [{"device_id": "hub-a", "count": 7}] and ping["devices_total"] == 1
     assert len(ping["evidence"]) == 7

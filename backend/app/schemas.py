@@ -251,9 +251,13 @@ class SignalOut(BaseModel):
     title: str
     severity: str
     count: int
-    status: str
-    manual_ref: Optional[str]
-    actions: list[str] = []
+    status: str                                 # confirmed | no_match | not_checked
+    status_label: str = ""                      # "Confirmed against manual" / "No match found" / "Not checked against a manual"
+    manual_ref: Optional[str]                   # only when confirmed: "Document, section X, p. N"
+    lookup_note: Optional[str] = None           # why it is not confirmed, e.g. "Not reviewed against the manuals yet."
+    checked_at: Optional[datetime] = None       # when the manual lookup ran
+    knowledge_version: Optional[str] = None     # version of the reviewed mapping it was checked against
+    actions: list[str] = []                     # the manual's steps when confirmed, otherwise the rule's drafts
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
     devices: list[DeviceCountOut] = []         # the devices with the most matches

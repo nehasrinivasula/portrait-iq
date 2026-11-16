@@ -111,9 +111,9 @@ app/
     summary.py             One readable diagnostic summary per run (Markdown / JSON)
 
   knowledge/
-    lookup.py               Signal -> manual entry. Returns "unconfirmed" until
-                             real manuals are ingested — see Marco's feedback,
-                             this must never silently invent a confirmed match.
+    lookup.py               Finding -> manual: confirmed / no match / not checked,
+                             never confirmed without a reference (Marco's feedback)
+    mapping.py              Loads the reviewed manual mapping (outside the repo)
 
   analytics/
     service.py               Stub only. Not wired into any route yet — this is
@@ -567,8 +567,39 @@ The same report from a terminal: `python -m app.analysis.coverage <collection id
    not from the full sample set.
 
 Matching is case-insensitive and accepts the spellings seen in practice (`time-out`, `timed out`, `timeout`). An event can
-support more than one finding. Findings stay `unconfirmed` and their actions are drafts until the knowledge layer has
-real manuals to match against.
+support more than one finding. Each finding is then labelled with the manual lookup outcome (next section).
+
+## Confidence labels (manual lookup)
+
+Every finding carries one of three labels, from the real outcome of the lookup in
+`knowledge/lookup.py`. The API returns `status` and `status_label`, the summary report and
+the export zip show the same:
+
+| `status` | Label | Means |
+|---|---|---|
+| `confirmed` | Confirmed against manual | A person matched this rule to a manual section. Always has `manual_ref` ("Document, section X, p. N"); the suggested steps are the manual's. |
+| `no_match` | No match found | A person searched the manuals and none covers it. Steps are the rule's drafts. |
+| `not_checked` | Not checked against a manual | No mapping is configured, the rule is not reviewed yet, or the lookup failed (`lookup_note` says which). Steps are the rule's drafts. |
+
+"No match found" is only ever used when a search really happened; "not checked" is not the
+same thing. Older findings saved as `unconfirmed` mean not checked and are upgraded in place.
+Nothing is shown as confirmed without a reference: every lookup result, and every saved row
+when it is read, goes through the same check, and a lookup that fails is "not checked".
+
+**The reviewed mapping.** Confirmation comes only from a JSON file a person fills in while
+reading the manuals (no automatic text search: a wrong "confirmed" on a medical device is
+worse than none). Copy `manual_mapping.example.json` **outside the repo**, next to the manuals
+(the team Drive), fill it in, and set `MANUAL_MAPPING_FILE` to its path. Per rule id:
+
+- `confirmed`: `document` and `section` are required, `page` and `actions` optional.
+- `no_match`: `searched`, the list of manuals that were checked, is required.
+- A rule that isn't listed, or an entry missing what it needs, is "not checked".
+
+Bump `version` when you change the file, then run pattern detection again
+(`POST /api/jobs/{id}/findings/run`); until then the summary report says the saved findings
+are out of date. Only references are read from the file: manual text, and any extra fields
+such as who reviewed an entry, are never copied into the database, the API or an export.
+Never commit the real mapping or the manuals.
 
 ## Diagnostic summary report
 
@@ -680,7 +711,7 @@ Collected logs are scanned for PHI/PII patterns on ingest; see
 - Real device discovery/SSH (Kubernetes access exists only for tool pods, `collectors/k8s.py`)
 - The UMF RTI and hub import plugins
 - The compute-platform log parser (`parsers/compute_csv.py` — need a sample)
-- Manual/documentation matching (`knowledge/lookup.py` always returns unconfirmed)
+- Automatic search of manual text (confirmation comes only from the reviewed mapping, see "Confidence labels"), and the manuals themselves
 - Downloading a whole collection as CSV/NDJSON (the unified view pages through it; an export route would reuse `storage.events.iter_events`)
 - Full-text search index, and reconciled device ids / category names across sources
 - Analytics endpoints (`analytics/service.py` has no route pointing to it)

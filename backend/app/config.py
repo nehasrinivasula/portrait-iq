@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     # Files a field engineer hands in (e.g. a hospital's .pcap).
     upload_dir: str = "./data/uploads"
     upload_max_mb: int = 500
+    # The reviewed manual mapping (app/knowledge/mapping.py): a JSON file a
+    # person fills in, rule -> manual document and section. Kept outside the
+    # repo, like the manuals themselves. Unset: every finding is "Not checked".
+    manual_mapping_file: str | None = None
 
     class Config:
         env_file = ".env"

@@ -38,7 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.rules import RULES, Rule
-from app.knowledge.lookup import lookup_signal
+from app.knowledge.lookup import CONFIRMED, current_version, safe_lookup, status_label, stored_outcome
 from app.models import Job, Signal
 from app.models import NormalizedEvent as E
 from app.orchestrator.jobs import read_results
@@ -83,11 +83,16 @@ class FindingItem:
     title: str
     severity: str                 # error | warning | info
     count: int
-    status: str                   # unconfirmed | confirmed | no_match
-    manual_ref: Optional[str]
-    actions: list[str]
+    status: str                   # confirmed | no_match | not_checked (knowledge/lookup.py)
+    manual_ref: Optional[str]     # only when confirmed
+    actions: list[str]            # the manual's steps when confirmed, otherwise the rule's drafts
     spread: Spread
     saved: bool = True            # a Signal from pattern detection exists for it
+    note: Optional[str] = None    # why it is not confirmed
+
+    @property
+    def status_label(self) -> str:
+        return status_label(self.status)
 
 
 @dataclass
@@ -228,23 +233,26 @@ def _findings(signals, by_rule: dict[str, Spread]) -> tuple[list[FindingItem], s
     """One finding per rule that matched, and whether the saved Signals agree
     with what the rules find in the stored logs now."""
     saved = {s.rule_id: s for s in signals}
+    version = current_version()
     findings, missing, differs = [], False, False
     for rule in RULES:
         spread, sig = by_rule[rule.id], saved.get(rule.id)
-        if sig is not None and sig.count != spread.count:
-            differs = True
+        if sig is not None and (sig.count != spread.count or sig.knowledge_version != version):
+            differs = True        # more logs arrived, or the manual mapping changed, since it ran
         if not spread.count:
             continue
         if sig is None:
             missing = True
-            match = lookup_signal(rule.id)
-            status, ref, actions = match.status, match.manual_ref, match.actions or list(rule.draft_actions)
+            match = safe_lookup(rule.id)
+            status, ref, note = match.status, match.manual_ref, match.note
+            actions = match.actions if status == CONFIRMED and match.actions else list(rule.draft_actions)
         else:
-            status, ref, actions = sig.status, sig.manual_ref, json.loads(sig.actions_json or "[]")
+            (status, ref), note = stored_outcome(sig.status, sig.manual_ref), sig.lookup_note
+            actions = json.loads(sig.actions_json or "[]")
         findings.append(FindingItem(
             rule_id=rule.id, title=rule.title_template.format(n=spread.count), severity=rule.severity,
             count=spread.count, status=status, manual_ref=ref, actions=actions, spread=spread,
-            saved=sig is not None,
+            saved=sig is not None, note=None if status == CONFIRMED else note,
         ))
     findings.sort(key=lambda f: (_SEVERITY_ORDER.get(f.severity, 3), -f.count))
     if missing and not signals:
@@ -278,7 +286,7 @@ def _next_steps(findings: list[FindingItem], diagnostics: list[ToolOutcome],
         add("Check the data completeness section: some logs are not in this report " +
             ("(" + issues[0] + ")" if issues else "") + ".")
     for f in sorted(findings, key=lambda f: (_SEVERITY_ORDER.get(f.severity, 3), -f.count)):
-        draft = f.status != "confirmed"
+        draft = f.status != CONFIRMED
         for a in f.actions:
             add(f"{a} [{f.title}]" + (" (draft)" if draft else ""))
     return steps
@@ -315,8 +323,9 @@ def build_summary(db: Session, job_id: str, *, mask: bool = True,
         notes.append("Pattern detection has not run for this run, so the findings below come from "
                      "applying the rules to the stored logs now.")
     elif analysis == "out_of_date":
-        notes.append("The saved pattern detection for this run is out of date (the logs changed after it "
-                     "ran), so the findings below come from applying the rules to the stored logs now.")
+        notes.append("The saved pattern detection for this run is out of date (the logs or the manual mapping "
+                     "changed after it ran), so the findings below come from applying the rules and the manual "
+                     "lookup now. Run pattern detection again to update the saved findings.")
 
     return Summary(
         job_id=job.id, mode=job.mode, status=job.status, tools=json.loads(job.tools or "[]"),
@@ -346,6 +355,12 @@ def _top(counter: Counter, n: int = TOP_DEVICES) -> str:
 
 def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
+
+
+def _manual_line(f: FindingItem) -> str:
+    if f.status == CONFIRMED:
+        return f"{f.status_label}: {_cell(f.manual_ref or '')}"
+    return f"{f.status_label}" + (f" ({_cell(f.note)})" if f.note else "")
 
 
 def render_markdown(s: Summary) -> str:
@@ -379,7 +394,7 @@ def render_markdown(s: Summary) -> str:
             f"- Seen {sp.count or f.count:,} times, first {_t(sp.first_seen)}, last {_t(sp.last_seen)}",
             f"- Devices ({len(sp.devices)}): {_top(sp.devices)}",
             f"- Components: {_top(sp.processes)}",
-            f"- Manual match: {f.manual_ref or f.status}",
+            f"- Manual match: {_manual_line(f)}",
             "",
         ]
 
@@ -432,7 +447,8 @@ def summary_to_json(s: Summary) -> dict:
         "generated_at": _iso(s.generated_at), "masked": s.masked,
         "events": s.events, "first_event": _iso(s.first_event), "last_event": _iso(s.last_event),
         "next_steps": s.next_steps,
-        "findings": [{**{k: v for k, v in asdict(f).items() if k != "spread"}, **spread(f.spread)} for f in s.findings],
+        "findings": [{**{k: v for k, v in asdict(f).items() if k != "spread"}, "status_label": f.status_label,
+                      **spread(f.spread)} for f in s.findings],
         "other_errors": [{"severity": g.severity, "component": g.process, "message": g.message, **spread(g.spread)}
                          for g in s.other_errors],
         "other_error_total": s.other_error_total, "other_error_ungrouped": s.other_error_ungrouped,

@@ -144,10 +144,10 @@ class IngestedFile(Base):
 
 
 class Signal(Base):
-    """Output of the analysis engine: a pattern that fired, plus (eventually)
-    a knowledge-layer match. status starts 'unconfirmed' and stays that way
-    until knowledge.lookup finds a real manual entry — see Marco's feedback,
-    this must never silently invent a confirmed match."""
+    """Output of the analysis engine: a pattern that fired, labelled with the
+    outcome of the manual lookup (knowledge/lookup.py): confirmed against a
+    manual, no match found, or not checked. See Marco's feedback: this must
+    never show a confirmed match that a person did not make."""
     __tablename__ = "signals"
 
     id = Column(String, primary_key=True, default=_uuid)
@@ -156,9 +156,14 @@ class Signal(Base):
     title = Column(String, nullable=False)
     severity = Column(String, nullable=False)   # "error" | "warning" | "info"
     count = Column(Integer, default=0)
-    status = Column(String, default="unconfirmed")  # "unconfirmed" | "confirmed" | "no_match"
-    manual_ref = Column(String, nullable=True)
-    actions_json = Column(Text, nullable=True)   # JSON list of suggested next steps
+    status = Column(String, default="not_checked")  # "confirmed" | "no_match" | "not_checked" (old rows: "unconfirmed")
+    manual_ref = Column(String, nullable=True)       # set only when confirmed: "Document, section X, p. N"
+    actions_json = Column(Text, nullable=True)   # JSON list of suggested next steps (manual's when confirmed, else drafts)
+    # The lookup outcome (knowledge/lookup.py): when it ran, against which version of the
+    # reviewed mapping, and a short reason safe to show. Never manual text.
+    checked_at = Column(DateTime, nullable=True)
+    knowledge_version = Column(String, nullable=True)
+    lookup_note = Column(String, nullable=True)
     # Supporting evidence (app/analysis/engine.py). The matching events themselves are not copied:
     # the sample is in signal_evidence, which points at normalized_events.
     first_seen = Column(DateTime, nullable=True)     # earliest / latest matching event (naive UTC)

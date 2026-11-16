@@ -24,8 +24,9 @@ def init_db() -> None:
 
 def _apply_audit_compatibility_columns() -> None:
     """Upgrade only known nullable metadata columns in place: SCRUM-36's audit
-    columns, S-3's PHI/PII scan columns and the parsed message fields on
-    stored events.
+    columns, S-3's PHI/PII scan columns, the parsed message fields on
+    stored events and the manual lookup outcome on findings (whose old
+    "unconfirmed" status is rewritten to the "not_checked" it meant).
 
     ``create_all`` creates tables but never changes existing ones. These
     columns are nullable, so adding them preserves all existing local SQLite
@@ -45,6 +46,10 @@ def _apply_audit_compatibility_columns() -> None:
         ("signals", "first_seen", "DATETIME"),
         ("signals", "last_seen", "DATETIME"),
         ("signals", "devices_json", "TEXT"),
+        # Confidence labeling (knowledge/lookup.py).
+        ("signals", "checked_at", "DATETIME"),
+        ("signals", "knowledge_version", "VARCHAR"),
+        ("signals", "lookup_note", "VARCHAR"),
         # Message log parsing (ingestion/messages.py). Older events keep NULL:
         # component comes from sourceInfo, which is not stored, so they cannot
         # be backfilled. Pull those logs again to get sequences for them.
@@ -65,6 +70,9 @@ def _apply_audit_compatibility_columns() -> None:
             if table in present and column not in present[table]:
                 # Table/column/type are module constants, not request data.
                 connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+        if "signals" in present:
+            # "unconfirmed" always meant "not checked against a manual"; say so in the data too.
+            connection.execute(text("UPDATE signals SET status = 'not_checked' WHERE status = 'unconfirmed'"))
 
 
 def _create_missing_indexes() -> None:

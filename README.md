@@ -22,7 +22,7 @@ Working end to end for logs, in progress for the rest. What exists today:
 | Central log storage and search | Working. One query across every source and device (time, device, source, category, severity, text), cursor paging, facet counts |
 | Unified Log View | Working. All entries of a collection in one time-ordered stream, with a completeness report that names anything missing |
 | Tool plugins | Netshoot and tshark run as Kubernetes pods. UMF RTI and hub import are stubs |
-| Analysis | Five findings from the sample logs. Manual matching always returns "unconfirmed" until real manuals are ingested |
+| Analysis | Five findings from the sample logs. Each is labelled confirmed against manual / no match found / not checked, from a reviewed mapping kept outside the repo (all "not checked" until one exists) |
 | Deployment | Image build and lab deploy to the MiniEdge via `make` (see `deploy/README.md`) |
 | Frontend | React app with login, prerequisites check, and a system info panel. Collection and log screens are not built yet |
 

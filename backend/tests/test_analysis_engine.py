@@ -52,7 +52,7 @@ def test_each_known_pattern_becomes_a_finding_with_its_evidence(seeded):
     assert ping.count == 30 and ping.title == "Ping scheduler times out (30x)" and ping.severity == "error"
     assert ping.first_seen == T0 + timedelta(minutes=1) and ping.last_seen == T0 + timedelta(minutes=30)
     assert json.loads(ping.devices_json) == {"total": 2, "top": [["hub-a", 20], ["hub-b", 10]]}
-    assert ping.status == "unconfirmed" and json.loads(ping.actions_json)
+    assert ping.status == "not_checked" and json.loads(ping.actions_json)
 
 
 def test_only_the_named_collection_is_analysed(seeded):
