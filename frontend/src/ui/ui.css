@@ -125,6 +125,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 
 /* Run page: setup on the left, the run on the right */
 .run-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 32px; align-items: start; }
+.run-connection-summary { margin: 14px 0 20px; }
 @media (max-width: 900px) { .run-layout { grid-template-columns: 1fr; } }
 .run-side { position: sticky; top: 16px; display: grid; gap: 14px; }
 

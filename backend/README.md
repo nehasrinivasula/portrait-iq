@@ -130,10 +130,11 @@ tests/
    parser in `parsers/portrait_csv.py` is real and tested — start by pointing
    `pipeline.ingest_directory()` at your own log exports and checking the numbers
    against what you already know from the 35 sample files.
-2. **Real device connect.** Live in `orchestrator/routes.py` (`POST /connect`,
-   `GET /discover`) and `collectors/base.py`. The current discovery stub returns
-   nothing — that's the first thing to replace with an actual reachability check
-   against your lab's MiniEdge P360 and Virtual Hub Host.
+2. **Connection setup and device discovery.** `POST /connect` in
+   `orchestrator/routes.py` now performs a bounded TCP preflight and returns
+   safe starting settings for the Connect screen. `GET /discover` and the
+   collector layer remain the extension points for approved, real device and
+   RTI/DDS discovery; a target IP alone must not be used to guess those values.
 
 ## Running it
 
@@ -173,6 +174,27 @@ of at most eight workers across all requests, so an otherwise idle request for
 16 ports takes at most two TCP rounds (plus DNS): about 30 seconds at the
 maximum timeout. Under concurrent load, a request may also wait for shared
 worker capacity.
+
+## Connection setup (SCRUM-99)
+
+The protected `POST /api/connect` endpoint supports the **Connect** screen.
+It accepts an IP address plus request-scoped credentials and returns a bounded
+TCP preflight plus initial run settings. The password is a `SecretStr`, is
+redacted while the request runs, and is never returned, stored, or included in
+the audit record.
+
+```bash
+curl -X POST http://localhost:8000/api/connect \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <token>' \
+  -d '{"ip_address":"192.168.0.3","username":"demo-user","password":"demo-password"}'
+```
+
+For the local demo, the provider returns the configured Portrait IQ tools
+namespace, addresses resolved from the target, and interfaces on the tool host.
+It intentionally returns no DDS domain IDs: those cannot be inferred safely
+from an IP address and require an approved RTI discovery adapter. This is not
+GE authentication or GE SSO.
 ## Login setup
 
 This is a local demo implementation, not GE SSO. The one demo user's username,
