@@ -15,7 +15,11 @@ describe("validateChoices / buildOptions", () => {
     const c = defaultChoices();
     c.rti.durationS = "1";
     expect(validateChoices(new Set(["netshoot"]), c)).toEqual({});
-    expect(buildOptions(new Set(["netshoot"]), c)).toEqual({});
+    expect(buildOptions(new Set(["netshoot"]), c)).toEqual({ netshoot: {
+      ports: [22, 443, 6443],
+      dns_names: ["kubernetes.default.svc.cluster.local", "axone-log-export-tcp.pm.svc.cluster.local"],
+      extra_targets: [],
+    } });
   });
 
   it("requires an uploaded capture for tshark import", () => {
@@ -40,15 +44,15 @@ describe("validateChoices / buildOptions", () => {
     c.rti.durationS = "30";
     c.tshark.durationS = "60";
     expect(buildOptions(new Set(["tshark", "rti"]), c)).toEqual({
-      tshark: { mode: "run", duration_s: 60, filter_preset: "rti_all" },
-      rti: { domain: 7, duration_s: 30 },
+      tshark: { mode: "run", duration_s: 60, interface: "any", filter_preset: "rti_all" },
+      rti: { domain: 12, duration_s: 30 },
     });
   });
 
   it("sends exactly one live filter: a quick preset or a typed port", () => {
     const c = defaultChoices();
     c.tshark.preset = "rti_view_pod";
-    expect(buildOptions(new Set(["tshark"]), c).tshark).toEqual({ mode: "run", duration_s: 60, filter_preset: "rti_view_pod" });
+    expect(buildOptions(new Set(["tshark"]), c).tshark).toEqual({ mode: "run", duration_s: 60, interface: "any", filter_preset: "rti_view_pod" });
 
     c.tshark.filterKind = "manual";
     expect(validateChoices(new Set(["tshark"]), c)["tshark.port"]).toBeDefined();
@@ -58,7 +62,7 @@ describe("validateChoices / buildOptions", () => {
     }
     c.tshark.port = "7400";
     expect(validateChoices(new Set(["tshark"]), c)).toEqual({});
-    expect(buildOptions(new Set(["tshark"]), c).tshark).toEqual({ mode: "run", duration_s: 60, capture_filter: "port 7400" });
+    expect(buildOptions(new Set(["tshark"]), c).tshark).toEqual({ mode: "run", duration_s: 60, interface: "any", capture_filter: "port 7400" });
     c.tshark.proto = "udp";
     expect(buildOptions(new Set(["tshark"]), c).tshark).toMatchObject({ capture_filter: "udp port 7400" });
   });

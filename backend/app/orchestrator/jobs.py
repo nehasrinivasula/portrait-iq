@@ -62,6 +62,7 @@ def create_job(
     *,
     requested_by: str | None = None,
     session_id: str | None = None,
+    configuration: dict | None = None,
 ) -> Job:
     job = Job(
         mode=mode,
@@ -72,6 +73,7 @@ def create_job(
         max_output_mb=limits.max_output_mb,
         requested_by=requested_by,
         session_id=session_id,
+        configuration=json.dumps(configuration) if configuration is not None else None,
     )
     db.add(job)
     db.commit()

@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     # (compute). In a pod the backend uses its service account; from a laptop
     # it uses this kubeconfig (or ~/.kube/config when unset).
     tools_namespace: str = "portrait-iq"
+    # Comma-separated namespaces explicitly provisioned for diagnostic pods.
+    tools_allowed_namespaces: str = ""
     kubeconfig_path: str | None = None
     # The lab has no internet: images are imported into containerd by hand,
     # so IfNotPresent never pulls there. Pin exact tags.

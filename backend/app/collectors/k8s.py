@@ -346,9 +346,11 @@ class _Base64Writer:
 _runner: PodRunner | None = None
 
 
-def get_pod_runner() -> PodRunner:
+def get_pod_runner(namespace: str | None = None) -> PodRunner:
     """The shared runner for our namespace. Connects on first use."""
     global _runner
+    if namespace is not None and namespace != settings.tools_namespace:
+        return PodRunner(namespace)
     if _runner is None:
         _runner = PodRunner(settings.tools_namespace)
     return _runner
