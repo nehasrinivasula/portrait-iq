@@ -149,6 +149,7 @@ def client_env(tmp_path, monkeypatch):
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = lambda: User(id="tester", name="Tester")
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)   # the test user has no login session to check
     seed = Session()
     seed.add(Job(id="job-1", mode="live", status="done"))
     seed.commit()
@@ -241,8 +242,8 @@ def test_runs_left_running_by_a_dead_process_are_failed_at_startup(job):
 def test_status_refuses_a_locked_session_without_counting_as_activity(client_env, monkeypatch):
     client, _ = client_env
     touched = []
-    monkeypatch.setattr("app.auth.touch_session", lambda user_id: touched.append(user_id))
+    monkeypatch.setattr("app.auth.touch_session", lambda db, user: touched.append(user.id))
     assert client.get("/api/jobs/job-1/findings/status").status_code == 200
     assert touched == []                                          # polling must not keep a session alive
-    monkeypatch.setattr("app.orchestrator.routes.is_locked", lambda _user_id: True)
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: True)
     assert client.get("/api/jobs/job-1/findings/status").status_code == 423

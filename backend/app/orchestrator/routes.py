@@ -390,14 +390,8 @@ def run_findings(job_id: str, db: Session = Depends(get_db), user: User = Depend
     return findings_for(db, job_id)
 
 
-def _unlocked_user(user: User = Depends(get_current_user)) -> User:
-    if is_locked(user.id):
-        raise HTTPException(423, "Session locked. Log in again to unlock.")
-    return user
-
-
 @router.get("/jobs/{job_id}/findings/status", response_model=FindingsStatusOut)
-def get_findings_status(job_id: str, db: Session = Depends(get_db), user: User = Depends(_unlocked_user)):
+def get_findings_status(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_unlocked_user)):
     """Whether this collection's findings are there, being produced, failed, or out of date. Not audited:
     a page polls it while it waits. Refuses a locked session, but does not count as activity, so a page
     left polling does not keep the session from locking."""
