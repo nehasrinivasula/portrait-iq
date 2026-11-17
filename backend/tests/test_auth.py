@@ -95,6 +95,24 @@ def test_authenticated_protected_route_is_allowed(client: TestClient, demo_crede
     assert response.json() == []
 
 
+def test_plugins_route_rejects_missing_token(client: TestClient, demo_credentials):
+    # Regression for SCRUM-122: /api/plugins used to be the one diagnostic
+    # endpoint with no auth guard. Hit it over HTTP (not by calling the
+    # handler directly) so the dependency layer actually runs.
+    response = client.get("/api/plugins")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Authentication required.", "code": "auth_required"}
+
+
+def test_authenticated_plugins_route_is_allowed(client: TestClient, demo_credentials):
+    token = login(client, demo_credentials)
+    response = client.get("/api/plugins", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    assert "plugins" in response.json()
+
+
 def test_health_is_public(client: TestClient):
     response = client.get("/health")
 

@@ -400,7 +400,9 @@ def test_job_request_rejects_unknown_fields():
 
 
 def test_list_plugins_endpoint():
-    out = routes.list_plugins()
+    # list_plugins now requires an authenticated user (SCRUM-122); the
+    # dependency is only resolved by FastAPI, so pass one for the direct call.
+    out = routes.list_plugins(user=User(id="tester", name="Tester"))
     assert out.load_errors == {}
     assert BUILTINS <= {p.name for p in out.plugins}
     tshark = next(p for p in out.plugins if p.name == "tshark")
