@@ -43,7 +43,9 @@ export default function ConnectionSetupPage() {
     try {
       const checked = await checkConnection(target);
       setPreflight(checked);
-      if (!checked.reachable) return;
+      // A failed TCP preflight is useful diagnostic information, but it is not
+      // a reason to discard the safe starting configuration.  `/connect`
+      // returns that configuration without attempting remote authentication.
       const detected = await detectConnection({ ip_address: target, username: username.trim(), password });
       setResult(detected);
       setTargetIp(detected.ip_address);
