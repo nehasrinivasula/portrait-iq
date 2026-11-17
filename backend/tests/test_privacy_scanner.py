@@ -1,6 +1,8 @@
 """PHI/PII scanner rules. Pure Python: no database, no web app."""
 import json
 
+import pytest
+
 from app.privacy.scanner import (
     CATEGORY_LABELS, NETWORK_CATEGORIES, SCANNER_VERSION, Flag, category_group, decode_flags, encode_flags,
     mask_text, scan_columns, scan_event_fields, scan_text, split_flags,
@@ -361,3 +363,59 @@ def test_bare_tel_is_flagged():
 def test_ssn_with_unusual_grouping_is_masked_whole():
     assert _masked("ssn=123 456789 ok") == "ssn=[REDACTED:ssn] ok"
     assert _masked("ssn=12345 6789 ok") == "ssn=[REDACTED:ssn] ok"
+
+
+# Where a spaced value stops ---------------------------------------------------------
+# A bare value that can contain spaces (phone, name, id) has no marker for its end, so the scanner
+# takes more rather than less: leaking PHI is worse than hiding a word. These pin how far "more" goes,
+# so a change that masks less (PHI left behind) or more (diagnostic text lost) shows up as a failure.
+
+def _masked(text):
+    from app.privacy.scanner import mask_text
+    return mask_text(text, list(scan_text(text)))
+
+
+@pytest.mark.parametrize("line,expected", [
+    # A last group that starts a time is the log's, not the phone's.
+    ("phone=555-1234 10:30:00", "phone=[REDACTED:phone] 10:30:00"),
+    ("tel=5551234567 10:30", "tel=[REDACTED:phone] 10:30"),
+    ("phone=555 1234 5:07", "phone=[REDACTED:phone] 5:07"),
+    # Words and plain counts after a phone: words stay, a bare count may be taken (accepted trade-off).
+    ("phone=555-1234 at 10:30", "phone=[REDACTED:phone] at 10:30"),
+    ("phone=555-1234 12 retries", "phone=[REDACTED:phone] retries"),
+    # International numbers with spaces are masked whole.
+    ("phone_number=+44 20 7946 0958 ok", "phone_number=[REDACTED:phone] ok"),
+])
+def test_phone_value_stops_at_a_time_or_a_word(line, expected):
+    assert _masked(line) == expected
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("patientName=John Smith was admitted", "patientName=[REDACTED:person_name] was admitted"),
+    ("patientName=John Smith, MD status=ok", "patientName=[REDACTED:person_name] status=ok"),
+    # Up to four words after the first are taken, because names run to "Mary Ann Van Der Berg".
+    # A sentence of Title-Case words right after a name is therefore swallowed too: accepted trade-off.
+    ("patientName=John Reviewed Chart Today Entered", "patientName=[REDACTED:person_name]"),
+    ("patientName=John Reviewed Chart Today Entered Late", "patientName=[REDACTED:person_name] Late"),
+])
+def test_name_value_stops_at_a_lowercase_word_or_after_four_more_words(line, expected):
+    assert _masked(line) == expected
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("mrn=1234 status=ok", "mrn=[REDACTED:record_identifier] status=ok"),
+    ("mrn=123 456 789012 retries=3", "mrn=[REDACTED:record_identifier] retries=3"),
+    ("mrn=A123 4567 queued", "mrn=[REDACTED:record_identifier] queued"),
+    ("mrn=123,456 next", "mrn=[REDACTED:record_identifier] next"),
+    # Up to three further number groups are one id; a fourth is left alone.
+    ("mrn=1 2 3 4 5", "mrn=[REDACTED:record_identifier] 5"),
+])
+def test_id_value_takes_up_to_three_more_number_groups(line, expected):
+    assert _masked(line) == expected
+
+
+def test_a_loose_phone_never_ends_before_its_first_run_of_digits():
+    for line, first in [("phone=5551234567", "5551234567"), ("phone=555-1234", "555-1234"),
+                        ("tel: 555 1234 10:30", "555"), ("phone=+1 555 123 4567", "+1")]:
+        f = scan_text(line)[0]
+        assert line[f.start:f.end].startswith(first), line

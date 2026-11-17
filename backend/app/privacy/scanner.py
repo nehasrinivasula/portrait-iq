@@ -267,6 +267,8 @@ _DOB_VALUES = (
     re.compile(r"\d{1,2}[ ][A-Za-z]{3,9}\.?,?[ ]\d{4}"),                      # 5 January 1980
     re.compile(r"\d{1,2}[ ]\d{1,2}[ ]\d{2,4}|\d{4}[ ]\d{1,2}[ ]\d{1,2}"),       # 01 02 1980
 )
+# The last group of a loose phone value when it is really the hour of a time: " 10" in "555-1234 10:30".
+_TIME_HOUR = re.compile(r"[ ]\d{1,2}\Z")
 _ID_VALUE = re.compile(r"[A-Za-z]{0,3}\d[\w.:/-]*(?:(?:[ ]|,(?=\d))\d[\w.:/-]*){0,3}")   # 1234 5678, A123 4567, 123,456, 12:34:56
 _ADDRESS_VALUE = re.compile(r"[^;|\"\r\n]{1,80}")
 
@@ -303,7 +305,13 @@ def _extend(category: str, text: str, start: int, end: int) -> int:
         if m is None:
             m = _PHONE_LOOSE.match(text, start)
             if m is not None:
-                return start + len(m.group().rstrip(" .-("))
+                loose = start + len(m.group().rstrip(" .-("))
+                # "phone=555-1234 10:30:00": a last group that starts a time belongs to the log line, not the phone.
+                if text[loose:loose + 1] == ":" and text[loose + 1:loose + 2].isdigit():
+                    hour = _TIME_HOUR.search(text, start, loose)
+                    if hour is not None and hour.start() > start:
+                        loose = hour.start()
+                return max(end, loose)
     elif category == "date_of_birth":
         m = next((r.match(text, start) for r in _DOB_VALUES if r.match(text, start)), None)
     elif category == "record_identifier":
