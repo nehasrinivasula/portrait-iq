@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { defaultTimeFrame, resolveTimeFrame, toApi, toLocalInput } from "./timeframe";
+import { defaultTimeFrame, filterRange, PRESETS, resolveTimeFrame, toApi, toLocalInput } from "./timeframe";
 
 const now = new Date("2026-10-25T20:00:00Z");
 
 describe("resolveTimeFrame", () => {
+  it("offers the common preset windows requested by field engineers", () => {
+    expect(PRESETS.map((preset) => preset.id)).toEqual(["1h", "6h", "24h", "7d"]);
+    expect(defaultTimeFrame().preset).toBe("24h");
+  });
+
   it("resolves presets back from now", () => {
     const r = resolveTimeFrame({ ...defaultTimeFrame(), preset: "6h" }, now);
     expect(r.ok && toApi(r)).toEqual({ since: "2026-10-25T14:00:00.000Z", until: "2026-10-25T20:00:00.000Z" });
@@ -31,5 +36,12 @@ describe("resolveTimeFrame", () => {
     const until = toLocalInput(new Date(now.getTime() - 3600e3));
     const r = resolveTimeFrame({ preset: "custom", customSince: since, customUntil: until }, now);
     expect(r.ok).toBe(true);
+  });
+
+  it("uses unbounded custom ranges only when filtering logs already stored", () => {
+    const since = "2020-01-01T00:00";
+    const until = "2020-01-01T01:00";
+    expect(filterRange({ preset: "custom", customSince: since, customUntil: until }, now))
+      .toMatchObject({ ok: true, since: expect.stringMatching(/^2020-01-01T/), until: expect.stringMatching(/^2020-01-01T/) });
   });
 });

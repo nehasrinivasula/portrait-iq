@@ -118,7 +118,10 @@ class RtiCollector(Collector):
         if res.exit_code not in (0, TIMED_OUT):
             lines = (stderr or stdout).strip().splitlines()
             reason = lines[-1][:200] if lines else f"exit code {res.exit_code}"
-            raise PluginError(f"rtiddsspy failed ({reason})")
+            raise PluginError(
+                f"rtiddsspy failed ({reason})",
+                safe_reason="The RTI diagnostic could not be completed.",
+            )
 
         found = summarize(stdout)
         (out_dir / "rti.json").write_text(json.dumps(

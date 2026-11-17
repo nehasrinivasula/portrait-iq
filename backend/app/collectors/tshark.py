@@ -281,7 +281,10 @@ class TsharkCollector(Collector):
         if res.exit_code != 0:
             why = "timed out" if res.exit_code is None else f"exit {res.exit_code}"
             last = redact(res.stderr.strip().splitlines()[-1][:200]) if res.stderr.strip() else ""
-            raise PluginError(f"tshark capture failed ({why}) {last}".strip())
+            raise PluginError(
+                f"tshark capture failed ({why}) {last}".strip(),
+                safe_reason="The network capture could not be completed.",
+            )
         self._runner.read_file(self._pod, "/tmp/capture.pcapng", dest, max_bytes=(max_mb + 1) * 1024 * 1024)
 
     def cleanup(self) -> None:
@@ -308,5 +311,8 @@ def _wireshark_tool(name: str, args: list[str], timeout_s: int) -> str:
         raise PluginError(f"{name} took longer than {timeout_s}s") from None
     if proc.returncode != 0:
         last = proc.stderr.strip().splitlines()[-1][:200] if proc.stderr.strip() else ""
-        raise PluginError(f"{name} failed (exit {proc.returncode}) {redact(last)}".strip())
+        raise PluginError(
+            f"{name} failed (exit {proc.returncode}) {redact(last)}".strip(),
+            safe_reason=f"{name} could not process the capture.",
+        )
     return proc.stdout

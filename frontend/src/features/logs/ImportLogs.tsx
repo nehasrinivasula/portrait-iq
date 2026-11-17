@@ -16,10 +16,11 @@ export default function ImportLogs({ onImported }: { onImported: () => void }) {
     try {
       const r = await importLogFiles([...files]);
       const events = r.files.reduce((n, f) => n + (f.events ?? 0), 0);
+      const skipped = r.files.reduce((n, f) => n + (f.rows_rejected ?? 0), 0);
       if (r.failed > 0)
-        notify({ kind: "warn", title: "Some files couldn't be imported", body: r.files.find((f) => f.error)?.error ?? `${r.failed} failed.` });
+        notify({ kind: "warn", title: "Some files couldn't be imported", body: `${r.files.find((f) => f.error)?.error ?? `${r.failed} failed.`}${skipped ? ` ${skipped} malformed log lines were skipped.` : ""}` });
       else
-        notify({ kind: "ok", title: "Logs imported", body: `${r.new_files} new file${r.new_files === 1 ? "" : "s"}, ${events} events${r.already_acquired ? `, ${r.already_acquired} already imported` : ""}.` });
+        notify({ kind: skipped ? "warn" : "ok", title: skipped ? "Logs imported with skipped lines" : "Logs imported", body: `${r.new_files} new file${r.new_files === 1 ? "" : "s"}, ${events} events${r.already_acquired ? `, ${r.already_acquired} already imported` : ""}${skipped ? `, ${skipped} malformed log lines skipped` : ""}.` });
       onImported();
     } catch (e) {
       notify({ kind: "error", title: "Import failed", body: e instanceof ApiError && e.status !== 0 ? e.message : "Can't reach the server." });

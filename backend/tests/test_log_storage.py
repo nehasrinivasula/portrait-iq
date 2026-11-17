@@ -247,7 +247,7 @@ def test_reingesting_replaces_the_receipt_instead_of_adding_one(db, tmp_path):
 def test_a_failed_file_leaves_no_receipt_and_no_events(db, tmp_path):
     bad = make_csv(tmp_path / "bad.csv", good=3, bad=3)
     with pytest.raises(pipeline.IngestError):
-        pipeline.ingest_file(bad, db, job_id=None)
+        pipeline.ingest_file(bad, db, job_id=None, max_reject_rate=0.01)
     assert db.scalar(select(func.count()).select_from(IngestedFile)) == 0
     assert db.scalar(select(func.count()).select_from(EventRow)) == 0
 

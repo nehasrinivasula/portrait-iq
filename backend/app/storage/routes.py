@@ -3,6 +3,7 @@ HTTP surface for the central event store. Mounted at /api/logs.
 
   GET /api/logs/events                           search every stored event, any source or device
   GET /api/logs/facets                           counts per source/severity/category/device
+  GET /api/logs/sequences                        request/reply sequences: answered, nak, unanswered
   GET /api/logs/collections                      every collection and how many events it holds
   GET /api/logs/collections/{id}                 is this collection complete? what is missing?
   GET /api/logs/collections/{id}/events          unified log view: all of its entries, in time order
@@ -25,31 +26,24 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.audit import log_action
-from app.auth import User, get_current_user, is_locked, touch_session
+from app.auth import User, get_active_user
 from app.db import get_db
 from app.models import Job
 from app.privacy import service as privacy
 from app.privacy.scanner import (
-    CATEGORY_LABELS, SCANNER_VERSION, category_group, decode_flags, mask_text, scan_columns,
+    CATEGORY_LABELS, SCANNER_VERSION, category_group, decode_flags, mask_text, scan_columns, scan_text,
 )
 from app.storage.completeness import PROBLEM
 from app.storage import events as store
+from app.storage import sequences
 from app.storage.filters import DEFAULT_LIMIT, MAX_LIMIT, UNASSIGNED, EventFilter, FilterError, build_filter
 from app.storage.schemas import (
-    CollectionOut, CollectionSummaryOut, FacetsOut, FacetValueOut, FileSummaryOut, IssueOut,
+    CollectionOut, CollectionSummaryOut, CommandStatsOut, FacetsOut, FacetValueOut, FileSummaryOut, IssueOut,
     FlagCountOut, LogEventOut, LogPageOut, PrivacyCategoryOut, PrivacyFileOut, PrivacyReportOut, RescanOut,
-    SensitiveFlagOut,
+    SensitiveFlagOut, SequenceOut, SequencePageOut,
 )
 
 router = APIRouter()
-
-
-def _active_user(user: User = Depends(get_current_user)) -> User:
-    # Same rule as /api/sources: a locked session cannot read logs.
-    if is_locked(user.id):
-        raise HTTPException(423, "Session locked. Unlock before viewing logs.")
-    touch_session(user.id)
-    return user
 
 
 def _filter(
@@ -66,12 +60,16 @@ def _filter(
     flagged: Optional[bool] = Query(None, description="true: only events flagged as possible PHI/PII. "
                                                     "false: only events scanned with nothing found."),
     flag_category: list[str] = Query([], description="Only events flagged with this kind, e.g. email; repeat for several."),
+    message_kind: list[str] = Query([], description="request, reply, response, publish or timeout; repeat for several."),
+    component: list[str] = Query([], description="Class from sourceInfo, e.g. ConfigMessageProcessor; repeat for several."),
+    correlation_id: Optional[str] = Query(None, description="Show one whole exchange: the request and its reply."),
 ) -> EventFilter:
     try:
         return build_filter(
             since=since, until=until, devices=device, sources=source, categories=category,
             severities=severity, min_severity=min_severity, process=process,
             source_file=source_file, text=q, flagged=flagged, flag_categories=flag_category,
+            message_kinds=message_kind, components=component, correlation_id=correlation_id,
         )
     except FilterError as e:
         raise HTTPException(400, str(e))
@@ -82,6 +80,34 @@ def _utc(ts: Optional[datetime]) -> Optional[datetime]:
 
 
 UNREADABLE = "[REDACTED:unreadable]"
+
+# Fields parsed out of the message at ingest (ingestion/messages.py). They are
+# bounded to safe shapes there, and are not part of the stored scan, so with
+# mask on each one is scanned here as well, as a second line of defence.
+PARSED_FIELDS = ("component", "command", "correlation_id", "status")
+
+
+def _mask_value(value: Optional[str], field: str) -> tuple[Optional[str], bool]:
+    """(value with personal data masked, whether anything was masked)."""
+    if not value:
+        return value, False
+    flags = [f for f in scan_text(value, field) if category_group(f.category) == "personal"]
+    return (mask_text(value, flags, field), True) if flags else (value, False)
+
+
+def _parsed_out(values: dict, mask: bool, withhold: bool = False) -> tuple[dict, bool]:
+    if not mask:
+        return values, False
+    out, masked = {}, False
+    for name, value in values.items():
+        if name not in PARSED_FIELDS:
+            out[name] = value
+        elif withhold:
+            out[name], masked = (UNREADABLE if value else value), masked or bool(value)
+        else:
+            out[name], hit = _mask_value(value, name)
+            masked = masked or hit
+    return out, masked
 
 
 def _event_out(e, mask: bool = False) -> LogEventOut:
@@ -102,6 +128,11 @@ def _event_out(e, mask: bool = False) -> LogEventOut:
             out = {name: (UNREADABLE if value else value) for name, value in out.items()}
         elif flags:
             out = {name: mask_text(value, flags, name) for name, value in out.items()}
+    parsed, parsed_masked = _parsed_out(
+        dict(component=e.component, message_kind=e.message_kind, command=e.command,
+             correlation_id=e.correlation_id, status=e.status),
+        mask, withhold=damaged,
+    )
     return LogEventOut(
         id=e.id, timestamp=_utc(e.timestamp), source=e.source, severity=e.severity,
         source_file=e.source_file, source_line=e.source_line, job_id=e.job_id,
@@ -116,8 +147,9 @@ def _event_out(e, mask: bool = False) -> LogEventOut:
                              start=None if mask else f.start, end=None if mask else f.end)
             for f in network
         ],
-        masked=bool(mask and (flags or damaged)),
+        masked=bool(mask and (flags or damaged or parsed_masked)),
         **out,
+        **parsed,
     )
 
 
@@ -153,7 +185,7 @@ def search_events(
     cursor: Optional[str] = Query(None, description="next_cursor from the previous page."),
     mask: bool = Query(False, description="Replace flagged PHI/PII spans with [REDACTED:<kind>]."),
     db: Session = Depends(get_db),
-    user: User = Depends(_active_user),
+    user: User = Depends(get_active_user),
 ):
     """Search every stored event across all sources and devices in one query.
     Newest first by default."""
@@ -168,7 +200,7 @@ def get_facets(
     mask: bool = Query(False, description="Withhold the device and category values: they are log fields that can "
                                           "hold flagged text, and the table masks them."),
     db: Session = Depends(get_db),
-    user: User = Depends(_active_user),
+    user: User = Depends(get_active_user),
 ):
     f = replace(f, job_id=job_id.strip() or None) if job_id else f
     r = store.facets(db, f)
@@ -181,13 +213,72 @@ def get_facets(
         total=r.total, first_timestamp=_utc(r.first_timestamp), last_timestamp=_utc(r.last_timestamp),
         sources=_facet_values(r.sources), severities=_facet_values(r.severities),
         categories=[] if mask else _facet_values(r.categories), devices=[] if mask else _facet_values(r.devices),
-        distinct_devices=r.distinct_devices,
+        distinct_devices=r.distinct_devices, message_kinds=_facet_values(r.message_kinds),
+    )
+
+
+@router.get("/sequences", response_model=SequencePageOut)
+def get_sequences(
+    f: EventFilter = Depends(_filter),
+    job_id: Optional[str] = Query(None, description="Limit to one collection, or 'unassigned'."),
+    state: list[str] = Query([], description="answered, nak, unanswered, pending or unexpected; repeat for several."),
+    command: Optional[str] = Query(None, description="e.g. ChangeConfigCmd or cmd://cmd/util/ping"),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    mask: bool = Query(False, description="Replace PHI/PII in command, status, component, device and "
+                                          "correlation id with [REDACTED:<kind>]."),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_active_user),
+):
+    """Request/reply sequences rebuilt from the logs: which requests were
+    answered and how fast, refused (nak), never answered, or still pending.
+    Counts and per-command stats cover the whole search; items are one page,
+    newest first. Uses the same time/device/component filters as /events."""
+    bad = [s for s in state if s not in sequences.STATES]
+    if bad:
+        raise HTTPException(400, f"Unknown state '{bad[0]}'. Use one of: {', '.join(sequences.STATES)}.")
+    f = replace(f, job_id=job_id.strip() or None) if job_id else f
+    window_end = f.until or datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        seqs = sequences.find_sequences(db, f, now=window_end)
+    except FilterError as e:
+        raise HTTPException(400, str(e))
+    counts, stats = sequences.summarize(seqs)
+    picked = [s for s in seqs if (not state or s.state in state) and (command is None or s.command == command)]
+    picked.reverse()   # newest first
+    log_action(
+        db, user.id, "logs_sequences_view",
+        detail=f"filters={f.used_fields()} state={bool(state)} command={command is not None} "
+               f"matched={len(picked)} masked={mask}",
+        session_id=user.session_id,
+    )
+
+    def safe(values: dict) -> dict:
+        out, _ = _parsed_out(values, mask)
+        if mask and "device_id" in out:
+            out["device_id"], _ = _mask_value(out["device_id"], "device_id")
+        return out
+
+    return SequencePageOut(
+        counts=counts,
+        by_command=[CommandStatsOut(**safe(vars(c))) for c in stats],
+        total=len(picked),
+        items=[
+            SequenceOut(
+                state=s.state, request_event_id=s.request_event_id,
+                request_at=_utc(s.request_at), reply_event_id=s.reply_event_id, reply_at=_utc(s.reply_at),
+                latency_ms=s.latency_ms, clock_skew=s.clock_skew,
+                **safe(dict(component=s.component, command=s.command, device_id=s.device_id,
+                            correlation_id=s.correlation_id, status=s.status)),
+            )
+            for s in picked[offset:offset + limit]
+        ],
     )
 
 
 @router.get("/collections", response_model=list[CollectionOut])
 def list_collections(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db),
-                     user: User = Depends(_active_user)):
+                     user: User = Depends(get_active_user)):
     log_action(db, user.id, "collections_view", detail=f"limit={limit}", session_id=user.session_id)
     return [
         CollectionOut(
@@ -207,7 +298,7 @@ def _summary_or_404(db: Session, job_id: str):
 
 
 @router.get("/collections/{job_id}", response_model=CollectionSummaryOut)
-def get_collection(job_id: str, db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def get_collection(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """Completeness report: how many events were stored versus read, which
     files were rejected or never ingested, and a plain yes/no in `complete`."""
     s = _summary_or_404(db, job_id)
@@ -237,7 +328,7 @@ def view_collection(
     cursor: Optional[str] = Query(None, description="next_cursor from the previous page."),
     mask: bool = Query(False, description="Replace flagged PHI/PII spans with [REDACTED:<kind>]."),
     db: Session = Depends(get_db),
-    user: User = Depends(_active_user),
+    user: User = Depends(get_active_user),
 ):
     """The unified log view: every entry from one collection, from every
     source and device, as a single time-ordered stream. With no filters this
@@ -266,7 +357,7 @@ def _counts(counter: dict[str, int]) -> list[FlagCountOut]:
 
 
 @router.get("/privacy/categories", response_model=list[PrivacyCategoryOut])
-def privacy_categories(user: User = Depends(_active_user)):
+def privacy_categories(user: User = Depends(get_active_user)):
     """The kinds of PHI/PII the scanner looks for, and what each one means."""
     return [PrivacyCategoryOut(category=k, description=v, group=category_group(k)) for k, v in CATEGORY_LABELS.items()]
 
@@ -343,26 +434,26 @@ def _scan(db: Session, user: User, scope: Optional[str]) -> RescanOut:
 
 
 @router.get("/privacy", response_model=PrivacyReportOut)
-def all_privacy(db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def all_privacy(db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """PHI/PII scan report across every stored event, whichever collection it belongs to."""
     return _report(db, user, None)
 
 
 @router.post("/privacy/scan", response_model=RescanOut)
-def scan_all(db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def scan_all(db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """Scan every event the current scanner has not judged yet. Safe to repeat."""
     return _scan(db, user, None)
 
 
 @router.get("/collections/{job_id}/privacy", response_model=PrivacyReportOut)
-def collection_privacy(job_id: str, db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def collection_privacy(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """PHI/PII scan report for one collection: whether every event was scanned
     by the current scanner, and how many flags of each kind were found."""
     return _report(db, user, job_id)
 
 
 @router.post("/collections/{job_id}/privacy/scan", response_model=RescanOut)
-def scan_collection(job_id: str, db: Session = Depends(get_db), user: User = Depends(_active_user)):
+def scan_collection(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     """Scan the events of this collection that the current scanner has not
     judged yet (logs stored before PHI/PII flagging existed, or scanned by an
     older rule set). Safe to repeat."""

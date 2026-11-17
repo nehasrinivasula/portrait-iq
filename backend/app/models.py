@@ -2,8 +2,10 @@
 ORM tables. One per architecture-diagram box that needs to persist state:
 Device (connect), Job (orchestrator), NormalizedEvent (event store), Signal
 (analysis engine output), AcquiredFileRecord (log acquisition manifest),
-IngestedFile (receipt of what ingestion stored per file), AuditLogEntry (cross-cutting).
+IngestedFile (receipt of what ingestion stored per file), AuditLogEntry (cross-cutting),
+SessionActivity (server-side idle lock).
 """
+import json
 import uuid
 from datetime import datetime
 
@@ -47,9 +49,23 @@ class Job(Base):
     # The request that started this background job. The job can finish after
     # the browser request ends, so these fields preserve its audit ownership.
     requested_by = Column(String, nullable=True)
+
+    @property
+    def skipped_steps(self) -> list[str]:
+        """Steps this run's tool selection never needs (see orchestrator.jobs)."""
+        from app.orchestrator.jobs import skipped_steps
+        try:
+            return skipped_steps(json.loads(self.tools or "[]"))
+        except Exception:  # noqa: BLE001 - a display hint must never break job reads
+            return []
     session_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
+    # Why a run failed, as JSON {step, plugin, reason} for the UI (SCRUM-68).
+    # NULL while running and for a clean run. Per-tool failures are in
+    # results.json; this is the run-level reason (bad options, a failing
+    # step, cleanup, an interruption).
+    error = Column(Text, nullable=True)
 
     events = relationship("NormalizedEvent", back_populates="job")
     signals = relationship("Signal", back_populates="job")
@@ -80,6 +96,12 @@ class NormalizedEvent(Base):
     privacy_scan_version = Column(Integer, nullable=True)
     sensitive_flags = Column(Text, nullable=True)
     network_flags = Column(Text, nullable=True)
+    # Parsed from free-text messages (ingestion/messages.py); NULL for ordinary lines.
+    component = Column(String, nullable=True)        # class / source file from sourceInfo
+    message_kind = Column(String, nullable=True)     # request | reply | response | publish | timeout
+    command = Column(String, nullable=True)
+    correlation_id = Column(String, nullable=True)   # ties a request to its reply
+    status = Column(String, nullable=True)           # e.g. "ack", "nak_alreadyExists"
 
     job = relationship("Job", back_populates="events")
 
@@ -90,6 +112,9 @@ class NormalizedEvent(Base):
         Index("ix_events_job_ts", "job_id", "timestamp", "id"),
         # Also serves plain device_id lookups, so device_id has no index of its own.
         Index("ix_events_device_ts", "device_id", "timestamp"),
+        # Request/reply lookups (storage/sequences.py) and "show this exchange".
+        Index("ix_events_correlation", "correlation_id"),
+        Index("ix_events_kind_ts", "message_kind", "timestamp"),
     )
 
 
@@ -134,8 +159,25 @@ class Signal(Base):
     status = Column(String, default="unconfirmed")  # "unconfirmed" | "confirmed" | "no_match"
     manual_ref = Column(String, nullable=True)
     actions_json = Column(Text, nullable=True)   # JSON list of suggested next steps
+    # Supporting evidence (app/analysis/engine.py). The matching events themselves are not copied:
+    # the sample is in signal_evidence, which points at normalized_events.
+    first_seen = Column(DateTime, nullable=True)     # earliest / latest matching event (naive UTC)
+    last_seen = Column(DateTime, nullable=True)
+    devices_json = Column(Text, nullable=True)       # JSON {"total": n, "top": [[device_id, count], ...]}
 
     job = relationship("Job", back_populates="signals")
+
+
+class SignalEvidence(Base):
+    """A few of the events a signal matched: the earliest and the latest, so a finding can be checked
+    against the real log lines. Points at the event by id; the text is read from the event store (and
+    masked for PHI/PII) when shown, never copied here. rank 0.. orders them by time."""
+    __tablename__ = "signal_evidence"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id = Column(String, ForeignKey("signals.id"), nullable=False, index=True)
+    event_id = Column(Integer, nullable=False)
+    rank = Column(Integer, nullable=False, default=0)
 
 
 class AcquiredFileRecord(Base):
@@ -202,3 +244,16 @@ class AuditLogEntry(Base):
     session_id = Column(String, nullable=True, index=True)
     action = Column(String, nullable=False, index=True)
     detail = Column(Text, nullable=True)
+
+
+class SessionActivity(Base):
+    """Last user-initiated request per login session, for the idle lock
+    (S-2, SCRUM-34). Kept in the database so a backend restart does not
+    unlock idle sessions. One row per token ``jti``; a session with no row is
+    treated as locked."""
+    __tablename__ = "session_activity"
+
+    session_id = Column(String, primary_key=True)      # token jti
+    user_id = Column(String, nullable=False, index=True)
+    last_active_at = Column(Float, nullable=False)     # epoch seconds (time.time())
+    locked_at = Column(Float, nullable=True)           # set once; a locked session stays locked

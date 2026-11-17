@@ -27,7 +27,7 @@ NAME, SSN = "John Smith", "123-45-6789"
 
 
 @pytest.fixture
-def env(tmp_path):
+def env(tmp_path, monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
@@ -41,6 +41,8 @@ def env(tmp_path):
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = lambda: User(id="tester", name="Tester")
+    # Overridden users carry no login session, which the idle lock refuses.
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)
     seed = Session()
     seed.add(Job(id="job-1", mode="live", status="done"))
     seed.commit()
@@ -168,8 +170,7 @@ def test_audit_log_records_privacy_actions_without_values(env):
 
 def test_a_locked_session_cannot_read_privacy_reports(env, monkeypatch):
     client, _ = env
-    import app.storage.routes as routes
-    monkeypatch.setattr(routes, "is_locked", lambda _uid: True)
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: True)
     assert client.get("/api/logs/collections/job-1/privacy").status_code == 423
     assert client.post("/api/logs/collections/job-1/privacy/scan").status_code == 423
     assert client.get("/api/logs/privacy/categories").status_code == 423
