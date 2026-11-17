@@ -9,6 +9,7 @@ import AuditPage from "./features/audit/AuditPage";
 import JobResultsPage from "./features/jobs/JobResultsPage";
 import ToolRoute from "./features/jobs/ToolResultPage";
 import ExportPage from "./features/export/ExportPage";
+import ConnectionSetupPage from "./features/connect/ConnectionSetupPage";
 import AppLayout from "./ui/AppLayout";
 import { Outlet } from "react-router-dom";
 
@@ -27,6 +28,7 @@ export default function App() {
         <Route element={<Protected />}>
           <Route element={<AppLayout />}>
             <Route index element={<HomePage />} />
+            <Route path="connect" element={<ConnectionSetupPage />} />
             <Route path="run" element={<RunPage />} />
             <Route path="logs" element={<LogsPage />} />
             <Route path="audit" element={<AuditPage />} />

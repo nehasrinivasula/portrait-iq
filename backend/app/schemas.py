@@ -1,6 +1,7 @@
 """Pydantic schemas — the API's request/response contracts. Keep these in
 sync with models.py by hand for now; consider generating one from the other
 once the shape stabilizes."""
+import ipaddress
 import json
 from datetime import datetime, timezone
 from typing import Annotated, Literal, Optional
@@ -46,14 +47,67 @@ class AuditLogPageOut(BaseModel):
 
 
 class ConnectRequest(BaseModel):
-    mode: str = "live"          # "live" | "pre_install"
-    ip_address: str
-    username: str
+    """Request-scoped connection inputs for the setup screen.
+
+    The password is intentionally absent from every response model.  A future
+    lab/identity-provider adapter may consume it during this request, but must
+    not persist it.
+    """
+
+    mode: Literal["live", "pre_install"] = "live"
+    ip_address: str = Field(min_length=1, max_length=45)
+    username: str = Field(min_length=1, max_length=128)
     # Typed into the UI, kept in memory only, never saved (SCRUM-72).
     # SecretStr hides it in repr/str. The connect route masks it in logs
     # and the export check for as long as the request runs
     # (secrets_loader.redaction_scope), then forgets it.
     password: SecretStr
+
+    @field_validator("ip_address")
+    @classmethod
+    def validate_ip_address(cls, value: str) -> str:
+        address = value.strip()
+        try:
+            return str(ipaddress.ip_address(address))
+        except ValueError as exc:
+            raise ValueError("ip_address must be a valid IPv4 or IPv6 address") from exc
+
+    @field_validator("username")
+    @classmethod
+    def normalize_username(cls, value: str) -> str:
+        username = value.strip()
+        if not username:
+            raise ValueError("username must not be blank")
+        return username
+
+    @field_validator("password")
+    @classmethod
+    def require_password(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value():
+            raise ValueError("password must not be blank")
+        return value
+
+
+class ConnectionSettingsOut(BaseModel):
+    """Safe starting configuration returned by the local setup provider.
+
+    ``interfaces`` are the Portrait IQ tool host's interfaces, not a claim
+    about the remote system.  DDS domains are deliberately empty until an
+    approved RTI discovery provider is available.
+    """
+
+    namespace: str
+    node_ips: list[str]
+    interfaces: list[str]
+    dds_domain_ids: list[int]
+
+
+class ConnectResponse(BaseModel):
+    mode: Literal["live", "pre_install"]
+    ip_address: str
+    connectivity: "ConnectivityCheckResponse"
+    settings: ConnectionSettingsOut
+    notes: list[str]
 
 
 class DeviceOut(BaseModel):
