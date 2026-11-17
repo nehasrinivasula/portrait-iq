@@ -10,7 +10,8 @@ from app.audit import log_action
 from app.audit_routes import router as audit_router
 from app.config import settings
 from app.db import SessionLocal, get_db, init_db
-from app.auth import AuthError, User, authenticate_demo_user, create_access_token, get_unlocked_user, start_session
+from app.auth import AuthError, User, authenticate_demo_user, create_access_token, end_session, get_current_user, get_unlocked_user, start_session
+from app.cleanup.routes import router as cleanup_router
 from app.orchestrator.jobs import recover_interrupted_jobs
 from app.orchestrator.routes import router as orchestrator_router
 from app.packaging.routes import router as packaging_router
@@ -28,6 +29,7 @@ app.include_router(packaging_router, prefix="/api", tags=["export"])
 app.include_router(sources_router, prefix="/api/sources")
 app.include_router(logs_router, prefix="/api/logs")
 app.include_router(audit_router, prefix="/api/audit", tags=["audit"])
+app.include_router(cleanup_router, prefix="/api/cleanup", tags=["cleanup"])
 
 
 @app.exception_handler(AuthError)
@@ -68,6 +70,14 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
         access_token=token,
         expires_in=max(0, expires_at - int(time.time())),
     )
+
+
+@app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """End this login session on the server. Works on a locked session too:
+    signing out must never be refused."""
+    end_session(db, user)
+    log_action(db, user.id, "logout", detail="outcome=signed_out", session_id=user.session_id)
 
 
 @app.get("/api/auth/me", response_model=CurrentUserOut)
