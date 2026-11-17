@@ -70,6 +70,8 @@ class TsharkCollector(Collector):
     MAX_REASON_LENGTH = 500   # a sentence or a ticket reference, not a document
     HEADER_SNAPLEN = 128      # bytes kept per packet when headers_only
     DEFAULT_DURATION_S = 60
+    DEFAULT_INTERFACE = "any"
+    DEFAULT_FILTER_PRESET = "rti_all"
     MAX_DURATION_S = 900
     INTERFACE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$")
     # Capture filter (BPF): words, numbers, addresses and operators only.
@@ -85,7 +87,7 @@ class TsharkCollector(Collector):
         self.headers_only = True
         self.full_payload_reason = ""
         self.duration_s = self.DEFAULT_DURATION_S
-        self.interface = "any"
+        self.interface = self.DEFAULT_INTERFACE
         self.capture_filter = ""
         self.filter_preset = ""
         self.upload_id = ""
@@ -128,7 +130,7 @@ class TsharkCollector(Collector):
         if headers_only and reason:
             raise PluginConfigError("tshark full_payload_reason only applies when headers_only is false")
 
-        duration_s, interface, capture_filter, upload_id = self.DEFAULT_DURATION_S, "any", "", ""
+        duration_s, interface, capture_filter, upload_id = self.DEFAULT_DURATION_S, self.DEFAULT_INTERFACE, "", ""
         preset = ""
         if mode == "run":
             if not settings.tshark_live_capture_enabled:
@@ -143,7 +145,7 @@ class TsharkCollector(Collector):
                 raise PluginConfigError(
                     f"tshark duration_s must be a whole number of seconds from 5 to {self.MAX_DURATION_S}"
                 )
-            interface = options.get("interface", "any")
+            interface = options.get("interface", self.DEFAULT_INTERFACE)
             if not isinstance(interface, str) or not self.INTERFACE_PATTERN.match(interface):
                 raise PluginConfigError("tshark interface must be an interface name such as eth0 or any")
             # A filter is required: a live capture never takes everything on
@@ -258,7 +260,8 @@ class TsharkCollector(Collector):
         start_s = settings.tool_pod_start_timeout_seconds
         deadline = start_s + self.duration_s + 300   # start, capture, copy out
         max_mb = self.limits.max_output_mb
-        self._runner = k8s.get_pod_runner()
+        namespace = getattr(self, "namespace", None)
+        self._runner = k8s.get_pod_runner(namespace) if namespace else k8s.get_pod_runner()
         self._pod = k8s.pod_name(self.name, self.job_id)   # set first, so cleanup() finds it
         self._runner.create(
             name=self._pod, tool=self.name, job_id=self.job_id,
@@ -281,7 +284,10 @@ class TsharkCollector(Collector):
         if res.exit_code != 0:
             why = "timed out" if res.exit_code is None else f"exit {res.exit_code}"
             last = redact(res.stderr.strip().splitlines()[-1][:200]) if res.stderr.strip() else ""
-            raise PluginError(f"tshark capture failed ({why}) {last}".strip())
+            raise PluginError(
+                f"tshark capture failed ({why}) {last}".strip(),
+                safe_reason="The network capture could not be completed.",
+            )
         self._runner.read_file(self._pod, "/tmp/capture.pcapng", dest, max_bytes=(max_mb + 1) * 1024 * 1024)
 
     def cleanup(self) -> None:
@@ -308,5 +314,8 @@ def _wireshark_tool(name: str, args: list[str], timeout_s: int) -> str:
         raise PluginError(f"{name} took longer than {timeout_s}s") from None
     if proc.returncode != 0:
         last = proc.stderr.strip().splitlines()[-1][:200] if proc.stderr.strip() else ""
-        raise PluginError(f"{name} failed (exit {proc.returncode}) {redact(last)}".strip())
+        raise PluginError(
+            f"{name} failed (exit {proc.returncode}) {redact(last)}".strip(),
+            safe_reason=f"{name} could not process the capture.",
+        )
     return proc.stdout

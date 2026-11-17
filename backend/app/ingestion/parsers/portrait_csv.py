@@ -49,9 +49,6 @@ _PROC_SUFFIX = re.compile(r"\[.*$|:\d+:.*$")
 _PLACEHOLDER_NAMES = {"", "unsetFriendlyName"}
 
 REQUIRED_COLUMNS = ("timeStampAndOffset", "logLevel", "hostName", "eventCategory", "description")
-# If this many malformed rows occur, the file is almost certainly not a
-# Portrait CSV at all; stop instead of grinding through it.
-MAX_CSV_ERRORS = 1000
 
 
 class PortraitCsvParser(LogParser):
@@ -90,8 +87,10 @@ class PortraitCsvParser(LogParser):
             i_proc = cols.get("processInfo")
             i_src = cols.get("sourceInfo")
             width = len(header)
-            csv_errors = 0
 
+            # Acquisition caps staged bytes; ingestion's high reject-rate
+            # backstop handles overwhelmingly corrupt files after accounting
+            # for every row. No separate CSV-error count is needed here.
             while True:
                 start_line = reader.line_num + 1  # first physical line of the next record
                 try:
@@ -101,9 +100,6 @@ class PortraitCsvParser(LogParser):
                 except csv.Error as exc:
                     report.rows_read += 1
                     report.reject(start_line, "csv_error", str(exc))
-                    csv_errors += 1
-                    if csv_errors > MAX_CSV_ERRORS:
-                        raise UnrecognizedLogFormat(f"{path.name}: too many malformed rows")
                     continue
 
                 if not row:  # blank line: not a record

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import ImportLogs from "./ImportLogs";
 import LogFilters from "./LogFilters";
 import LogTable from "./LogTable";
@@ -71,7 +71,8 @@ export default function LogsPage() {
       {jobId && (
         <p className="job-chip" role="status">
           Showing logs from run <code>{jobId.slice(0, 8)}</code>{" "}
-          <button className="btn ghost" onClick={() => setParams({})}>Show all logs</button>
+          <button type="button" className="btn ghost" onClick={() => setParams({})}>Show all logs</button>{" "}
+          <Link to={`/jobs/${encodeURIComponent(jobId)}/export?from=logs`} className="btn ghost">Export this run</Link>
         </p>
       )}
 

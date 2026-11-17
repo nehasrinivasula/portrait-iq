@@ -4,18 +4,13 @@ import { useAuth } from "../../auth/AuthContext";
 import { useNotify } from "../../ui/Notifications";
 import { getJob, getResults, isFinished, type Job, type ToolResult } from "../plugins/api";
 import type { AcquisitionResult } from "../logs/logsApi";
+import { activeJobStore, resumeJobId } from "./jobStorage";
 
 const POLL_MS = 2000;
-const KEY = "piq.job";
-const store = {
-  get: () => { try { return sessionStorage.getItem(KEY); } catch { return null; } },
-  set: (id: string) => { try { sessionStorage.setItem(KEY, id); } catch { /* private mode: lose the run on reload */ } },
-  clear: () => { try { sessionStorage.removeItem(KEY); } catch { /* ignore */ } },
-};
 
 export type LogPull =
   | { state: "running" }
-  | { state: "done"; newFiles: number; events: number }
+  | { state: "done"; newFiles: number; events: number; skipped: number }
   | { state: "error"; message: string };
 
 interface JobsState {
@@ -23,6 +18,8 @@ interface JobsState {
   logPull: LogPull | null;
   job: Job | null;
   results: ToolResult[] | null;
+  /** True briefly after sign-in while a saved run is being restored. */
+  restoring: boolean;
   /** True while polling is failing; the run itself is unaffected (S-2). */
   lost: boolean;
   /** Watch a run; pullLogs, when given, starts the log pull for it right away. */
@@ -48,21 +45,23 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   const notify = useNotify();
   const [job, setJob] = useState<Job | null>(null);
   const [results, setResults] = useState<ToolResult[] | null>(null);
+  const [restoring, setRestoring] = useState(false);
   const [lost, setLost] = useState(false);
   const [logPull, setLogPull] = useState<LogPull | null>(null);
   const [targetIp, setTargetIp] = useState("");
   const announced = useRef<string | null>(null);
 
-  const clear = useCallback(() => { store.clear(); setJob(null); setResults(null); setLost(false); setLogPull(null); }, []);
+  const clear = useCallback(() => { activeJobStore.clear(); setJob(null); setResults(null); setLost(false); setLogPull(null); setRestoring(false); }, []);
   const track = useCallback((j: Job, pullLogs?: () => Promise<AcquisitionResult>) => {
-    store.set(j.id); setResults(null); setLost(false); announced.current = null; setJob(j); setLogPull(null);
+    activeJobStore.set(j.id); setResults(null); setLost(false); setRestoring(false); announced.current = null; setJob(j); setLogPull(null);
     if (!pullLogs) return;
     setLogPull({ state: "running" });
     pullLogs()
       .then((r) => {
         const events = r.files.reduce((n, f) => n + (f.events ?? 0), 0);
-        setLogPull({ state: "done", newFiles: r.new_files, events });
-        notify({ kind: r.failed ? "warn" : "ok", title: r.failed ? "Some logs couldn't be collected" : "Logs collected", body: `${events} events from ${r.new_files} new file${r.new_files === 1 ? "" : "s"}.` });
+        const skipped = r.files.reduce((n, f) => n + (f.rows_rejected ?? 0), 0);
+        setLogPull({ state: "done", newFiles: r.new_files, events, skipped });
+        notify({ kind: r.failed || skipped ? "warn" : "ok", title: r.failed ? "Some logs couldn't be collected" : skipped ? "Logs collected with skipped lines" : "Logs collected", body: `${events} events from ${r.new_files} new file${r.new_files === 1 ? "" : "s"}${skipped ? `; ${skipped} malformed log lines skipped` : ""}.` });
       })
       .catch((e) => {
         const message = e instanceof ApiError && e.status !== 0 ? e.message : "Can't reach the server.";
@@ -71,22 +70,34 @@ export function JobsProvider({ children }: { children: ReactNode }) {
       });
   }, [notify]);
 
-  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); setLogPull(null); setTargetIp(""); } }, [user]);
+  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); setLogPull(null); setRestoring(false); setTargetIp(""); } }, [user]);
 
-  // A page reload must not lose a run that is still going: pick it back up.
+  // Sign-out removes the bearer token, not the opaque job id. Once the same
+  // browser session signs in again, recover the persisted server-side run.
   useEffect(() => {
-    const id = user ? store.get() : null;
-    if (!id) return;
+    let live = true;
+    const id = resumeJobId(Boolean(user));
+    if (!id) { setRestoring(false); return; }
+    setRestoring(true);
     getJob(id)
-      .then((j) => { if (isFinished(j.status)) announced.current = j.id; setJob(j); })
-      .catch(() => store.clear());
+      .then((j) => {
+        if (!live) return;
+        if (isFinished(j.status)) announced.current = j.id;
+        setJob(j);
+      })
+      .catch(() => { if (live) activeJobStore.clear(); })
+      .finally(() => { if (live) setRestoring(false); });
+    return () => { live = false; };
   }, [user]);
 
   useEffect(() => {
     if (!job || isFinished(job.status)) return;
     const t = window.setTimeout(async () => {
       try {
-        setJob(await getJob(job.id));
+        const next = await getJob(job.id);
+        // Per-tool outcomes appear as each tool finishes, so show them live.
+        if (!isFinished(next.status)) await getResults(job.id).then(setResults).catch(() => undefined);
+        setJob(next);
         setLost(false);
       } catch (e) {
         if (e instanceof ApiError && e.status === 401) return;
@@ -111,5 +122,5 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     else notify({ kind: "error", title: "The run failed", body: "Open Run diagnostics for details." });
   }, [job, notify]);
 
-  return <Ctx.Provider value={{ job, results, lost, logPull, track, clear, targetIp, setTargetIp }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ job, results, restoring, lost, logPull, track, clear, targetIp, setTargetIp }}>{children}</Ctx.Provider>;
 }

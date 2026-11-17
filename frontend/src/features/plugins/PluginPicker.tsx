@@ -5,7 +5,7 @@ import { ApiError } from "../../api";
 import { acquireForJob, listSources, type AcquisitionResult } from "../logs/logsApi";
 import TimeFramePicker from "../logs/TimeFramePicker";
 import { defaultTimeFrame, resolveTimeFrame, toApi } from "../logs/timeframe";
-import { listPlugins, startJob, uploadPcap, type Job, type Plugin } from "./api";
+import { getJobConfiguration, listPlugins, startJob, uploadPcap, type Job, type JobConfiguration, type Plugin } from "./api";
 import { RtiOptions, TsharkOptions } from "./ToolOptions";
 import { buildOptions, defaultChoices, validateChoices, validateTargetIp } from "./options";
 import { useJobs } from "../jobs/JobsContext";
@@ -41,7 +41,14 @@ export default function PluginPicker({ onStarted, locked }: {
   const [skipped, setSkipped] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [choices, setChoices] = useState(defaultChoices);
+  const [defaults, setDefaults] = useState<JobConfiguration | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [namespace, setNamespace] = useState("");
+  const [cpu, setCpu] = useState("");
+  const [memory, setMemory] = useState("");
+  const [output, setOutput] = useState("");
   const { targetIp, setTargetIp } = useJobs();   // kept when the engineer leaves this page
+  const initialTarget = useRef(targetIp);
   const [logsOn, setLogsOn] = useState(true);
   const [logsReason, setLogsReason] = useState<string | null>(null); // why logs can't be collected here
   const [frame, setFrame] = useState(defaultTimeFrame);
@@ -54,6 +61,20 @@ export default function PluginPicker({ onStarted, locked }: {
   const feedback = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    getJobConfiguration().then((config) => {
+      setDefaults(config);
+      setNamespace(config.namespace);
+      setCpu(String(config.cpu_limit_pct));
+      setMemory(String(config.mem_limit_mb));
+      setOutput(String(config.max_output_mb));
+      setChoices((current) => ({ ...current,
+        tshark: { ...current.tshark, durationS: String(config.tshark.duration_s), interfaceName: config.tshark.interface,
+          preset: config.tshark.filter_preset as typeof current.tshark.preset },
+        rti: { domain: config.rti.domain, durationS: String(config.rti.duration_s) },
+        netshoot: { ports: config.netshoot.ports.join(", "), dnsNames: config.netshoot.dns_names.join(", "),
+          extraTargets: config.netshoot.extra_targets.join(", ") },
+      }));
+    }).catch((e) => setConfigError(messageFor(e)));
     listPlugins()
       .then((r) => { setPlugins(r.plugins.filter((p) => !HIDDEN.has(p.name))); setSkipped(r.load_errors); })
       .catch((e) => setLoadError(messageFor(e)));
@@ -71,10 +92,28 @@ export default function PluginPicker({ onStarted, locked }: {
   }, [startError]);
 
   const ipError = validateTargetIp(targetIp);
+  const limitError = !!defaults && (!defaults.allowed_namespaces.includes(namespace) ||
+    ![[cpu, 100], [memory, 65536], [output, 65536]].every(([value, max]) =>
+      /^\d+$/.test(String(value)) && Number(value) >= 1 && Number(value) <= Number(max)));
+  const overridden = defaults ? [
+    ...(targetIp !== initialTarget.current ? ["target_ip"] : []),
+    ...(namespace !== defaults.namespace ? ["namespace"] : []),
+    ...(Number(cpu) !== defaults.cpu_limit_pct ? ["cpu_limit_pct"] : []),
+    ...(Number(memory) !== defaults.mem_limit_mb ? ["mem_limit_mb"] : []),
+    ...(Number(output) !== defaults.max_output_mb ? ["max_output_mb"] : []),
+    ...(selected.has("tshark") && Number(choices.tshark.durationS) !== defaults.tshark.duration_s ? ["tshark.duration_s"] : []),
+    ...(selected.has("tshark") && choices.tshark.interfaceName !== defaults.tshark.interface ? ["tshark.interface"] : []),
+    ...(selected.has("tshark") && choices.tshark.preset !== defaults.tshark.filter_preset ? ["tshark.filter_preset"] : []),
+    ...(selected.has("rti") && choices.rti.domain !== defaults.rti.domain ? ["rti.domain"] : []),
+    ...(selected.has("rti") && Number(choices.rti.durationS) !== defaults.rti.duration_s ? ["rti.duration_s"] : []),
+    ...(selected.has("netshoot") && choices.netshoot.ports !== defaults.netshoot.ports.join(", ") ? ["netshoot.ports"] : []),
+    ...(selected.has("netshoot") && choices.netshoot.dnsNames !== defaults.netshoot.dns_names.join(", ") ? ["netshoot.dns_names"] : []),
+    ...(selected.has("netshoot") && choices.netshoot.extraTargets !== defaults.netshoot.extra_targets.join(", ") ? ["netshoot.extra_targets"] : []),
+  ] : [];
   const fieldErrors = useMemo(() => validateChoices(selected, choices), [selected, choices]);
   const window = useMemo(() => resolveTimeFrame(frame), [frame]);
   const nothingToDo = selected.size === 0 && !logsOn;
-  const valid = !ipError && !nothingToDo && Object.keys(fieldErrors).length === 0 && !uploading && (!logsOn || window.ok);
+  const valid = !ipError && !limitError && !nothingToDo && Object.keys(fieldErrors).length === 0 && !uploading && (!logsOn || window.ok);
 
   const toggle = (name: string, on: boolean) =>
     setSelected((s) => { const n = new Set(s); on ? n.add(name) : n.delete(name); return n; });
@@ -105,7 +144,11 @@ export default function PluginPicker({ onStarted, locked }: {
     if (!valid || locked) return;
     setBusy(true);
     try {
-      const job = await startJob(targetIp.trim(), [...selected], buildOptions(selected, choices));
+      const configuration = defaults ? {
+        namespace, cpu_limit_pct: Number(cpu), mem_limit_mb: Number(memory), max_output_mb: Number(output),
+        overridden_fields: overridden,
+      } : undefined;
+      const job = await startJob(targetIp.trim(), [...selected], buildOptions(selected, choices), configuration);
       const w = logsOn && window.ok ? toApi(window) : null;
       onStarted(job, w ? () => acquireForJob(LOG_SOURCE, job.id, w.since, w.until) : undefined);
     } catch (err) {
@@ -135,7 +178,36 @@ export default function PluginPicker({ onStarted, locked }: {
             : <div className="hint" id={`${uid}-ip-hint`}>For example 192.168.0.3, or pick a device below.</div>}
         </div>
         <DeviceFinder selectedIp={targetIp} onUse={setTargetIp} />
+        {overridden.includes("target_ip") && <span className="override-badge">Manually changed</span>}
       </section>
+
+      {configError && <div className="alert warn" role="status"><strong>Run configuration unavailable</strong>
+        {configError} Default settings will be used for this run.</div>}
+      {defaults && <section aria-label="Run configuration">
+        <h2>Review run configuration</h2>
+        <p className="muted">Generated values can be changed for this run. Changed fields are marked below.</p>
+        <div className="field">
+          <Label.Root htmlFor={`${uid}-namespace`}>Diagnostic pod namespace</Label.Root>
+          <select id={`${uid}-namespace`} value={namespace} onChange={(e) => setNamespace(e.target.value)}>
+            {defaults?.allowed_namespaces.map((name) => <option key={name} value={name}>{name}</option>)}
+          </select>
+          {overridden.includes("namespace") && <span className="override-badge">Manually changed</span>}
+        </div>
+        {([
+          ["CPU limit (%)", cpu, setCpu, "cpu_limit_pct"],
+          ["Memory limit (MB)", memory, setMemory, "mem_limit_mb"],
+          ["Output limit (MB)", output, setOutput, "max_output_mb"],
+        ] as const).map(([label, value, setter, key]) => (
+          <div className="field" key={key}>
+            <Label.Root htmlFor={`${uid}-${key}`}>{label}</Label.Root>
+            <input id={`${uid}-${key}`} type="number" min="1" max={key === "cpu_limit_pct" ? 100 : 65536}
+              value={value} onChange={(e) => setter(e.target.value)} aria-invalid={submitted && limitError} />
+            {overridden.includes(key) && <span className="override-badge">Manually changed</span>}
+          </div>
+        ))}
+        {submitted && limitError && <div className="error-text" role="alert">Choose an enabled namespace and valid positive limits.</div>}
+        {overridden.length > 0 && <p className="muted" role="status">Overrides: {overridden.join(", ")}</p>}
+      </section>}
 
       <section aria-labelledby={`${uid}-logs`}>
         <h2 id={`${uid}-logs`}>Logs to include</h2>
@@ -181,6 +253,18 @@ export default function PluginPicker({ onStarted, locked }: {
                     upload={{ name: uploadName, busy: uploading, error: uploadError, onFile }} />
                 )}
                 {on && p.name === "rti" && <RtiOptions uid={uid} choices={choices} onChoices={setChoices} errors={fieldErrors} />}
+                {on && p.name === "netshoot" && <div className="plugin-options">
+                  {([
+                    ["Ports", "ports", "ports"], ["DNS names", "dnsNames", "dnsNames"],
+                    ["Additional targets", "extraTargets", "extraTargets"],
+                  ] as const).map(([label, key, errorKey]) => <div className="field" key={key}>
+                    <Label.Root htmlFor={`${uid}-n-${key}`}>{label} (comma separated)</Label.Root>
+                    <input id={`${uid}-n-${key}`} value={choices.netshoot[key]}
+                      onChange={(e) => setChoices((c) => ({ ...c, netshoot: { ...c.netshoot, [key]: e.target.value } }))}
+                      aria-invalid={!!fieldErrors[`netshoot.${errorKey}`]} />
+                    {fieldErrors[`netshoot.${errorKey}`] && <div className="error-text" role="alert">{fieldErrors[`netshoot.${errorKey}`]}</div>}
+                  </div>)}
+                </div>}
               </li>
             );
           })}

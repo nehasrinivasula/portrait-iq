@@ -1,7 +1,8 @@
 """Pydantic schemas — the API's request/response contracts. Keep these in
 sync with models.py by hand for now; consider generating one from the other
 once the shape stabilizes."""
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -161,6 +162,8 @@ class JobCreateRequest(BaseModel):
     cpu_limit_pct: Optional[int] = None
     mem_limit_mb: Optional[int] = None
     max_output_mb: Optional[int] = None
+    namespace: Optional[str] = None
+    overridden_fields: list[str] = []
 
 
 class PluginOut(BaseModel):
@@ -174,16 +177,58 @@ class PluginListOut(BaseModel):
     load_errors: dict[str, str] = {}   # plugins skipped at startup, and why
 
 
+class RunErrorOut(BaseModel):
+    """Why a run failed, for the field engineer (SCRUM-68)."""
+    step: Optional[str] = None       # the step it failed at, e.g. "deploy_tools"
+    plugin: Optional[str] = None     # the tool involved, when one is
+    reason: str                      # plain language, safe to show
+
+
 class JobOut(BaseModel):
     id: str
     mode: str
     status: str
     current_step: Optional[str]
+    tools: list[str] = []                 # the tools selected for this run, in run order
+    configuration: Optional[dict[str, Any]] = None
+    skipped_steps: list[str] = []         # steps the selected tools never use
+    error: Optional[RunErrorOut] = None   # set only on a failed/interrupted run
     created_at: datetime
     finished_at: Optional[datetime]
 
     class Config:
         from_attributes = True
+
+    @field_validator("created_at", "finished_at")
+    @classmethod
+    def _as_utc(cls, v: Optional[datetime]) -> Optional[datetime]:
+        # Stored as naive UTC. Without an offset a browser reads the time as
+        # local, and the run's elapsed timer (SCRUM-41) would be off by hours.
+        return v.replace(tzinfo=timezone.utc) if v is not None and v.tzinfo is None else v
+
+    @field_validator("tools", mode="before")
+    @classmethod
+    def _parse_tools(cls, value):
+        # Stored as a JSON string (or NULL).
+        if isinstance(value, str):
+            try:
+                return json.loads(value) or []
+            except ValueError:
+                return []
+        return value or []
+
+    @field_validator("configuration", mode="before")
+    @classmethod
+    def _parse_configuration(cls, value):
+        return json.loads(value) if isinstance(value, str) else value
+
+    @field_validator("error", mode="before")
+    @classmethod
+    def _parse_error(cls, value):
+        # The Job stores it as a JSON string (or NULL); parse it for the API.
+        if isinstance(value, str):
+            return json.loads(value) if value else None
+        return value
 
 
 class UploadOut(BaseModel):
@@ -302,6 +347,8 @@ class FileOutcomeOut(BaseModel):
     status: str
     size: Optional[int] = None
     events: Optional[int] = None
+    rows_rejected: Optional[int] = None
+    reject_reasons: Optional[dict[str, int]] = None
     error: Optional[str] = None
 
 

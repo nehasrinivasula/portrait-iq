@@ -16,10 +16,13 @@ from app.analysis.engine import run_analysis
 from app.analysis.findings import findings_for
 from app.analysis.status import findings_status
 from app.audit import log_action
-from app.auth import User, get_active_user, get_current_user, is_locked, touch_session
+from app.auth import User, get_active_user, get_unlocked_user
 from app.collectors.base import Collector, PluginError, ResourceLimits
+from app.collectors.netshoot import NetshootCollector
 from app.collectors.registry import get_registry
-from app.config import settings
+from app.collectors.rti import RtiCollector
+from app.collectors.tshark import TsharkCollector
+from app.config import allowed_tools_namespaces, settings
 from app.connectivity.service import check_connectivity
 from app.discovery import service as discovery
 from app.db import SessionLocal, get_db
@@ -59,7 +62,7 @@ router = APIRouter()
 def connectivity_check(
     req: ConnectivityCheckRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ):
     """Run a bounded TCP reachability check before diagnostics start.
 
@@ -67,9 +70,6 @@ def connectivity_check(
     the check itself completed successfully; callers should inspect `status`
     and the per-port results.
     """
-    if is_locked(user.id):
-        raise HTTPException(423, "Session locked — unlock before checking connectivity.")
-
     log_action(
         db,
         user.id,
@@ -110,7 +110,6 @@ def connectivity_check(
             ),
             session_id=user.session_id,
         )
-        touch_session(user.id)
         return response
 
 
@@ -118,7 +117,7 @@ def connectivity_check(
 def connect(
     req: ConnectRequest,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ):
     """This week's feature #2 lives here. Today it does nothing real —
     replace the body with an actual reachability check (ping/SNMP/SSH,
@@ -130,7 +129,6 @@ def connect(
     The password is masked in logs only while this request runs, then
     forgotten (SCRUM-72). Keep everything that uses it inside the with."""
     with redaction_scope(req.password.get_secret_value(), "CONNECT_PASSWORD"):
-        touch_session(user.id)
         log_action(db, user.id, "connect", detail=f"mode={req.mode} ip={req.ip_address}", session_id=user.session_id)
 
         if req.mode not in ("live", "pre_install"):
@@ -159,7 +157,7 @@ def list_plugins():
 
 
 @router.get("/devices", response_model=list[DeviceOut])
-def list_devices(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_devices(db: Session = Depends(get_db), user: User = Depends(get_active_user)):
     log_action(db, user.id, "devices_view", detail="", session_id=user.session_id)
     return db.query(Device).all()
 
@@ -206,6 +204,26 @@ def update_device(device_id: str, req: DeviceUpdate, db: Session = Depends(get_d
     return device
 
 
+@router.get("/jobs/configuration")
+def job_configuration(user: User = Depends(get_active_user)):
+    """Defaults offered for manual review before starting a diagnostic run."""
+    return {
+        "namespace": settings.tools_namespace,
+        "allowed_namespaces": sorted(allowed_tools_namespaces()),
+        "cpu_limit_pct": settings.default_cpu_limit_pct,
+        "mem_limit_mb": settings.default_mem_limit_mb,
+        "max_output_mb": settings.default_max_output_mb,
+        "tshark": {"duration_s": TsharkCollector.DEFAULT_DURATION_S,
+                   "interface": TsharkCollector.DEFAULT_INTERFACE,
+                   "filter_preset": TsharkCollector.DEFAULT_FILTER_PRESET},
+        "rti": {"domain": RtiCollector.DEFAULT_DOMAIN,
+                "duration_s": RtiCollector.DEFAULT_DURATION_S},
+        "netshoot": {"ports": list(NetshootCollector.DEFAULT_PORTS),
+                     "dns_names": list(NetshootCollector.DEFAULT_DNS_NAMES),
+                     "extra_targets": []},
+    }
+
+
 @router.post("/jobs", response_model=JobOut)
 def start_job(
     req: JobCreateRequest,
@@ -218,6 +236,26 @@ def start_job(
     The job runs after the response is sent; poll GET /jobs/{id}. It keeps
     running if the UI session locks (S-2)."""
 
+    namespace = req.namespace or settings.tools_namespace
+    if namespace not in allowed_tools_namespaces():
+        raise HTTPException(422, "namespace is not enabled for diagnostic pods")
+    allowed_override_fields = {
+        "target_ip", "namespace", "cpu_limit_pct", "mem_limit_mb", "max_output_mb",
+        "tshark.duration_s", "tshark.interface", "tshark.filter_preset", "tshark.capture_filter",
+        "rti.domain", "rti.duration_s", "netshoot.ports", "netshoot.dns_names",
+        "netshoot.extra_targets",
+    }
+    if len(req.overridden_fields) > len(allowed_override_fields) or any(
+        field not in allowed_override_fields for field in req.overridden_fields
+    ):
+        raise HTTPException(422, "overridden_fields contains an unknown field")
+    for name, value, maximum in (
+        ("cpu_limit_pct", req.cpu_limit_pct, 100),
+        ("mem_limit_mb", req.mem_limit_mb, 65536),
+        ("max_output_mb", req.max_output_mb, 65536),
+    ):
+        if value is not None and (value < 1 or value > maximum):
+            raise HTTPException(422, f"{name} must be from 1 to {maximum}")
     limits = ResourceLimits(
         cpu_pct=req.cpu_limit_pct or settings.default_cpu_limit_pct,
         mem_mb=req.mem_limit_mb or settings.default_mem_limit_mb,
@@ -232,6 +270,22 @@ def start_job(
         plugins = get_registry().create_all(req.tools, limits, req.plugin_options)
     except PluginError as e:
         raise HTTPException(400, str(e))
+    for plugin in plugins:
+        plugin.namespace = namespace
+
+    configuration = {
+        "target_ip": target_ip, "namespace": namespace,
+        "cpu_limit_pct": limits.cpu_pct, "mem_limit_mb": limits.mem_mb,
+        "max_output_mb": limits.max_output_mb,
+        "plugin_options": {
+            name: {key: value for key, value in opts.items() if key in {
+                "mode", "duration_s", "interface", "filter_preset", "capture_filter",
+                "domain", "ports", "dns_names", "extra_targets",
+            }}
+            for name, opts in req.plugin_options.items()
+        },
+        "overridden_fields": req.overridden_fields,
+    }
 
     job = create_job(
         db,
@@ -240,6 +294,7 @@ def start_job(
         limits=limits,
         requested_by=user.id,
         session_id=user.session_id,
+        configuration=configuration,
     )
     # Option names only, never values: a future plugin option could hold a
     # credential. A plugin lists the values worth auditing (e.g. tshark's
@@ -248,7 +303,7 @@ def start_job(
     audited = {p.name: fields for p in plugins if (fields := p.audit_fields())}
     log_action(
         db, user.id, "job_start",
-        detail=f"job={job.id} tools={req.tools} option_keys={option_keys} audited={audited}",
+        detail=f"job={job.id} tools={req.tools} option_keys={option_keys} overridden_fields={req.overridden_fields} audited={audited}",
         session_id=user.session_id,
     )
 
@@ -275,9 +330,10 @@ def run_existing_job(db: Session, job_id: str, target_ip: str, plugins: list[Col
 
 
 @router.get("/jobs/{job_id}/results")
-def get_job_results(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def get_job_results(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_unlocked_user)):
     """Each plugin's summary, warnings and files, or the error that stopped
-    it, in the order the plugins ran. Partial while the job is running."""
+    it, in the order the plugins ran. Partial while the job is running.
+    Polled by the page, so it checks the idle lock but is not activity."""
     if db.get(Job, job_id) is None:
         raise HTTPException(404, "job not found")
     log_action(db, user.id, "job_results_view", detail=f"job={job_id}", session_id=user.session_id)
@@ -304,7 +360,8 @@ def upload_file(
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
-def get_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def get_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_unlocked_user)):
+    """Polled while a job runs: checks the idle lock but is not activity."""
     job = db.get(Job, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
@@ -380,13 +437,4 @@ def get_summary(
     return PlainTextResponse(render_markdown(summary), media_type="text/markdown; charset=utf-8")
 
 
-@router.post("/jobs/{job_id}/package")
-def package_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """TODO: assemble the standardized zip (logs/, network/, k8s/, grafana/,
-    metadata.json, audit.log — see requirements doc's Analysis & Reporting
-    section) and return a download URL. Stub for now."""
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(404, "job not found")
-    log_action(db, user.id, "package_download", detail=f"job={job_id}", session_id=user.session_id)
-    raise HTTPException(501, "TODO: implement package assembly.")
+# Export (POST/GET /jobs/{job_id}/package...) lives in app/packaging/routes.py (SCRUM-61).

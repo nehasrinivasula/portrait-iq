@@ -65,6 +65,8 @@ class FileOutcome:
     status: str            # acquired | ingested | unrecognized | failed | already_acquired | duplicate | over_budget
     size: int | None = None
     events: int | None = None
+    rows_rejected: int | None = None
+    reject_reasons: dict[str, int] | None = None
     error: str | None = None
     local_path: str | None = None
 
@@ -290,8 +292,8 @@ INGEST_SUFFIXES = {".csv", ".log", ".txt"}
 
 
 def _ingest(paths: list[Path], db: Session, job_id: str | None,
-            remote: RemoteFile, root: Path) -> tuple[str, int, str | None]:
-    """Ingest every log file. Returns (status, events, note).
+            remote: RemoteFile, root: Path) -> tuple[str, int, int, dict[str, int], str | None]:
+    """Ingest every log file. Returns (status, events, rejected, reasons, note).
 
     Uses the common-log-format pipeline contract (SCRUM-46):
       - source_label is unique per acquired file, so two different files
@@ -306,25 +308,29 @@ def _ingest(paths: list[Path], db: Session, job_id: str | None,
     treated here as empty rather than unrecognized."""
     files = [p for p in paths if p.suffix.lower() in INGEST_SUFFIXES]
     if not files:
-        return "unrecognized", 0, "No log files found to ingest."
-    events, unknown, bad = 0, [], []
+        return "unrecognized", 0, 0, {}, "No log files found to ingest."
+    events, rejected, reasons, unknown, bad = 0, 0, {}, [], []
     for p in files:
         if p.stat().st_size == 0:
             continue
         rel = p.relative_to(root).as_posix() if p.is_relative_to(root) else p.name
         label = f"{remote.source}/{remote.remote_id}/{rel}"
         try:
-            events += ingest_file(p, db, job_id=job_id, source_label=label, allow_empty=True).events_written
+            ingested = ingest_file(p, db, job_id=job_id, source_label=label, allow_empty=True)
+            events += ingested.events_written
+            rejected += ingested.report.rows_rejected
+            for reason, count in ingested.report.reject_reasons.items():
+                reasons[reason] = reasons.get(reason, 0) + count
         except UnrecognizedLogFormat:
             unknown.append(p.name)
         except IngestError as e:
             bad.append(redact(str(e)))
     if bad:
-        return "failed", events, "Could not ingest: " + "; ".join(bad)
+        return "failed", events, rejected, reasons, "Could not ingest: " + "; ".join(bad)
     if unknown and len(unknown) == len(files):
-        return "unrecognized", 0, "No parser recognizes this log format yet."
+        return "unrecognized", 0, rejected, reasons, "No parser recognizes this log format yet."
     note = f"Not recognized: {', '.join(unknown)}" if unknown else None
-    return "ingested", events, note
+    return "ingested", events, rejected, reasons, note
 
 
 def _replace_narrower_rows(db: Session, source: LogSource, remote: RemoteFile) -> int:
@@ -455,7 +461,8 @@ def acquire(
 
             outcome.status = "acquired"
             if ingest:
-                outcome.status, outcome.events, outcome.error = _ingest(staged, db, job_id, remote, file_dir)
+                (outcome.status, outcome.events, outcome.rows_rejected,
+                 outcome.reject_reasons, outcome.error) = _ingest(staged, db, job_id, remote, file_dir)
             # Only files that succeeded feed the device list, never a file we rejected.
             if outcome.status in ("acquired", "ingested"):
                 _learn_devices(db, staged, source.id)

@@ -15,27 +15,51 @@ export interface PluginList {
 
 export type PluginOptions = Record<string, Record<string, unknown>>;
 
+export interface JobConfiguration {
+  namespace: string;
+  allowed_namespaces: string[];
+  cpu_limit_pct: number;
+  mem_limit_mb: number;
+  max_output_mb: number;
+  tshark: { duration_s: number; interface: string; filter_preset: string };
+  rti: { domain: number; duration_s: number };
+  netshoot: { ports: number[]; dns_names: string[]; extra_targets: string[] };
+}
+
 export type JobStatus = "queued" | "running" | "done" | "partial" | "failed" | "cleanup_failed" | "interrupted";
+
+// Why a run failed (SCRUM-68): the step, the tool involved, and a plain reason.
+export interface RunError {
+  step: string | null;
+  plugin: string | null;
+  reason: string;
+}
 
 export interface Job {
   id: string;
   mode: string;
   status: JobStatus;
   current_step: string | null;
+  tools?: string[];            // the tools selected for this run, in run order
+  configuration?: Record<string, unknown> | null;
+  skipped_steps?: string[];   // steps the selected tools never use
+  error: RunError | null;   // set only on a failed/interrupted run
   created_at: string;
   finished_at: string | null;
 }
 
 export type ToolResult =
   | { tool: string; summary: string; warnings: string[]; artifact_paths: string[] }
-  | { tool: string; error: string };
+  | { tool: string; step?: string; error: string };
 
 export const listPlugins = () => apiFetch<PluginList>("/api/plugins");
+export const getJobConfiguration = () => apiFetch<JobConfiguration>("/api/jobs/configuration");
 
-export const startJob = (targetIp: string, tools: string[], pluginOptions: PluginOptions) =>
+export const startJob = (targetIp: string, tools: string[], pluginOptions: PluginOptions,
+  configuration?: { namespace: string; cpu_limit_pct: number; mem_limit_mb: number; max_output_mb: number; overridden_fields: string[] }) =>
   apiFetch<Job>(`/api/jobs?target_ip=${encodeURIComponent(targetIp)}`, {
     method: "POST",
-    body: JSON.stringify({ tools, plugin_options: pluginOptions }),
+    body: JSON.stringify({ tools, plugin_options: pluginOptions, ...configuration }),
   });
 
 export const getJob = (id: string) => apiFetch<Job>(`/api/jobs/${id}`);

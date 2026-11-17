@@ -5,8 +5,11 @@
 | List the plugins | `GET /api/plugins` | none | `{ plugins: [{ name, display_name, description }], load_errors }` |
 | Upload a capture (tshark import only) | `POST /api/uploads?kind=pcap` | multipart form, field `file` (.pcap or .pcapng, up to 500 MB) | `{ upload_id, kind, size_bytes }` |
 | Start a job | `POST /api/jobs?target_ip=<ip>` | JSON: `{ tools: [...], plugin_options: {...} }` | the job, with `status: "queued"` |
-| Job status | `GET /api/jobs/{id}` | none | `{ id, status, current_step, created_at, finished_at }` |
-| Job results | `GET /api/jobs/{id}/results` | none | one entry per tool: `{ tool, summary, warnings, artifact_paths }` or `{ tool, error }` |
+| Preview run configuration | `GET /api/jobs/configuration` | none | server defaults for namespace, resource limits, and tool options, plus allowed diagnostic namespaces |
+
+SCRUM-100: The Run form displays the preview defaults and marks changed fields. It sends the final `namespace`, `cpu_limit_pct`, `mem_limit_mb`, `max_output_mb`, and selected `plugin_options` in the job request, with `overridden_fields` as an audit hint. The backend validates these values and persists a safe configuration snapshot on the job. The plugin instance used by that job receives its selected namespace, so concurrent jobs do not change global Kubernetes settings. The default namespace is `TOOLS_NAMESPACE`; additional provisioned diagnostic namespaces may be listed in the local `TOOLS_ALLOWED_NAMESPACES` environment variable as comma-separated names. The backend rejects any namespace outside this list. Existing clients can omit the new fields and keep the server defaults.
+| Job status | `GET /api/jobs/{id}` | none | `{ id, status, current_step, error, created_at, finished_at }`. `error` is `null` unless the run failed or was interrupted; then `{ step, plugin, reason }` — the step it failed at, the tool involved (or `null`), and a plain-language reason safe to show (SCRUM-68) |
+| Job results | `GET /api/jobs/{id}/results` | none | one entry per tool: `{ tool, summary, warnings, artifact_paths }` or, on failure, `{ tool, step, error }` where `error` is a plain-language reason |
 
 ## tshark live capture filters
 

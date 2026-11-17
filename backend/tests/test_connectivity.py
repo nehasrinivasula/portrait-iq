@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.auth import User
+from app.auth import User, get_current_user
 from app.connectivity import service
 from app.db import get_db
 from app.orchestrator import routes
@@ -243,7 +243,7 @@ def _api_client(fake_db: FakeDb) -> TestClient:
         yield fake_db
 
     app.dependency_overrides[get_db] = override_db
-    app.dependency_overrides[routes.get_current_user] = lambda: User("engineer-1", "Engineer")
+    app.dependency_overrides[get_current_user] = lambda: User("engineer-1", "Engineer")
     return TestClient(app)
 
 
@@ -265,7 +265,7 @@ def test_api_returns_check_result_and_writes_audit_log(monkeypatch):
         ],
     )
     monkeypatch.setattr(routes, "check_connectivity", lambda *args: expected)
-    monkeypatch.setattr(routes, "is_locked", lambda user_id: False)
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)
 
     response = _api_client(fake_db).post(
         "/api/connectivity-check",
@@ -287,7 +287,7 @@ def test_api_returns_check_result_and_writes_audit_log(monkeypatch):
 
 def test_api_audits_failed_check_with_escaped_target(monkeypatch):
     fake_db = FakeDb()
-    monkeypatch.setattr(routes, "is_locked", lambda user_id: False)
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)
     monkeypatch.setattr(
         routes,
         "check_connectivity",
@@ -307,7 +307,7 @@ def test_api_audits_failed_check_with_escaped_target(monkeypatch):
 
 def test_api_rejects_check_when_session_is_locked(monkeypatch):
     fake_db = FakeDb()
-    monkeypatch.setattr(routes, "is_locked", lambda user_id: True)
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: True)
 
     response = _api_client(fake_db).post(
         "/api/connectivity-check",

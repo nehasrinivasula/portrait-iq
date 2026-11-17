@@ -103,7 +103,8 @@ class RtiCollector(Collector):
 
         start_s = settings.tool_pod_start_timeout_seconds
         deadline = start_s + self.duration_s + 60
-        self._runner = k8s.get_pod_runner()
+        namespace = getattr(self, "namespace", None)
+        self._runner = k8s.get_pod_runner(namespace) if namespace else k8s.get_pod_runner()
         self._pod = k8s.pod_name(self.name, self.job_id)   # set first, so cleanup() finds it
         # Host network: DDS discovery uses the node's interfaces. No extra
         # capabilities: a participant only needs ordinary UDP sockets.
@@ -118,7 +119,10 @@ class RtiCollector(Collector):
         if res.exit_code not in (0, TIMED_OUT):
             lines = (stderr or stdout).strip().splitlines()
             reason = lines[-1][:200] if lines else f"exit code {res.exit_code}"
-            raise PluginError(f"rtiddsspy failed ({reason})")
+            raise PluginError(
+                f"rtiddsspy failed ({reason})",
+                safe_reason="The RTI diagnostic could not be completed.",
+            )
 
         found = summarize(stdout)
         (out_dir / "rti.json").write_text(json.dumps(

@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app.ingestion import pipeline
 from app.ingestion.parsers.base import UnrecognizedLogFormat
-from app.models import NormalizedEvent as EventRow
+from app.models import IngestedFile, NormalizedEvent as EventRow
 
 HEADER = (
     "timeStampAndOffset,processCounter,concentrationCounter,logLevel,hostName,"
@@ -69,11 +69,24 @@ def test_reingest_replaces_old_rows_for_that_file_only(db, tmp_path):
     assert count(db) == 3          # 1 (a) + 2 (b)
 
 
-def test_too_many_bad_rows_stores_nothing_and_raises(db, tmp_path):
+def test_many_bad_rows_are_counted_while_good_rows_are_stored(db, tmp_path):
     path = make_csv(tmp_path / "a.csv", good=3, bad=3)               # 50% bad
-    with pytest.raises(pipeline.IngestError):
+    result = pipeline.ingest_file(path, db)
+    assert result.events_written == 3
+    assert result.report.rows_read == 6
+    assert result.report.rows_rejected == 3
+    assert result.report.reject_reasons == {"bad_timestamp": 3}
+    assert count(db) == 3
+    receipt = db.scalar(select(IngestedFile))
+    assert receipt.rows_rejected == 3
+
+
+def test_overwhelmingly_corrupt_file_fails_by_default(db, tmp_path):
+    path = make_csv(tmp_path / "corrupt.csv", good=1, bad=99)
+    with pytest.raises(pipeline.IngestError, match="over the 95.0% limit"):
         pipeline.ingest_file(path, db)
     assert count(db) == 0
+    assert db.scalar(select(func.count()).select_from(IngestedFile)) == 0
 
 
 def test_failed_reingest_keeps_the_previous_good_data(db, tmp_path):
@@ -81,7 +94,7 @@ def test_failed_reingest_keeps_the_previous_good_data(db, tmp_path):
     pipeline.ingest_file(path, db)
     make_csv(path, good=1, bad=5)                                    # now corrupt
     with pytest.raises(pipeline.IngestError):
-        pipeline.ingest_file(path, db)
+        pipeline.ingest_file(path, db, max_reject_rate=0.01)
     assert count(db) == 3          # rolled back, old rows intact
 
 
