@@ -52,7 +52,7 @@ def headers(client, creds):
 
 @pytest.fixture()
 def runner(monkeypatch):
-    r = FakeRunner([pod("piq-tshark-aaaa", "adhoc")])
+    r = FakeRunner([pod("piq-tshark-aaaa", "adhoc", phase="Succeeded")])
     monkeypatch.setattr(k8s, "get_pod_runner", lambda: r)
     return r
 
@@ -117,6 +117,37 @@ def test_logout_ends_the_session_on_the_server_and_is_audited(client, headers, e
     assert client.get("/api/auth/me", headers=headers).status_code == 423      # the old token no longer works
     with sessionmaker(bind=engine)() as db:
         assert "logout" in audit_actions(db)
+
+
+def test_a_running_pod_nobody_owns_cannot_be_removed_through_the_api(client, headers, runner):
+    runner.pods["piq-scan"] = pod("piq-scan", "adhoc", "rti", phase="Running")           # e.g. a discovery scan
+    runner.pods["piq-other"] = pod("piq-other", "another-backends-job", phase="Running")
+    r = client.post("/api/cleanup", headers=headers, json={
+        "action": "remove", "context": "logout", "items": ["pod:piq-scan", "pod:piq-other", "pod:piq-tshark-aaaa"]})
+    assert {o["id"]: o["result"] for o in r.json()["outcomes"]} == {
+        "pod:piq-scan": "skipped", "pod:piq-other": "skipped", "pod:piq-tshark-aaaa": "removed"}
+    assert runner.deleted == ["piq-tshark-aaaa"]
+    assert r.json()["status"]["state"] == "busy"
+
+
+def test_each_item_gets_its_own_audit_row(client, headers, runner, engine):
+    runner.pods["piq-b"] = pod("piq-b", "adhoc", phase="Failed")
+    client.post("/api/cleanup", headers=headers, json={
+        "action": "remove", "context": "logout", "items": ["pod:piq-tshark-aaaa", "pod:piq-b"]})
+    with sessionmaker(bind=engine)() as db:
+        rows = sorted(e.detail for e in db.query(AuditLogEntry).filter_by(action="cleanup_item").all())
+    assert [r.split("item=")[1] for r in rows] == ["pod:piq-b result=removed", "pod:piq-tshark-aaaa result=removed"]
+
+
+def test_signing_out_with_undecided_leftovers_is_audited(client, headers, engine):
+    assert client.post("/api/auth/logout?leftovers=3", headers=headers).status_code == 204
+    with sessionmaker(bind=engine)() as db:
+        entry = db.query(AuditLogEntry).filter_by(action="logout").one()
+    assert entry.detail == "outcome=signed_out leftovers_undecided=3"
+
+
+def test_logout_rejects_a_nonsense_leftover_count(client, headers):
+    assert client.post("/api/auth/logout?leftovers=-1", headers=headers).status_code == 422
 
 
 def test_logout_without_a_token_is_refused(client):

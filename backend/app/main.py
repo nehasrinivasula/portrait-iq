@@ -1,6 +1,6 @@
 import time
 
-from fastapi import Depends, FastAPI, Request, status
+from fastapi import Depends, FastAPI, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -73,11 +73,14 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def logout(leftovers: int = Query(0, ge=0, le=100000), db: Session = Depends(get_db),
+           user: User = Depends(get_current_user)):
     """End this login session on the server. Works on a locked session too:
     signing out must never be refused."""
     end_session(db, user)
-    log_action(db, user.id, "logout", detail="outcome=signed_out", session_id=user.session_id)
+    # "leftovers" is what the sign-out prompt still showed as undecided when the engineer chose to sign out anyway.
+    note = f" leftovers_undecided={leftovers}" if leftovers else ""
+    log_action(db, user.id, "logout", detail=f"outcome=signed_out{note}", session_id=user.session_id)
 
 
 @app.get("/api/auth/me", response_model=CurrentUserOut)
