@@ -30,8 +30,9 @@ export const chooseCleanup = (action: "remove" | "keep", context: CleanupContext
   apiFetch<CleanupResult>("/api/cleanup", { method: "POST", body: JSON.stringify({ action, context, items }) });
 
 /** Ends the session on the server so the token stops working. Never throws: signing out must not fail. */
-export const endServerSession = () =>
-  apiFetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+export const endServerSession = (leftoversUndecided = 0) =>
+  apiFetch(`/api/auth/logout${leftoversUndecided > 0 ? `?leftovers=${Math.min(leftoversUndecided, 100000)}` : ""}`,
+    { method: "POST" }).catch(() => undefined);
 
 // Pure helpers ------------------------------------------------------------------
 
@@ -42,6 +43,25 @@ const removable = (s: CleanupStatus) => allItems(s).filter((i) => !i.active);
 export const podIds = (s: CleanupStatus): string[] => removable(s).filter((i) => i.kind === "pod").map((i) => i.id);
 /** Everything still waiting for a choice. */
 export const pendingIds = (s: CleanupStatus): string[] => removable(s).filter((i) => !i.kept).map((i) => i.id);
+/** How many pods and file sets a set of ids covers, for the "are you sure" text. */
+export function countSelection(s: CleanupStatus, ids: string[]): { pods: number; files: number } {
+  const chosen = new Set(ids);
+  const items = allItems(s).filter((i) => chosen.has(i.id));
+  return { pods: items.filter((i) => i.kind === "pod").length, files: items.filter((i) => i.kind === "files").length };
+}
+
+/** "3 tool pods and the collected files of 1 run" */
+export function describeSelection({ pods, files }: { pods: number; files: number }): string {
+  const parts = [
+    pods && `${pods} tool pod${pods === 1 ? "" : "s"}`,
+    files && `the collected files of ${files} run${files === 1 ? "" : "s"}`,
+  ].filter(Boolean);
+  return parts.join(" and ") || "nothing";
+}
+
+export const hasPendingPods = (s: CleanupStatus): boolean =>
+  allItems(s).some((i) => i.kind === "pod" && !i.kept && !i.active);
+
 export const keptCount = (s: CleanupStatus): number => allItems(s).filter((i) => i.kept).length;
 
 export interface Banner { kind: "ok" | "info" | "warn"; title: string; body: string }
@@ -56,7 +76,7 @@ export function banner(s: CleanupStatus): Banner {
       return { kind: "info", title: "Left in place on purpose", body: `${n} item${n === 1 ? "" : "s"} kept for later. Nothing else remains.` };
     }
     case "busy":
-      return { kind: "warn", title: "A run is still in progress", body: "Its tools stay until it finishes. Nothing else needs cleaning." };
+      return { kind: "warn", title: "Something is still running", body: "A run or a scan is using tools right now, so they can't be removed. Nothing else needs cleaning." };
     case "unchecked":
       return { kind: "warn", title: "Couldn't check the cluster", body: `${s.pods_error ?? "The cluster can't be reached."} Leftover files were checked; tool pods were not.` };
     default:

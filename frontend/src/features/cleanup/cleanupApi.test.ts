@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ACTION_OPTIONS, actionLabel } from "../audit/auditApi";
 import {
-  allItems, banner, groupTitle, keptCount, outcomeSummary, pendingIds, podIds,
+  allItems, banner, countSelection, describeSelection, hasPendingPods, groupTitle, keptCount, outcomeSummary, pendingIds, podIds,
   type CleanupItem, type CleanupStatus,
 } from "./cleanupApi";
 
@@ -42,10 +42,27 @@ describe("banner", () => {
     expect(b.body).toMatch(/1 item kept for later/);
   });
   it("warns when a run is in progress, when leftovers need a choice and when the cluster was not checked", () => {
-    expect(banner(status({ state: "busy" })).title).toMatch(/in progress/);
+    expect(banner(status({ state: "busy" })).title).toMatch(/still running/);
     expect(banner(status()).body).toBe("3 items are still on the system.");
     expect(banner(status({ pending_count: 1 })).body).toBe("1 item is still on the system.");
     expect(banner(status({ state: "unchecked", pods_error: "No Kubernetes access." })).body).toMatch(/No Kubernetes access\. Leftover files were checked/);
+  });
+});
+
+describe("confirming a removal", () => {
+  it("counts pods and file sets in the chosen ids", () => {
+    expect(countSelection(status(), ["pod:p1", "pod:p2", "files:0123456789abcdef", "pod:not-listed"])).toEqual({ pods: 2, files: 1 });
+  });
+  it("says what will be removed", () => {
+    expect(describeSelection({ pods: 3, files: 1 })).toBe("3 tool pods and the collected files of 1 run");
+    expect(describeSelection({ pods: 1, files: 0 })).toBe("1 tool pod");
+    expect(describeSelection({ pods: 0, files: 2 })).toBe("the collected files of 2 runs");
+    expect(describeSelection({ pods: 0, files: 0 })).toBe("nothing");
+  });
+  it("shows the keep-for-later note only when an undecided pod is listed", () => {
+    expect(hasPendingPods(status())).toBe(true);
+    const filesOnly = status({ groups: [{ job_id: "j", status: "interrupted", items: [item({ id: "files:j", kind: "files" })] }] });
+    expect(hasPendingPods(filesOnly)).toBe(false);
   });
 });
 
@@ -63,6 +80,7 @@ describe("labels", () => {
   });
   it("the audit page can show and filter the new actions by name", () => {
     expect(actionLabel("cleanup_choice")).toBe("Cleanup choice");
+    expect(actionLabel("cleanup_item")).toBe("Cleanup item");
     expect(ACTION_OPTIONS).toContainEqual(["logout", "Sign out"]);
     expect(ACTION_OPTIONS).toContainEqual(["leftovers_pending", "Leftovers waiting for a choice"]);
   });

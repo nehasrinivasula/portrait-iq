@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ApiError } from "../../api";
 import {
-  banner, chooseCleanup, getCleanup, groupTitle, outcomeSummary, pendingIds, podIds,
+  banner, chooseCleanup, countSelection, describeSelection, getCleanup, groupTitle, hasPendingPods, outcomeSummary,
+  pendingIds, podIds,
   type CleanupOutcome, type CleanupStatus,
 } from "./cleanupApi";
 import "./cleanup.css";
@@ -12,7 +13,7 @@ interface Props {
   /** Close without signing out (logout) or decide later (restart). */
   onClose: () => void;
   /** Logout only: called when the engineer finishes and signs out. */
-  onSignOut?: () => void;
+  onSignOut?: (leftoversUndecided: number) => void;
 }
 
 /** The cleanup choice: what is left on the system, per run, and what to do with it (requirement: known clean state). */
@@ -25,6 +26,7 @@ export default function CleanupDialog({ context, onClose, onSignOut }: Props) {
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<string[] | null>(null);   // ids waiting for "Yes, remove"
   const [outcomes, setOutcomes] = useState<CleanupOutcome[] | null>(null);
   const logout = context === "logout";
 
@@ -50,6 +52,7 @@ export default function CleanupDialog({ context, onClose, onSignOut }: Props) {
     if (!ids.length) return;
     setBusy(true);
     setError(null);
+    setConfirm(null);
     try {
       const r = await chooseCleanup(action, context, ids);
       setOutcomes(r.outcomes);
@@ -68,6 +71,7 @@ export default function CleanupDialog({ context, onClose, onSignOut }: Props) {
   const b = status && banner(status);
   const pending = status?.state === "pending";
   const chosen = [...picked];
+  const undecided = status?.pending_count ?? 0;
   const title = logout ? "Before you sign out" : "Leftovers from an interrupted run";
 
   return (
@@ -109,7 +113,7 @@ export default function CleanupDialog({ context, onClose, onSignOut }: Props) {
                           <span className="cleanup-label">{i.label}</span>
                           <span className="muted"> {i.detail}</span>
                           {i.kept && <span className="chip">Kept</span>}
-                          {i.active && <span className="chip">In use</span>}
+                          {i.active && <span className="chip" title="Still running, so it can't be removed">In use</span>}
                         </label>
                       </li>
                     ))}
@@ -118,8 +122,8 @@ export default function CleanupDialog({ context, onClose, onSignOut }: Props) {
               ))}
               {status.groups.some((g) => g.items.some((i) => i.kind === "files" && !i.kept)) && (
                 <p className="muted">
-                  Removing collected files deletes that run's partial results from this machine.
-                  Logs already imported into the Logs page stay there.
+                  Removing collected files deletes that run's partial results from this machine. Its export
+                  (the zip under Export) and logs already imported into the Logs page stay.
                 </p>
               )}
             </div>
@@ -131,36 +135,56 @@ export default function CleanupDialog({ context, onClose, onSignOut }: Props) {
           ))}
           {error && <div className="alert error" role="alert"><strong>Nothing was changed</strong>{error}</div>}
 
-          <div className="cleanup-actions">
-            {pending && logout && !review && (
-              <>
-                <button type="button" className="btn" disabled={busy || !podIds(status).length} onClick={() => void run("remove", podIds(status))}>
-                  Remove all deployments
-                </button>
-                <button type="button" className="btn ghost" disabled={busy} onClick={() => void run("keep", pendingIds(status))}>Keep for later</button>
-                <button type="button" className="btn ghost" disabled={busy} onClick={() => setReview(true)}>Review list</button>
-              </>
-            )}
-            {pending && (review || !logout) && (
-              <>
-                <button type="button" className="btn" disabled={busy || !chosen.length} onClick={() => void run("remove", chosen)}>
-                  Remove selected ({chosen.length})
-                </button>
-                <button type="button" className="btn ghost" disabled={busy || !chosen.length} onClick={() => void run("keep", chosen)}>
-                  Keep selected for later
-                </button>
-              </>
-            )}
-            {logout ? (
-              <>
-                <button type="button" className="btn" disabled={busy || pending} onClick={onSignOut} autoFocus={!pending}>Sign out</button>
-                {pending && <button type="button" className="btn ghost" disabled={busy} onClick={onSignOut}>Sign out anyway</button>}
-                <button type="button" className="btn ghost" disabled={busy} onClick={onClose}>Cancel</button>
-              </>
-            ) : (
-              <button type="button" className="btn ghost" disabled={busy} onClick={onClose}>{pending ? "Decide later" : "Close"}</button>
-            )}
-          </div>
+          {confirm && (
+            <div className="alert warn" role="alertdialog" aria-label="Confirm removal">
+              <strong>Remove {describeSelection(countSelection(status, confirm))}?</strong>
+              This can't be undone.
+              <div className="cleanup-actions">
+                <button type="button" className="btn" autoFocus disabled={busy} onClick={() => void run("remove", confirm)}>Yes, remove</button>
+                <button type="button" className="btn ghost" disabled={busy} onClick={() => setConfirm(null)}>Back</button>
+              </div>
+            </div>
+          )}
+
+          {pending && !confirm && hasPendingPods(status) && (
+            <p className="muted">
+              Pods you keep still stop by themselves when their time limit runs out (about 20 minutes for a packet
+              capture), and anything still inside them is lost then. Files on this machine stay until you remove them.
+            </p>
+          )}
+
+          {!confirm && (
+            <div className="cleanup-actions">
+              {pending && logout && !review && (
+                <>
+                  <button type="button" className="btn" disabled={busy || !podIds(status).length} onClick={() => setConfirm(podIds(status))}>
+                    Remove all deployments
+                  </button>
+                  <button type="button" className="btn ghost" disabled={busy} onClick={() => void run("keep", pendingIds(status))}>Keep for later</button>
+                  <button type="button" className="btn ghost" disabled={busy} onClick={() => setReview(true)}>Review list</button>
+                </>
+              )}
+              {pending && (review || !logout) && (
+                <>
+                  <button type="button" className="btn" disabled={busy || !chosen.length} onClick={() => setConfirm(chosen)}>
+                    Remove selected ({chosen.length})
+                  </button>
+                  <button type="button" className="btn ghost" disabled={busy || !chosen.length} onClick={() => void run("keep", chosen)}>
+                    Keep selected for later
+                  </button>
+                </>
+              )}
+              {logout ? (
+                <>
+                  <button type="button" className="btn" disabled={busy || pending} onClick={() => onSignOut?.(0)} autoFocus={!pending}>Sign out</button>
+                  {pending && <button type="button" className="btn ghost" disabled={busy} onClick={() => onSignOut?.(undecided)}>Sign out anyway</button>}
+                  <button type="button" className="btn ghost" disabled={busy} onClick={onClose}>Cancel</button>
+                </>
+              ) : (
+                <button type="button" className="btn ghost" disabled={busy} onClick={onClose}>{pending ? "Decide later" : "Close"}</button>
+              )}
+            </div>
+          )}
         </>
       )}
     </dialog>

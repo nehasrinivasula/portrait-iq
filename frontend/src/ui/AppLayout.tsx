@@ -38,7 +38,7 @@ export default function AppLayout() {
       </header>
       <main className={`page${pathname.startsWith("/logs") ? " wide" : ""}`}><Outlet /></main>
       {recovery && !ending && <CleanupDialog context="restart" onClose={() => setRecovery(false)} />}
-      {ending && <CleanupDialog context="logout" onClose={() => setEnding(false)} onSignOut={() => void signOut()} />}
+      {ending && <CleanupDialog context="logout" onClose={() => setEnding(false)} onSignOut={(undecided) => void signOut(undecided)} />}
     </>
   );
 }

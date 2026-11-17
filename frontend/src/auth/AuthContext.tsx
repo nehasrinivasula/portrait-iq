@@ -18,7 +18,7 @@ interface AuthState {
   login: (username: string, password: string) => Promise<void>;
   logout: (reason?: "idle" | SignOutReason) => void;
   /** The engineer chose to sign out: end the session on the server too, then clear it here. */
-  signOut: () => Promise<void>;
+  signOut: (leftoversUndecided?: number) => Promise<void>;
   notice: string | null;
   /** Seconds until idle sign-out; null until the final minute. */
   idleSecondsLeft: number | null;
@@ -52,8 +52,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  const signOut = useCallback(async () => {
-    await endServerSession();
+  const signOut = useCallback(async (leftoversUndecided = 0) => {
+    await endServerSession(leftoversUndecided);
     logout();
   }, [logout]);
 
