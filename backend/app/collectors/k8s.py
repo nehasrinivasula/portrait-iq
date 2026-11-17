@@ -344,13 +344,16 @@ class _Base64Writer:
 
 
 _runner: PodRunner | None = None
+_namespace_runners: dict[str, PodRunner] = {}
 
 
 def get_pod_runner(namespace: str | None = None) -> PodRunner:
-    """The shared runner for our namespace. Connects on first use."""
+    """A runner cached per diagnostic namespace. Connects on first use."""
     global _runner
     if namespace is not None and namespace != settings.tools_namespace:
-        return PodRunner(namespace)
+        if namespace not in _namespace_runners:
+            _namespace_runners[namespace] = PodRunner(namespace)
+        return _namespace_runners[namespace]
     if _runner is None:
         _runner = PodRunner(settings.tools_namespace)
     return _runner

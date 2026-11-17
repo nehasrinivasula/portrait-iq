@@ -49,6 +49,21 @@ describe("validateChoices / buildOptions", () => {
     });
   });
 
+  it("rejects interface and host values the backend will reject", () => {
+    const c = defaultChoices();
+    c.tshark.interfaceName = "-eth0";
+    c.netshoot.dnsNames = "_invalid.example";
+    c.netshoot.extraTargets = "-invalid.example";
+    const errors = validateChoices(new Set(["tshark", "netshoot"]), c);
+    expect(errors["tshark.interface"]).toBeDefined();
+    expect(errors["netshoot.dnsNames"]).toBeDefined();
+    expect(errors["netshoot.extraTargets"]).toBeDefined();
+    c.tshark.interfaceName = "eth0.1";
+    c.netshoot.dnsNames = "valid.example";
+    c.netshoot.extraTargets = "2001:db8::1";
+    expect(validateChoices(new Set(["tshark", "netshoot"]), c)).toEqual({});
+  });
+
   it("sends exactly one live filter: a quick preset or a typed port", () => {
     const c = defaultChoices();
     c.tshark.preset = "rti_view_pod";

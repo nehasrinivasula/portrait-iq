@@ -136,3 +136,10 @@ def load_login_secret_files(s: Settings) -> None:
 
 settings = Settings()
 load_login_secret_files(settings)
+
+
+def allowed_tools_namespaces() -> set[str]:
+    """Namespaces explicitly provisioned for diagnostic pods, including the default."""
+    return {settings.tools_namespace, *(
+        name.strip() for name in settings.tools_allowed_namespaces.split(",") if name.strip()
+    )}

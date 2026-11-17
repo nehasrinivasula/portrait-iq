@@ -459,6 +459,15 @@ def test_job_configuration_override_is_persisted_and_bound_to_plugin(db, local_r
     monkeypatch.setattr(settings, "tools_allowed_namespaces", "portrait-iq-demo")
     preview = routes.job_configuration(user=User(id="tester", name="Tester"))
     assert "portrait-iq-demo" in preview["allowed_namespaces"]
+    from app.collectors.netshoot import NetshootCollector
+    from app.collectors.rti import RtiCollector
+    from app.collectors.tshark import TsharkCollector
+    assert preview["netshoot"]["ports"] == NetshootCollector.DEFAULT_PORTS
+    assert preview["netshoot"]["dns_names"] == NetshootCollector.DEFAULT_DNS_NAMES
+    assert preview["rti"]["domain"] == RtiCollector.DEFAULT_DOMAIN
+    assert preview["rti"]["duration_s"] == RtiCollector.DEFAULT_DURATION_S
+    assert preview["tshark"]["duration_s"] == TsharkCollector.DEFAULT_DURATION_S
+    assert preview["tshark"]["interface"] == TsharkCollector.DEFAULT_INTERFACE
     req = JobCreateRequest(tools=["recorder"], namespace="portrait-iq-demo",
                            cpu_limit_pct=65, mem_limit_mb=2048, max_output_mb=4096,
                            overridden_fields=["namespace", "cpu_limit_pct"])
@@ -518,6 +527,31 @@ def test_startup_marks_interrupted_jobs(db):
     err = json.loads(running.error)
     assert err["step"] == "collect_server_logs" and "interrupted" in err["reason"].lower()
     assert finished.error is None
+
+
+def test_startup_sweeps_every_allowed_namespace_even_if_one_fails(db, monkeypatch):
+    from app.orchestrator.jobs import recover_interrupted_jobs
+    from app.collectors import k8s
+
+    monkeypatch.setattr(settings, "tools_allowed_namespaces", "portrait-iq-demo, portrait-iq-other")
+    monkeypatch.setattr(settings, "sweep_tool_pods_on_startup", True)
+    swept = []
+
+    class FakeRunner:
+        def __init__(self, namespace):
+            self.namespace = namespace
+
+        def sweep(self):
+            swept.append(self.namespace)
+            if self.namespace == "portrait-iq-demo":
+                raise RuntimeError("namespace temporarily unavailable")
+            return ["old-pod"]
+
+    monkeypatch.setattr(k8s, "get_pod_runner", lambda namespace=None: FakeRunner(namespace or settings.tools_namespace))
+    recover_interrupted_jobs(db)
+    assert swept == ["portrait-iq", "portrait-iq-demo", "portrait-iq-other"]
+    details = [row.detail for row in db.query(models.AuditLogEntry).filter_by(action="tool_pods_swept")]
+    assert any("namespace=portrait-iq-other" in detail for detail in details)
 
 
 def test_a_failing_step_records_the_step_and_a_plain_reason(db, local_registry, monkeypatch):

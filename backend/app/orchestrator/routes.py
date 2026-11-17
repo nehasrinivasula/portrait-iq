@@ -17,8 +17,11 @@ from app.analysis.findings import findings_for
 from app.audit import log_action
 from app.auth import User, get_active_user, get_unlocked_user
 from app.collectors.base import Collector, PluginError, ResourceLimits
+from app.collectors.netshoot import NetshootCollector
 from app.collectors.registry import get_registry
-from app.config import settings
+from app.collectors.rti import RtiCollector
+from app.collectors.tshark import TsharkCollector
+from app.config import allowed_tools_namespaces, settings
 from app.connectivity.service import check_connectivity
 from app.discovery import service as discovery
 from app.db import SessionLocal, get_db
@@ -204,15 +207,18 @@ def job_configuration(user: User = Depends(get_active_user)):
     """Defaults offered for manual review before starting a diagnostic run."""
     return {
         "namespace": settings.tools_namespace,
-        "allowed_namespaces": sorted({settings.tools_namespace, *(n.strip() for n in settings.tools_allowed_namespaces.split(",") if n.strip())}),
+        "allowed_namespaces": sorted(allowed_tools_namespaces()),
         "cpu_limit_pct": settings.default_cpu_limit_pct,
         "mem_limit_mb": settings.default_mem_limit_mb,
         "max_output_mb": settings.default_max_output_mb,
-        "tshark": {"duration_s": 60, "interface": "any", "filter_preset": "rti_all"},
-        "rti": {"domain": 12, "duration_s": 30},
-        "netshoot": {"ports": [22, 443, 6443], "dns_names": [
-            "kubernetes.default.svc.cluster.local", "axone-log-export-tcp.pm.svc.cluster.local",
-        ], "extra_targets": []},
+        "tshark": {"duration_s": TsharkCollector.DEFAULT_DURATION_S,
+                   "interface": TsharkCollector.DEFAULT_INTERFACE,
+                   "filter_preset": TsharkCollector.DEFAULT_FILTER_PRESET},
+        "rti": {"domain": RtiCollector.DEFAULT_DOMAIN,
+                "duration_s": RtiCollector.DEFAULT_DURATION_S},
+        "netshoot": {"ports": list(NetshootCollector.DEFAULT_PORTS),
+                     "dns_names": list(NetshootCollector.DEFAULT_DNS_NAMES),
+                     "extra_targets": []},
     }
 
 
@@ -228,9 +234,8 @@ def start_job(
     The job runs after the response is sent; poll GET /jobs/{id}. It keeps
     running if the UI session locks (S-2)."""
 
-    allowed_namespaces = {settings.tools_namespace, *(n.strip() for n in settings.tools_allowed_namespaces.split(",") if n.strip())}
     namespace = req.namespace or settings.tools_namespace
-    if namespace not in allowed_namespaces:
+    if namespace not in allowed_tools_namespaces():
         raise HTTPException(422, "namespace is not enabled for diagnostic pods")
     allowed_override_fields = {
         "target_ip", "namespace", "cpu_limit_pct", "mem_limit_mb", "max_output_mb",

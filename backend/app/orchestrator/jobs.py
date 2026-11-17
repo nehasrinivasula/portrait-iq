@@ -22,7 +22,7 @@ from app.audit import log_action
 from app.collectors import k8s
 from app.collectors.base import Collector, CollectorResult, PluginError, ResourceLimits, reason_for
 from app.collectors.registry import PluginRegistry, get_registry
-from app.config import settings
+from app.config import allowed_tools_namespaces, settings
 from app.models import Job
 
 log = logging.getLogger(__name__)
@@ -254,14 +254,16 @@ def recover_interrupted_jobs(db: Session) -> None:
     db.commit()
     if not settings.sweep_tool_pods_on_startup:
         return
-    try:
-        removed = k8s.get_pod_runner().sweep()
-    except Exception as e:  # noqa: BLE001  no cluster (e.g. a laptop) must not stop startup
-        log.info("tool pod sweep skipped: %s", e)
-        return
-    if removed:
-        log.warning("deleted %d leftover tool pod(s): %s", len(removed), ", ".join(removed))
-        log_action(db, "system", "tool_pods_swept", detail=f"pods={removed}")
+    for namespace in sorted(allowed_tools_namespaces()):
+        try:
+            runner = k8s.get_pod_runner() if namespace == settings.tools_namespace else k8s.get_pod_runner(namespace)
+            removed = runner.sweep()
+        except Exception as e:  # noqa: BLE001  one unavailable namespace must not skip others
+            log.info("tool pod sweep skipped in %s: %s", namespace, e)
+            continue
+        if removed:
+            log.warning("deleted %d leftover tool pod(s) in %s: %s", len(removed), namespace, ", ".join(removed))
+            log_action(db, "system", "tool_pods_swept", detail=f"namespace={namespace} pods={removed}")
 
 
 def _finish(db: Session, job: Job, status: str) -> None:

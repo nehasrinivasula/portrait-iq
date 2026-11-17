@@ -42,6 +42,7 @@ export default function PluginPicker({ onStarted, locked }: {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [choices, setChoices] = useState(defaultChoices);
   const [defaults, setDefaults] = useState<JobConfiguration | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
   const [namespace, setNamespace] = useState("");
   const [cpu, setCpu] = useState("");
   const [memory, setMemory] = useState("");
@@ -73,7 +74,7 @@ export default function PluginPicker({ onStarted, locked }: {
         netshoot: { ports: config.netshoot.ports.join(", "), dnsNames: config.netshoot.dns_names.join(", "),
           extraTargets: config.netshoot.extra_targets.join(", ") },
       }));
-    }).catch((e) => setLoadError(messageFor(e)));
+    }).catch((e) => setConfigError(messageFor(e)));
     listPlugins()
       .then((r) => { setPlugins(r.plugins.filter((p) => !HIDDEN.has(p.name))); setSkipped(r.load_errors); })
       .catch((e) => setLoadError(messageFor(e)));
@@ -91,9 +92,9 @@ export default function PluginPicker({ onStarted, locked }: {
   }, [startError]);
 
   const ipError = validateTargetIp(targetIp);
-  const limitError = !defaults || !defaults.allowed_namespaces.includes(namespace) ||
+  const limitError = !!defaults && (!defaults.allowed_namespaces.includes(namespace) ||
     ![[cpu, 100], [memory, 65536], [output, 65536]].every(([value, max]) =>
-      /^\d+$/.test(String(value)) && Number(value) >= 1 && Number(value) <= Number(max));
+      /^\d+$/.test(String(value)) && Number(value) >= 1 && Number(value) <= Number(max)));
   const overridden = defaults ? [
     ...(targetIp !== initialTarget.current ? ["target_ip"] : []),
     ...(namespace !== defaults.namespace ? ["namespace"] : []),
@@ -143,10 +144,11 @@ export default function PluginPicker({ onStarted, locked }: {
     if (!valid || locked) return;
     setBusy(true);
     try {
-      const job = await startJob(targetIp.trim(), [...selected], buildOptions(selected, choices), {
+      const configuration = defaults ? {
         namespace, cpu_limit_pct: Number(cpu), mem_limit_mb: Number(memory), max_output_mb: Number(output),
         overridden_fields: overridden,
-      });
+      } : undefined;
+      const job = await startJob(targetIp.trim(), [...selected], buildOptions(selected, choices), configuration);
       const w = logsOn && window.ok ? toApi(window) : null;
       onStarted(job, w ? () => acquireForJob(LOG_SOURCE, job.id, w.since, w.until) : undefined);
     } catch (err) {
@@ -179,7 +181,9 @@ export default function PluginPicker({ onStarted, locked }: {
         {overridden.includes("target_ip") && <span className="override-badge">Manually changed</span>}
       </section>
 
-      <section aria-label="Run configuration">
+      {configError && <div className="alert warn" role="status"><strong>Run configuration unavailable</strong>
+        {configError} Default settings will be used for this run.</div>}
+      {defaults && <section aria-label="Run configuration">
         <h2>Review run configuration</h2>
         <p className="muted">Generated values can be changed for this run. Changed fields are marked below.</p>
         <div className="field">
@@ -203,7 +207,7 @@ export default function PluginPicker({ onStarted, locked }: {
         ))}
         {submitted && limitError && <div className="error-text" role="alert">Choose an enabled namespace and valid positive limits.</div>}
         {overridden.length > 0 && <p className="muted" role="status">Overrides: {overridden.join(", ")}</p>}
-      </section>
+      </section>}
 
       <section aria-labelledby={`${uid}-logs`}>
         <h2 id={`${uid}-logs`}>Logs to include</h2>

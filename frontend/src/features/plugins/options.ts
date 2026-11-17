@@ -61,6 +61,12 @@ export const defaultChoices = (): Choices => ({
 });
 
 const splitList = (value: string) => value.split(",").map((item) => item.trim()).filter(Boolean);
+const HOST = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$/;
+const validHost = (name: string) => {
+  if (HOST.test(name)) return true;
+  try { return new URL(`http://[${name}]/`).hostname.startsWith("["); }
+  catch { return false; }
+};
 
 const wholeSeconds = (v: string, lim: DurationLimits): string | null => {
   const n = Number(v);
@@ -81,7 +87,7 @@ export function validateChoices(selected: Set<string>, c: Choices): Record<strin
     if (c.tshark.mode === "run") {
       const e = wholeSeconds(c.tshark.durationS, TSHARK_DURATION);
       if (e) errs["tshark.duration"] = e;
-      if (!/^[a-zA-Z0-9_.:-]{1,32}$/.test(c.tshark.interfaceName))
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$/.test(c.tshark.interfaceName))
         errs["tshark.interface"] = "Enter an interface name such as any or eth0.";
       if (c.tshark.filterKind === "manual" && !validPort(c.tshark.port))
         errs["tshark.port"] = "Enter a port number from 1 to 65535.";
@@ -99,7 +105,7 @@ export function validateChoices(selected: Set<string>, c: Choices): Record<strin
       errs["netshoot.ports"] = "Use up to 20 comma-separated ports from 1 to 65535.";
     for (const [key, value] of [["dnsNames", c.netshoot.dnsNames], ["extraTargets", c.netshoot.extraTargets]]) {
       const names = splitList(value);
-      if (names.length > 20 || names.some((name) => !/^[a-zA-Z0-9_.:-]{1,253}$/.test(name)))
+      if (names.length > 20 || names.some((name) => !validHost(name)))
         errs[`netshoot.${key}`] = "Use up to 20 comma-separated host names or IP addresses.";
     }
   }
