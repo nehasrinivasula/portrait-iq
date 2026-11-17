@@ -80,6 +80,9 @@ const ACTION_LABELS: Record<string, string> = {
   package_download: "Download package",
   findings_run: "Pattern detection run",
   findings_coverage_view: "Pattern coverage viewed",
+  cleanup_choice: "Cleanup choice",
+  leftovers_pending: "Leftovers waiting for a choice",
+  logout: "Sign out",
 };
 
 /** Every action the page can filter by, as [code, label], in label order. */

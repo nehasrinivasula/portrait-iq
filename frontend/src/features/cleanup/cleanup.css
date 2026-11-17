@@ -1,0 +1,9 @@
+.cleanup-dialog { max-width: 640px; width: calc(100% - 32px); border: 1px solid var(--border, #c8d0d8); border-radius: 8px; padding: 20px; }
+.cleanup-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+.cleanup-dialog h2 { margin-top: 0; }
+.cleanup-groups { margin-top: 12px; max-height: 40vh; overflow: auto; }
+.cleanup-groups h3 { font-size: 0.95rem; margin: 12px 0 4px; }
+.cleanup-groups ul { list-style: none; margin: 0; padding: 0; }
+.cleanup-groups li label { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 4px 0; }
+.cleanup-label { font-family: ui-monospace, monospace; }
+.cleanup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
