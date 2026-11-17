@@ -27,6 +27,7 @@ to its column width, and the full output is kept in rti.txt.
 import json
 import re
 import shlex
+import threading
 
 from app.collectors import k8s
 from app.collectors.base import Collector, CollectorResult, PluginConfigError, PluginError
@@ -59,7 +60,7 @@ def rtps_port_range(domain: int) -> tuple[int, int]:
 # contents never surface, are deliberately left unmatched.
 RTI_SPY_LINE = re.compile(
     r"^\s*\d+\.\d+\s+"
-    r"(?P<kind>[WR])\s*[-+]\S*\s+"
+    r"(?P<kind>[WR])\s*(?P<change>[-+])\S*\s+"
     r"(?P<host>[0-9A-Fa-f]+)\s+"
     r"(?P<topic>\S+)\s+"
     r"(?P<type>\S+)\s*$",
@@ -67,6 +68,15 @@ RTI_SPY_LINE = re.compile(
 )
 
 TIMED_OUT = 124   # coreutils timeout: the expected way rtiddsspy ends
+
+# A host-network RTI run binds a fixed local WAN port per domain
+# (NodePort + rti_wan_local_port_offset), so two runs on the *same* domain on the
+# same node fight for that port and one can silently fail to form its DDS
+# participant (SCRUM-39 review). The backend is single-replica, so a process-wide
+# guard is enough: one run per domain at a time. Different domains use different
+# ports and still run in parallel.
+_active_domains: set[int] = set()
+_active_lock = threading.Lock()
 
 
 class RtiCollector(Collector):
@@ -84,6 +94,7 @@ class RtiCollector(Collector):
         self.duration_s = self.DEFAULT_DURATION_S
         self._runner = None
         self._pod: str | None = None
+        self._claimed_domain: int | None = None
 
     def configure(self, options):
         """Options: domain (7, 12 or 13; default 12) and duration_s
@@ -151,6 +162,18 @@ class RtiCollector(Collector):
         if self._pod:            # run() again after a partial failure: start clean
             self.cleanup()
 
+        # One run per domain per node: a second run on this domain would bind the
+        # same local WAN port and could silently fail (SCRUM-39 review). cleanup()
+        # releases the claim.
+        with _active_lock:
+            if self.domain in _active_domains:
+                raise PluginError(
+                    f"an RTI diagnostic is already running on domain {self.domain}",
+                    safe_reason="Another RTI diagnostic is already running on this domain; try again shortly.",
+                )
+            _active_domains.add(self.domain)
+        self._claimed_domain = self.domain
+
         start_s = settings.tool_pod_start_timeout_seconds
         deadline = start_s + self.duration_s + 60
         self._runner = k8s.get_pod_runner()
@@ -209,20 +232,36 @@ class RtiCollector(Collector):
         )
 
     def cleanup(self) -> None:
-        if self._pod and self._runner:
-            self._runner.delete(self._pod)
-        self._pod = None
+        try:
+            if self._pod and self._runner:
+                self._runner.delete(self._pod)
+            self._pod = None
+        finally:
+            if self._claimed_domain is not None:
+                with _active_lock:
+                    _active_domains.discard(self._claimed_domain)
+                self._claimed_domain = None
 
 
 def summarize(spy_output: str) -> dict:
-    """Hosts and topics from rtiddsspy's discovery lines: per topic its type
-    and the writer/reader host ids (never sample contents, which the parser
-    does not match)."""
-    hosts, topics = set(), {}
+    """Topics from rtiddsspy's discovery lines: per topic its type and the
+    writer/reader host ids present at the END of the capture. rtiddsspy reports a
+    change code per record -- new/updated (+) or deleted (-) -- so a participant
+    that is discovered and then deleted during the run is removed, and the
+    summary reflects what was live when the run ended rather than everything ever
+    seen. Sample contents are never matched."""
+    topics: dict = {}
     for m in RTI_SPY_LINE.finditer(spy_output):
-        hosts.add(m["host"])
         t = topics.setdefault(m["topic"], {"type": m["type"], "writers": set(), "readers": set()})
-        (t["writers"] if m["kind"] == "W" else t["readers"]).add(m["host"])
+        who = t["writers"] if m["kind"] == "W" else t["readers"]
+        if m["change"] == "-":
+            who.discard(m["host"])
+        else:
+            who.add(m["host"])
+    topics = {name: t for name, t in topics.items() if t["writers"] or t["readers"]}
+    hosts: set = set()
+    for t in topics.values():
+        hosts |= t["writers"] | t["readers"]
     return {
         "hosts": sorted(hosts),
         "topics": {

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from app.collectors import k8s
+from app.collectors import k8s, rti
 from app.collectors.base import PluginConfigError, PluginError, ResourceLimits
 from app.collectors.rti import RtiCollector, summarize
 from app.config import settings
@@ -32,6 +32,15 @@ some line rtiddsspy prints that the parser does not know
 @pytest.fixture
 def enabled(monkeypatch):
     monkeypatch.setattr(settings, "rti_enabled", True)
+
+
+@pytest.fixture(autouse=True)
+def _no_domain_leaks():
+    """RTI holds a per-domain claim from run() until cleanup(); clear it between
+    tests so a test that runs without cleaning up does not block later ones."""
+    rti._active_domains.clear()
+    yield
+    rti._active_domains.clear()
 
 
 class FakeRunner:
@@ -177,3 +186,43 @@ def test_configured_peer_replaces_the_target(tmp_path, monkeypatch, enabled):
     configured(tmp_path, monkeypatch, runner).run("192.0.2.10")
     argv = runner.execs[0]
     assert argv[argv.index("-peer") + 1] == "udpv4://router.example.svc.cluster.local"
+
+
+# SCRUM-39 review, finding 1: one RTI run per domain per node, so two runs do
+# not fight for the same local host WAN port.
+
+def test_one_run_per_domain_at_a_time(tmp_path, monkeypatch, enabled):
+    first = configured(tmp_path, monkeypatch, FakeRunner(), domain=12)
+    first.run("192.0.2.10")                       # claims domain 12, held until cleanup
+
+    blocked_runner = FakeRunner()
+    blocked = configured(tmp_path, monkeypatch, blocked_runner, domain=12)
+    with pytest.raises(PluginError, match="already running on domain 12"):
+        blocked.run("192.0.2.10")
+    assert blocked_runner.created == []           # refused before any pod was deployed
+
+    configured(tmp_path, monkeypatch, FakeRunner(), domain=13).run("192.0.2.10")   # other domain is fine
+
+    first.cleanup()                               # releases domain 12
+    configured(tmp_path, monkeypatch, FakeRunner(), domain=12).run("192.0.2.10")   # free again, no raise
+
+
+# SCRUM-39 review, finding 2: a participant deleted mid-capture leaves the summary.
+
+def test_summary_drops_participants_deleted_during_the_capture():
+    out = summarize(
+        "1.0  W +N  0A000215  umfvitals  umfvitals::T\n"
+        "1.1  R +N  0A00021E  umfvitals  umfvitals::T\n"
+        "1.2  W -D  0A000215  umfvitals  umfvitals::T\n"   # the writer leaves before the run ends
+    )
+    assert out["topics"]["umfvitals"]["writers"] == []
+    assert out["topics"]["umfvitals"]["readers"] == ["0A00021E"]
+    assert out["hosts"] == ["0A00021E"]
+
+
+def test_summary_drops_topics_that_end_with_no_participants():
+    out = summarize(
+        "1.0  W +N  0A000215  gone  gone::T\n"
+        "1.1  W -D  0A000215  gone  gone::T\n"
+    )
+    assert out["topics"] == {} and out["hosts"] == []
