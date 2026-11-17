@@ -226,6 +226,21 @@ def test_polling_does_not_keep_the_session_alive(client, demo_credentials, clock
     assert client.get("/api/devices", headers=headers).status_code == 423
 
 
+def test_plugins_is_locked_when_idle_and_does_not_refresh_the_session(client, demo_credentials, clock):
+    # SCRUM-122 review: /api/plugins uses get_unlocked_user, so it enforces the
+    # idle lock (423) but, being a page-load fetch, never counts as activity.
+    # Polling it must not keep the session alive. This pins that dependency: with
+    # get_active_user the final request would stay 200.
+    headers = bearer(login(client, demo_credentials))
+    idle = settings.session_idle_timeout_seconds
+    for _ in range(3):
+        clock[0] += idle / 3
+        assert client.get("/api/plugins", headers=headers).status_code == 200
+    clock[0] += 1              # just past the timeout since login, despite the polling
+    locked = client.get("/api/plugins", headers=headers)
+    assert locked.status_code == 423 and locked.json() == LOCKED
+
+
 def test_user_requests_keep_the_session_alive(client, demo_credentials, clock):
     headers = bearer(login(client, demo_credentials))
     idle = settings.session_idle_timeout_seconds
