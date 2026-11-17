@@ -162,6 +162,8 @@ class JobCreateRequest(BaseModel):
     cpu_limit_pct: Optional[int] = None
     mem_limit_mb: Optional[int] = None
     max_output_mb: Optional[int] = None
+    namespace: Optional[str] = None
+    overridden_fields: list[str] = []
 
 
 class PluginOut(BaseModel):
@@ -188,6 +190,7 @@ class JobOut(BaseModel):
     status: str
     current_step: Optional[str]
     tools: list[str] = []                 # the tools selected for this run, in run order
+    configuration: Optional[dict[str, Any]] = None
     skipped_steps: list[str] = []         # steps the selected tools never use
     error: Optional[RunErrorOut] = None   # set only on a failed/interrupted run
     created_at: datetime
@@ -213,6 +216,11 @@ class JobOut(BaseModel):
             except ValueError:
                 return []
         return value or []
+
+    @field_validator("configuration", mode="before")
+    @classmethod
+    def _parse_configuration(cls, value):
+        return json.loads(value) if isinstance(value, str) else value
 
     @field_validator("error", mode="before")
     @classmethod
