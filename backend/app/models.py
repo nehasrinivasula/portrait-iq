@@ -46,6 +46,7 @@ class Job(Base):
     mem_limit_mb = Column(Integer, nullable=True)
     max_output_mb = Column(Integer, nullable=True)
     tools = Column(Text, nullable=True)              # JSON list, e.g. ["netshoot","rti"]
+    configuration = Column(Text, nullable=True)  # final non-secret run settings and override names
     # The request that started this background job. The job can finish after
     # the browser request ends, so these fields preserve its audit ownership.
     requested_by = Column(String, nullable=True)
