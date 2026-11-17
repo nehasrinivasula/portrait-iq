@@ -1,7 +1,7 @@
 """Item ids and job folders for the cleanup choice. No database or cluster."""
 import pytest
 
-from app.cleanup.files import CleanupError, folder_stats, human_size, parse_ids, safe_job_dir
+from app.cleanup.files import CleanupError, clear_job_files, folder_stats, human_size, parse_ids, safe_job_dir
 from app.config import settings
 
 
@@ -57,3 +57,29 @@ def test_safe_job_dir_only_returns_real_folders_inside_the_job_output_folder(job
     assert safe_job_dir("escape") is None
     (jobs_dir / "afile").write_text("x")
     assert safe_job_dir("afile") is None
+
+
+def test_the_export_folder_is_not_counted_and_not_deleted(tmp_path):
+    (tmp_path / "tshark").mkdir()
+    (tmp_path / "tshark" / "a.pcap").write_bytes(b"x" * 10)
+    (tmp_path / "results.json").write_bytes(b"{}")
+    (tmp_path / "package").mkdir()
+    (tmp_path / "package" / "export.zip").write_bytes(b"z" * 500)
+    assert folder_stats(tmp_path) == (2, 12)
+    clear_job_files(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["package"]
+    assert (tmp_path / "package" / "export.zip").read_bytes() == b"z" * 500
+
+
+def test_a_folder_with_only_an_export_has_nothing_to_clean(tmp_path):
+    (tmp_path / "package").mkdir()
+    (tmp_path / "package" / "export.zip").write_bytes(b"z")
+    assert folder_stats(tmp_path) == (0, 0)
+
+
+def test_only_the_top_level_package_folder_is_protected(tmp_path):
+    (tmp_path / "tshark" / "package").mkdir(parents=True)
+    (tmp_path / "tshark" / "package" / "a.pcap").write_bytes(b"x")
+    assert folder_stats(tmp_path) == (1, 1)
+    clear_job_files(tmp_path)
+    assert list(tmp_path.iterdir()) == []

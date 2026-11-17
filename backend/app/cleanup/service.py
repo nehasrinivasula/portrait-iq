@@ -8,20 +8,19 @@ The folder of a finished run is a result, not a leftover, and is never listed
 or removed here.
 
 The engineer chooses to remove or keep each item. A kept item stays in the
-list marked as kept and is not asked about again. Pods of a run that is still
-going are in use: they are listed but never removed.
+list marked as kept and is not asked about again. A pod that is still running, and
+is not part of a finished run of ours, is in use: listed but never removed.
 
 State after the choice:
   clean      nothing is left
   preserved  only items the engineer chose to keep remain
-  busy       a run is still in progress
+  busy       something is still running (a run, or a pod no run of ours owns)
   pending    leftovers wait for a choice
   unchecked  the cluster could not be reached, so pods are unknown
 """
 from __future__ import annotations
 
 import logging
-import shutil
 from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
@@ -29,13 +28,17 @@ from sqlalchemy.orm import Session
 from app.audit import log_action
 from app.collectors import k8s
 from app.collectors.base import reason_for
-from app.cleanup.files import MAX_ITEMS, CleanupError, folder_stats, human_size, parse_ids, safe_job_dir  # noqa: F401
+from app.cleanup.files import MAX_ITEMS, CleanupError, clear_job_files, folder_stats, human_size, parse_ids, safe_job_dir  # noqa: F401
 from app.models import CleanupDecision, Job
 
 log = logging.getLogger(__name__)
 
 LEFTOVER_JOB_STATUSES = ("interrupted", "cleanup_failed")
 ACTIVE_JOB_STATUSES = ("queued", "running")
+# A pod in one of these phases is finished or gone quiet. Any other pod (Running, Pending) is only removable
+# when it belongs to a run of ours that has ended; a pod no run of ours owns (a discovery scan, another
+# backend's pod in the same namespace) may be mid-work, so it is never offered for removal.
+SETTLED_PHASES = frozenset({"succeeded", "failed", "unknown"})
 
 
 @dataclass
@@ -90,7 +93,7 @@ def current_status(db: Session) -> Status:
         pods, pods_error = [], reason_for(e)
     for p in pods:
         job = jobs.get(p.job_id)
-        active = bool(job and job.status in ACTIVE_JOB_STATUSES)
+        active = pod_in_use(p.phase, job)
         iid = f"pod:{p.name}"
         group(p.job_id).items.append(Item(
             id=iid, kind="pod", job_id=p.job_id, label=p.name,
@@ -119,6 +122,12 @@ def current_status(db: Session) -> Status:
     status = Status("clean", pods_error, ordered, interrupted)
     status.state = _state(status, db)
     return status
+
+
+def pod_in_use(phase: str, job: Job | None) -> bool:
+    if phase.lower() in SETTLED_PHASES:
+        return False
+    return job is None or job.status in ACTIVE_JOB_STATUSES
 
 
 def _state(s: Status, db: Session) -> str:
@@ -160,10 +169,15 @@ def apply_choice(db: Session, *, actor: str, session_id: str | None, action: str
     db.commit()
 
     after = current_status(db)
-    names = lambda r: ",".join(o.id for o in outcomes if o.result == r) or "-"  # noqa: E731
-    detail = (f"context={context} action={action} removed={names('removed')} kept={names('kept')} "
-              f"skipped={names('skipped')} failed={names('failed')} state={after.state}")
-    log_action(db, actor, "cleanup_choice", detail=detail[:1500], session_id=session_id)
+    count = lambda r: sum(o.result == r for o in outcomes)  # noqa: E731
+    # One row per item, so a large batch is fully named in the log, then one summary row.
+    for o in outcomes:
+        reason = f" reason={o.reason}" if o.reason else ""
+        log_action(db, actor, "cleanup_item", session_id=session_id,
+                   detail=f"context={context} action={action} item={o.id} result={o.result}{reason}"[:400])
+    log_action(db, actor, "cleanup_choice", session_id=session_id,
+               detail=(f"context={context} action={action} items={len(outcomes)} removed={count('removed')} "
+                       f"kept={count('kept')} skipped={count('skipped')} failed={count('failed')} state={after.state}"))
     return outcomes, after
 
 
@@ -174,7 +188,7 @@ def _remove(db: Session, item: Item) -> Outcome:
         else:
             folder = safe_job_dir(item.job_id)
             if folder is not None:
-                shutil.rmtree(folder)
+                clear_job_files(folder)
     except Exception as e:  # noqa: BLE001
         log.warning("cleanup of %s failed: %s", item.id, e)
         return Outcome(item.id, "failed", reason_for(e))
