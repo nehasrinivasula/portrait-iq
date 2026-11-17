@@ -257,3 +257,16 @@ class SessionActivity(Base):
     user_id = Column(String, nullable=False, index=True)
     last_active_at = Column(Float, nullable=False)     # epoch seconds (time.time())
     locked_at = Column(Float, nullable=True)           # set once; a locked session stays locked
+
+
+class CleanupDecision(Base):
+    """An engineer's "keep for later" for one leftover item (a tool pod or a
+    job's files), so the cleanup prompt does not ask again. Removal needs no
+    row: the item is simply gone. item_id is "pod:<name>" or "files:<job_id>"."""
+    __tablename__ = "cleanup_decisions"
+
+    item_id = Column(String, primary_key=True)
+    choice = Column(String, nullable=False, default="keep")
+    decided_by = Column(String, nullable=False)
+    session_id = Column(String, nullable=True)
+    decided_at = Column(DateTime, default=datetime.utcnow)

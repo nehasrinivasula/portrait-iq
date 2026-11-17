@@ -251,6 +251,7 @@ def recover_interrupted_jobs(db: Session) -> None:
         log_action(db, "system", "job_interrupted", detail=f"job={job.id} step={job.current_step}")
     db.commit()
     if not settings.sweep_tool_pods_on_startup:
+        _note_leftovers(db, len(stale))
         return
     try:
         removed = k8s.get_pod_runner().sweep()
@@ -260,6 +261,20 @@ def recover_interrupted_jobs(db: Session) -> None:
     if removed:
         log.warning("deleted %d leftover tool pod(s): %s", len(removed), ", ".join(removed))
         log_action(db, "system", "tool_pods_swept", detail=f"pods={removed}")
+
+
+def _note_leftovers(db: Session, interrupted: int) -> None:
+    """Without the automatic sweep, leftovers wait for the engineer's choice
+    (app/cleanup). Record that they are waiting, so the audit log shows why
+    a prompt follows the restart."""
+    try:
+        pods = k8s.get_pod_runner().list_tool_pods()
+    except Exception as e:  # noqa: BLE001  no cluster (e.g. a laptop) must not stop startup
+        log.info("leftover tool pod check skipped: %s", e)
+        pods = []
+    if pods or interrupted:
+        log.warning("%d interrupted run(s), %d tool pod(s) waiting for a cleanup choice", interrupted, len(pods))
+        log_action(db, "system", "leftovers_pending", detail=f"interrupted_jobs={interrupted} pods={len(pods)}")
 
 
 def _finish(db: Session, job: Job, status: str) -> None:

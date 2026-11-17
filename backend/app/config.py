@@ -98,8 +98,11 @@ class Settings(BaseSettings):
     # they are not on PATH (the Windows installer does not add them), e.g.
     # C:\Program Files\Wireshark
     wireshark_bin_dir: str | None = None
-    # Delete tool pods left over from a crash when the backend starts.
-    sweep_tool_pods_on_startup: bool = True
+    # True: delete tool pods left over from a crash when the backend starts,
+    # without asking. False (default): leave them and let the engineer choose
+    # to remove or keep them at the next sign-in (app/cleanup). Pods stop on
+    # their own at activeDeadlineSeconds either way.
+    sweep_tool_pods_on_startup: bool = False
     # Raw output of each job, one folder per job and plugin. Gitignored:
     # captures can contain PHI/PII.
     job_output_dir: str = "./data/jobs"
