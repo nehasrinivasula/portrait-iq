@@ -71,7 +71,7 @@ def test_login_trims_the_username(client, creds):
 @pytest.mark.parametrize("param", ["actor", "session_id", "action"])
 def test_audit_filters_reject_control_characters(client, headers, param):
     r = client.get("/api/audit", headers=headers, params={param: "bad\x00value"})
-    assert r.status_code == 400
+    assert r.status_code == 422
     assert "control or invisible" in r.json()["detail"]
 
 
@@ -89,7 +89,7 @@ def test_audit_filters_trim_whitespace(client, headers):
 @pytest.mark.parametrize("ip", ["", "256.1.1.1", "1.2.3", "010.0.0.1", "example.com", "1.2.3.4;ls"])
 def test_job_start_rejects_invalid_target_ip(client, headers, ip):
     r = client.post("/api/jobs", headers=headers, params={"target_ip": ip}, json={"tools": ["no-such-tool"]})
-    assert r.status_code == 400
+    assert r.status_code == 422
     assert "IP address" in r.json()["detail"] or "IPv4" in r.json()["detail"]
 
 
@@ -103,7 +103,26 @@ def test_job_start_accepts_valid_ip_then_reports_the_unknown_tool(client, header
 
 def test_log_search_rejects_overlong_text(client, headers):
     r = client.get("/api/logs/events", headers=headers, params={"q": "x" * 201})
-    assert r.status_code == 400
+    assert r.status_code == 422
+
+
+def test_search_accepts_tabs_and_line_breaks_from_pasted_log_text(client, headers):
+    for text in ["nak\treply", "line one\nline two", "a\r\nb"]:
+        assert client.get("/api/logs/events", headers=headers, params={"q": text}).status_code == 200
+
+
+def test_search_still_refuses_other_control_characters(client, headers):
+    r = client.get("/api/logs/events", headers=headers, params={"q": "a\x00b"})
+    assert r.status_code == 422 and "control or invisible" in r.json()["detail"]
+
+
+def test_passwords_keep_their_leading_and_trailing_spaces(client, monkeypatch):
+    monkeypatch.setattr(settings, "demo_auth_username", "spacey")
+    monkeypatch.setattr(settings, "demo_auth_password", SecretStr("  pass phrase  "))
+    monkeypatch.setattr(settings, "auth_token_secret", SecretStr(secrets.token_urlsafe(32)))
+    monkeypatch.setattr(settings, "auth_token_ttl_seconds", 3600)
+    assert client.post("/api/auth/login", json={"username": "spacey", "password": "  pass phrase  "}).status_code == 200
+    assert client.post("/api/auth/login", json={"username": "spacey", "password": "pass phrase"}).status_code == 401
 
 
 def test_import_rejects_unsupported_and_slashed_names(client, headers):
