@@ -454,6 +454,46 @@ def test_start_job_runs_the_instances_it_validated(db, local_registry, monkeypat
     assert Flaky.configured == 1
 
 
+def test_job_configuration_override_is_persisted_and_bound_to_plugin(db, local_registry, monkeypatch):
+    monkeypatch.setattr(routes, "get_registry", lambda: local_registry)
+    monkeypatch.setattr(settings, "tools_allowed_namespaces", "portrait-iq-demo")
+    preview = routes.job_configuration(user=User(id="tester", name="Tester"))
+    assert "portrait-iq-demo" in preview["allowed_namespaces"]
+    from app.collectors.netshoot import NetshootCollector
+    from app.collectors.rti import RtiCollector
+    from app.collectors.tshark import TsharkCollector
+    assert preview["netshoot"]["ports"] == NetshootCollector.DEFAULT_PORTS
+    assert preview["netshoot"]["dns_names"] == NetshootCollector.DEFAULT_DNS_NAMES
+    assert preview["rti"]["domain"] == RtiCollector.DEFAULT_DOMAIN
+    assert preview["rti"]["duration_s"] == RtiCollector.DEFAULT_DURATION_S
+    assert preview["tshark"]["duration_s"] == TsharkCollector.DEFAULT_DURATION_S
+    assert preview["tshark"]["interface"] == TsharkCollector.DEFAULT_INTERFACE
+    req = JobCreateRequest(tools=["recorder"], namespace="portrait-iq-demo",
+                           cpu_limit_pct=65, mem_limit_mb=2048, max_output_mb=4096,
+                           overridden_fields=["namespace", "cpu_limit_pct"])
+    tasks = BackgroundTasks()
+    job = routes.start_job(req, target_ip="192.0.2.10", background_tasks=tasks, db=db,
+                           user=User(id="tester", name="Tester"))
+    configured_plugin = tasks.tasks[0].args[2][0]
+    assert configured_plugin.namespace == "portrait-iq-demo"
+    saved = JobOut.model_validate(job).configuration
+    assert saved["namespace"] == "portrait-iq-demo"
+    assert saved["cpu_limit_pct"] == 65
+    assert saved["overridden_fields"] == ["namespace", "cpu_limit_pct"]
+
+
+def test_job_configuration_rejects_unapproved_namespace_and_invalid_limit(db, local_registry, monkeypatch):
+    monkeypatch.setattr(routes, "get_registry", lambda: local_registry)
+    for req in (JobCreateRequest(tools=["recorder"], namespace="pm"),
+                JobCreateRequest(tools=["recorder"], cpu_limit_pct=101),
+                JobCreateRequest(tools=["recorder"], overridden_fields=["secret=raw-value"])):
+        with pytest.raises(HTTPException) as error:
+            routes.start_job(req, target_ip="192.0.2.10", background_tasks=BackgroundTasks(), db=db,
+                             user=User(id="tester", name="Tester"))
+        assert error.value.status_code == 422
+    assert db.query(models.Job).count() == 0
+
+
 def test_results_are_kept_for_plugins_that_finished(db, local_registry):
     run_job(db, _job(db, ["recorder", "exploding"]), "192.0.2.10", registry=local_registry)
     job = db.query(models.Job).one()
@@ -487,6 +527,31 @@ def test_startup_marks_interrupted_jobs(db):
     err = json.loads(running.error)
     assert err["step"] == "collect_server_logs" and "interrupted" in err["reason"].lower()
     assert finished.error is None
+
+
+def test_startup_sweeps_every_allowed_namespace_even_if_one_fails(db, monkeypatch):
+    from app.orchestrator.jobs import recover_interrupted_jobs
+    from app.collectors import k8s
+
+    monkeypatch.setattr(settings, "tools_allowed_namespaces", "portrait-iq-demo, portrait-iq-other")
+    monkeypatch.setattr(settings, "sweep_tool_pods_on_startup", True)
+    swept = []
+
+    class FakeRunner:
+        def __init__(self, namespace):
+            self.namespace = namespace
+
+        def sweep(self):
+            swept.append(self.namespace)
+            if self.namespace == "portrait-iq-demo":
+                raise RuntimeError("namespace temporarily unavailable")
+            return ["old-pod"]
+
+    monkeypatch.setattr(k8s, "get_pod_runner", lambda namespace=None: FakeRunner(namespace or settings.tools_namespace))
+    recover_interrupted_jobs(db)
+    assert swept == ["portrait-iq", "portrait-iq-demo", "portrait-iq-other"]
+    details = [row.detail for row in db.query(models.AuditLogEntry).filter_by(action="tool_pods_swept")]
+    assert any("namespace=portrait-iq-other" in detail for detail in details)
 
 
 def test_a_failing_step_records_the_step_and_a_plain_reason(db, local_registry, monkeypatch):

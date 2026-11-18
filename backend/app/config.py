@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     # (compute). In a pod the backend uses its service account; from a laptop
     # it uses this kubeconfig (or ~/.kube/config when unset).
     tools_namespace: str = "portrait-iq"
+    # Comma-separated namespaces explicitly provisioned for diagnostic pods.
+    tools_allowed_namespaces: str = ""
     kubeconfig_path: str | None = None
     # The lab has no internet: images are imported into containerd by hand,
     # so IfNotPresent never pulls there. Pin exact tags.
@@ -134,3 +136,10 @@ def load_login_secret_files(s: Settings) -> None:
 
 settings = Settings()
 load_login_secret_files(settings)
+
+
+def allowed_tools_namespaces() -> set[str]:
+    """Namespaces explicitly provisioned for diagnostic pods, including the default."""
+    return {settings.tools_namespace, *(
+        name.strip() for name in settings.tools_allowed_namespaces.split(",") if name.strip()
+    )}

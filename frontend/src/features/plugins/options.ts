@@ -35,6 +35,7 @@ export interface TsharkChoice {
   preset: TsharkPresetId;
   port: string;
   proto: "any" | "tcp" | "udp";
+  interfaceName: string;
 }
 export interface RtiChoice {
   domain: number;
@@ -43,15 +44,25 @@ export interface RtiChoice {
 export interface Choices {
   tshark: TsharkChoice;
   rti: RtiChoice;
+  netshoot: { ports: string; dnsNames: string; extraTargets: string };
 }
 
 export const defaultChoices = (): Choices => ({
   tshark: {
     mode: "run", durationS: String(TSHARK_DEFAULT_S), uploadId: null,
-    filterKind: "quick", preset: "rti_all", port: "", proto: "any",
+    filterKind: "quick", preset: "rti_all", port: "", proto: "any", interfaceName: "any",
   },
-  rti: { domain: RTI_DOMAINS[0], durationS: String(RTI_DEFAULT_S) },
+  rti: { domain: 12, durationS: String(RTI_DEFAULT_S) },
+  netshoot: { ports: "22, 443, 6443", dnsNames: "kubernetes.default.svc.cluster.local, axone-log-export-tcp.pm.svc.cluster.local", extraTargets: "" },
 });
+
+const splitList = (value: string) => value.split(",").map((item) => item.trim()).filter(Boolean);
+const HOST = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$/;
+const validHost = (name: string) => {
+  if (HOST.test(name)) return true;
+  try { return new URL(`http://[${name}]/`).hostname.startsWith("["); }
+  catch { return false; }
+};
 
 const wholeSeconds = (v: string, lim: DurationLimits): string | null => {
   const n = Number(v);
@@ -72,6 +83,8 @@ export function validateChoices(selected: Set<string>, c: Choices): Record<strin
     if (c.tshark.mode === "run") {
       const e = wholeSeconds(c.tshark.durationS, TSHARK_DURATION);
       if (e) errs["tshark.duration"] = e;
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$/.test(c.tshark.interfaceName))
+        errs["tshark.interface"] = "Enter an interface name such as any or eth0.";
       if (c.tshark.filterKind === "manual" && !validPort(c.tshark.port))
         errs["tshark.port"] = "Enter a port number from 1 to 65535.";
     } else if (!c.tshark.uploadId) {
@@ -81,6 +94,16 @@ export function validateChoices(selected: Set<string>, c: Choices): Record<strin
   if (selected.has("rti")) {
     const e = wholeSeconds(c.rti.durationS, RTI_DURATION);
     if (e) errs["rti.duration"] = e;
+  }
+  if (selected.has("netshoot")) {
+    const ports = splitList(c.netshoot.ports);
+    if (ports.length > 20 || ports.some((port) => !validPort(port)))
+      errs["netshoot.ports"] = "Use up to 20 comma-separated ports from 1 to 65535.";
+    for (const [key, value] of [["dnsNames", c.netshoot.dnsNames], ["extraTargets", c.netshoot.extraTargets]]) {
+      const names = splitList(value);
+      if (names.length > 20 || names.some((name) => !validHost(name)))
+        errs[`netshoot.${key}`] = "Use up to 20 comma-separated host names or IP addresses.";
+    }
   }
   return errs;
 }
@@ -96,9 +119,13 @@ export function buildOptions(selected: Set<string>, c: Choices): Record<string, 
         t.filterKind === "quick"
           ? { filter_preset: t.preset }
           : { capture_filter: `${t.proto === "any" ? "" : `${t.proto} `}port ${Number(t.port)}` };
-      out.tshark = { mode: "run", duration_s: Number(t.durationS), ...filter };
+      out.tshark = { mode: "run", duration_s: Number(t.durationS), interface: t.interfaceName, ...filter };
     }
   }
   if (selected.has("rti")) out.rti = { domain: c.rti.domain, duration_s: Number(c.rti.durationS) };
+  if (selected.has("netshoot")) out.netshoot = {
+    ports: splitList(c.netshoot.ports).map(Number), dns_names: splitList(c.netshoot.dnsNames),
+    extra_targets: splitList(c.netshoot.extraTargets),
+  };
   return out;
 }
