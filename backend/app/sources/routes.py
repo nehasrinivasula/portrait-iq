@@ -185,12 +185,8 @@ def upload_logs(
     try:
         for i, upload in enumerate(files):
             name = Path(upload.filename or "").name
-            if not name or Path(name).suffix.lower() not in ALLOWED_SUFFIXES:
-                raise HTTPException(
-                    400, f"'{name or 'unnamed'}' is not a supported log file ({', '.join(sorted(ALLOWED_SUFFIXES))})."
-                )
             try:
-                validate_upload_name(name, ALLOWED_SUFFIXES)
+                validate_upload_name(name, ALLOWED_SUFFIXES, kind="log file")
             except ValidationFailure as e:
                 raise HTTPException(400, str(e))
             dest = inbox / f"{i:04d}" / name  # same-named uploads must not overwrite each other

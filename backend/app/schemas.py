@@ -3,14 +3,11 @@ sync with models.py by hand for now; consider generating one from the other
 once the shape stabilizes."""
 import json
 from datetime import datetime, timezone
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from app.validation import has_control_chars
-from typing import Any, Optional
-
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 class LoginRequest(BaseModel):
