@@ -120,6 +120,13 @@ class Settings(BaseSettings):
     # QoS looks for under that directory. SCRUM-39.
     rti_security_secret: str = ""
     rti_sdds_dir: str = "/opt/axone-tools/sdds"
+    # The shipped WAN DataReader QoS is self-inconsistent (max_samples finite
+    # while max_samples_per_instance is unlimited), so rtiddsspy fails
+    # create_datareader on most topics and floods its output (seen on the bench
+    # 2026-11-17). When true, load a small override profile that inherits the
+    # domain's profile and gives the DataReader a consistent history/resource
+    # limits, so the readers create cleanly. SCRUM-39.
+    rti_fix_reader_qos: bool = True
     # Where tshark and editcap are on the machine running the backend, when
     # they are not on PATH (the Windows installer does not add them), e.g.
     # C:\Program Files\Wireshark

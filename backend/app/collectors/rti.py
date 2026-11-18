@@ -24,6 +24,7 @@ becomes a warning, not an empty success. The rtiddsspy table format the parser
 reads was confirmed on the bench 2026-11-08; a long type name can be truncated
 to its column width, and the full output is kept in rti.txt.
 """
+import base64
 import json
 import re
 import shlex
@@ -78,6 +79,39 @@ TIMED_OUT = 124   # coreutils timeout: the expected way rtiddsspy ends
 _active_domains: set[int] = set()
 _active_lock = threading.Lock()
 
+# A QoS override written onto the tool pod to fix the shipped WAN profile's
+# inconsistent DataReader QoS (SCRUM-39). rtiddsspy loads it via NDDS_QOS_PROFILES.
+READER_QOS_OVERRIDE_LIB = "PortraitIqSpy"
+READER_QOS_OVERRIDE_PROFILE = "spy_qos"
+READER_QOS_OVERRIDE_PATH = "/tmp/spy_qos.xml"
+
+
+def reader_qos_override_xml(base_profile: str) -> str:
+    """A QoS profile that inherits base_profile but gives the DataReader a
+    self-consistent history/resource_limits so rtiddsspy can create its readers.
+    The shipped WAN profile leaves max_samples finite while
+    max_samples_per_instance is unlimited, which DDS rejects (create_datareader
+    errors seen on the bench 2026-11-17). Keep-last depth 1 with unlimited
+    resource limits is always consistent, and since -printSample is never passed
+    no sample contents are ever surfaced."""
+    return (
+        '<?xml version="1.0"?>\n'
+        "<dds>\n"
+        f'  <qos_library name="{READER_QOS_OVERRIDE_LIB}">\n'
+        f'    <qos_profile name="{READER_QOS_OVERRIDE_PROFILE}" base_name="{base_profile}">\n'
+        "      <datareader_qos>\n"
+        "        <history><kind>KEEP_LAST_HISTORY_QOS</kind><depth>1</depth></history>\n"
+        "        <resource_limits>\n"
+        "          <max_samples>LENGTH_UNLIMITED</max_samples>\n"
+        "          <max_samples_per_instance>LENGTH_UNLIMITED</max_samples_per_instance>\n"
+        "          <max_instances>LENGTH_UNLIMITED</max_instances>\n"
+        "        </resource_limits>\n"
+        "      </datareader_qos>\n"
+        "    </qos_profile>\n"
+        "  </qos_library>\n"
+        "</dds>\n"
+    )
+
 
 class RtiCollector(Collector):
     name = "rti"
@@ -117,6 +151,11 @@ class RtiCollector(Collector):
     def audit_fields(self):
         return dict(self.options)
 
+    def base_qos_profile(self) -> str:
+        """The shipped WAN server profile for this domain, or a configured one."""
+        role, _ = WAN_BY_DOMAIN[self.domain]
+        return settings.rti_qos_profile or f"AxoneNetQoSLibrary::umfwan_server_{role}_qos"
+
     def spy_argv(self, node_ip: str, target_ip: str) -> list[str]:
         """The rtiddsspy command, wired for RTI Real-Time WAN. node_ip is the
         tool pod's node (from wait_running): the WAN public address a
@@ -126,7 +165,6 @@ class RtiCollector(Collector):
         router_host = settings.rti_wan_router_host or target_ip or node_ip
         offset = settings.rti_wan_local_port_offset
         peer = settings.rti_peer or f"udpv4_wan://{router_host}:{nodeport}"
-        profile = settings.rti_qos_profile or f"AxoneNetQoSLibrary::umfwan_server_{role}_qos"
         # DDS_SECURE=secure selects the secured QoS chain (the image env ships
         # 'unsecure'); the DDS_RTWAN_SERVER_* vars fill the $()s the WAN profile
         # reads. `env` adds them to the exec without a shell.
@@ -145,15 +183,40 @@ class RtiCollector(Collector):
         ]
         for r, np in WAN_BY_DOMAIN.values():
             argv.append(f"DDS_RTWAN_SERVER_PORT_{r.upper()}={np + offset}")
+        if settings.rti_fix_reader_qos:
+            # Load the base QoS file plus the override profile (written onto the
+            # pod by _write_reader_qos_override) via NDDS_QOS_PROFILES, and spy
+            # at the override -- it inherits the domain's profile but fixes the
+            # DataReader QoS so create_datareader stops failing. SCRUM-39.
+            files = [f for f in (settings.rti_qos_file, READER_QOS_OVERRIDE_PATH) if f]
+            argv.append(f"NDDS_QOS_PROFILES={';'.join(files)}")
         argv += [
             "timeout", str(self.duration_s), "rtiddsspy",
             "-domainId", str(self.domain), "-peer", peer,
         ]
-        if settings.rti_qos_file:
-            argv += ["-qosFile", settings.rti_qos_file]
-        if profile:
-            argv += ["-qosProfile", profile]
+        if settings.rti_fix_reader_qos:
+            argv += ["-qosProfile", f"{READER_QOS_OVERRIDE_LIB}::{READER_QOS_OVERRIDE_PROFILE}"]
+        else:
+            if settings.rti_qos_file:
+                argv += ["-qosFile", settings.rti_qos_file]
+            if self.base_qos_profile():
+                argv += ["-qosProfile", self.base_qos_profile()]
         return argv
+
+    def _write_reader_qos_override(self) -> None:
+        """Put the QoS override profile on the tool pod before the spy runs, so
+        rtiddsspy can load it via NDDS_QOS_PROFILES (SCRUM-39). base64 avoids any
+        shell-quoting of the XML."""
+        xml = reader_qos_override_xml(self.base_qos_profile())
+        blob = base64.b64encode(xml.encode()).decode()
+        res = self._runner.exec(
+            self._pod, ["sh", "-c", f"echo {blob} | base64 -d > {READER_QOS_OVERRIDE_PATH}"], 30
+        )
+        if res.exit_code != 0:
+            raise PluginError(
+                f"could not write the RTI QoS override into pod {self._pod}",
+                safe_reason="The RTI diagnostic could not be prepared.",
+            )
 
     def run(self, target_ip: str) -> CollectorResult:
         if not is_host(target_ip):
@@ -195,6 +258,8 @@ class RtiCollector(Collector):
             secret_mount=secret_mount,
         )
         node_ip = self._runner.wait_running(self._pod, start_s)
+        if settings.rti_fix_reader_qos:
+            self._write_reader_qos_override()
         # Built now: the WAN public address is the node this pod landed on.
         argv = self.spy_argv(node_ip or "", target_ip)
         res = self._runner.exec(self._pod, argv, self.duration_s + 30)

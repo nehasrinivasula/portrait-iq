@@ -2,13 +2,19 @@
 SCRUM-39: the UMF RTI plugin. The cluster and rtiddsspy are faked; the spy
 output below is synthetic (documentation addresses, made-up topics).
 """
+import base64
 import json
 
 import pytest
 
 from app.collectors import k8s, rti
 from app.collectors.base import PluginConfigError, PluginError, ResourceLimits
-from app.collectors.rti import RtiCollector, summarize
+from app.collectors.rti import (
+    READER_QOS_OVERRIDE_PATH,
+    RtiCollector,
+    reader_qos_override_xml,
+    summarize,
+)
 from app.config import settings
 
 LIMITS = ResourceLimits(cpu_pct=50, mem_mb=512, max_output_mb=100)
@@ -56,10 +62,25 @@ class FakeRunner:
 
     def exec(self, name, argv, timeout_s):
         self.execs.append(argv)
+        if argv[0] == "sh" and "base64 -d" in argv[-1]:
+            return k8s.ExecResult(0, "", "")   # the QoS-override write (SCRUM-39)
         return k8s.ExecResult(self.exit_code, self.stdout, self.stderr)
 
     def delete(self, name):
         self.deleted.append(name)
+
+
+def spy_command(runner):
+    """The rtiddsspy exec. By default it is the last exec, since the QoS-override
+    write (SCRUM-39) runs first."""
+    return runner.execs[-1]
+
+
+def written_qos_override(runner):
+    """The XML the collector wrote onto the pod, decoded from its sh -c exec."""
+    write = next(a for a in runner.execs if a[0] == "sh" and "base64 -d" in a[-1])
+    blob = write[-1].split("echo ", 1)[1].split(" |", 1)[0]
+    return base64.b64decode(blob).decode()
 
 
 def configured(tmp_path, monkeypatch, runner, **options) -> RtiCollector:
@@ -92,17 +113,20 @@ def test_listens_over_wan_without_printing_samples(tmp_path, monkeypatch, enable
     pod = runner.created[0]
     assert pod["host_network"] is True and pod["image"] == settings.rti_image
     assert "add_capabilities" not in pod
-    argv = runner.execs[0]
+    argv = spy_command(runner)
     # Real-Time WAN: DDS_SECURE + the RTWAN env set via `env`, a udpv4_wan peer
-    # at the router's domain-12 NodePort, and the WAN source-pod QoS profile.
+    # at the router's domain-12 NodePort, and (SCRUM-39) the base QoS file plus
+    # our override profile loaded via NDDS_QOS_PROFILES.
     assert argv[0] == "env"
     assert "DDS_SECURE=secure" in argv
     assert "DDS_RTWAN_SERVER_PUBLIC_ADDRESS=192.0.2.5" in argv       # the node IP
     assert "DDS_RTWAN_SERVER_PORT_SOURCEPOD=32113" in argv           # 32013 + offset 100
+    assert f"NDDS_QOS_PROFILES={settings.rti_qos_file};{READER_QOS_OVERRIDE_PATH}" in argv
     assert argv[argv.index("rtiddsspy") - 2:argv.index("rtiddsspy")] == ["timeout", "20"]
     assert argv[argv.index("-domainId") + 1] == "12"
     assert argv[argv.index("-peer") + 1] == "udpv4_wan://192.0.2.10:32013"
-    assert argv[argv.index("-qosProfile") + 1] == "AxoneNetQoSLibrary::umfwan_server_sourcepod_qos"
+    assert argv[argv.index("-qosProfile") + 1] == "PortraitIqSpy::spy_qos"
+    assert "-qosFile" not in argv            # the base file comes via NDDS_QOS_PROFILES now
     assert "-printSample" not in argv
 
     assert result.summary == "2 hosts, 2 topics on domain 12 over 20s"
@@ -117,11 +141,12 @@ def test_wan_profile_port_and_peer_are_per_domain(tmp_path, monkeypatch, enabled
     for domain, role, nodeport in [(7, "logger", 32007), (13, "viewpod", 32015)]:
         runner = FakeRunner()
         configured(tmp_path, monkeypatch, runner, domain=domain).run("192.0.2.10")
-        argv = runner.execs[0]
+        argv = spy_command(runner)
         assert argv[argv.index("-domainId") + 1] == str(domain)
         assert argv[argv.index("-peer") + 1] == f"udpv4_wan://192.0.2.10:{nodeport}"
-        assert argv[argv.index("-qosProfile") + 1] == f"AxoneNetQoSLibrary::umfwan_server_{role}_qos"
         assert f"DDS_RTWAN_SERVER_PORT_{role.upper()}={nodeport + 100}" in argv
+        # The per-domain profile is now the override's base; see the override test.
+        assert f'base_name="AxoneNetQoSLibrary::umfwan_server_{role}_qos"' in written_qos_override(runner)
 
 
 def test_every_domain_wan_port_is_defined_so_the_shared_qos_file_parses(tmp_path, monkeypatch, enabled):
@@ -133,7 +158,7 @@ def test_every_domain_wan_port_is_defined_so_the_shared_qos_file_parses(tmp_path
     # DDS_RTWAN_SERVER_PORT_LOGGER").
     runner = FakeRunner()
     configured(tmp_path, monkeypatch, runner, domain=12).run("192.0.2.10")
-    argv = runner.execs[0]
+    argv = spy_command(runner)
     assert "DDS_RTWAN_SERVER_PORT_LOGGER=32107" in argv      # 32007 + offset 100
     assert "DDS_RTWAN_SERVER_PORT_SOURCEPOD=32113" in argv   # 32013 + offset 100
     assert "DDS_RTWAN_SERVER_PORT_VIEWPOD=32115" in argv     # 32015 + offset 100
@@ -184,7 +209,7 @@ def test_configured_peer_replaces_the_target(tmp_path, monkeypatch, enabled):
     monkeypatch.setattr(settings, "rti_peer", "udpv4://router.example.svc.cluster.local")
     runner = FakeRunner()
     configured(tmp_path, monkeypatch, runner).run("192.0.2.10")
-    argv = runner.execs[0]
+    argv = spy_command(runner)
     assert argv[argv.index("-peer") + 1] == "udpv4://router.example.svc.cluster.local"
 
 
@@ -257,3 +282,39 @@ def test_summary_drops_topics_that_end_with_no_participants():
         "1.1  W -D  0A000215  gone  gone::T\n"
     )
     assert out["topics"] == {} and out["hosts"] == []
+
+
+def test_reader_qos_override_is_written_and_consistent(tmp_path, monkeypatch, enabled):
+    # SCRUM-39: the shipped WAN DataReader QoS is inconsistent, so we write an
+    # override profile onto the pod that inherits the domain's profile and gives
+    # the reader a consistent history/resource_limits (KEEP_LAST depth 1 with
+    # unlimited resource limits). rtiddsspy loads it via NDDS_QOS_PROFILES.
+    runner = FakeRunner()
+    configured(tmp_path, monkeypatch, runner, domain=12).run("192.0.2.10")
+    writes = [a for a in runner.execs if a[0] == "sh" and "base64 -d" in a[-1]]
+    assert len(writes) == 1 and f"> {READER_QOS_OVERRIDE_PATH}" in writes[0][-1]
+    xml = written_qos_override(runner)
+    assert 'base_name="AxoneNetQoSLibrary::umfwan_server_sourcepod_qos"' in xml
+    assert "<depth>1</depth>" in xml
+    assert "<max_samples>LENGTH_UNLIMITED</max_samples>" in xml
+    assert "<max_samples_per_instance>LENGTH_UNLIMITED</max_samples_per_instance>" in xml
+
+
+def test_qos_override_can_be_turned_off(tmp_path, monkeypatch, enabled):
+    monkeypatch.setattr(settings, "rti_fix_reader_qos", False)
+    runner = FakeRunner()
+    configured(tmp_path, monkeypatch, runner, domain=12).run("192.0.2.10")
+    # No override written, and spy loads the base QoS file/profile directly.
+    assert all(a[0] != "sh" for a in runner.execs)
+    argv = spy_command(runner)
+    assert argv[argv.index("-qosFile") + 1] == settings.rti_qos_file
+    assert argv[argv.index("-qosProfile") + 1] == "AxoneNetQoSLibrary::umfwan_server_sourcepod_qos"
+    assert not any(a.startswith("NDDS_QOS_PROFILES=") for a in argv)
+
+
+def test_reader_qos_override_xml_inherits_each_domain_profile():
+    for role in ("logger", "sourcepod", "viewpod"):
+        base = f"AxoneNetQoSLibrary::umfwan_server_{role}_qos"
+        xml = reader_qos_override_xml(base)
+        assert f'base_name="{base}"' in xml
+        assert "<datareader_qos>" in xml
