@@ -143,10 +143,13 @@ def connect(
 
 
 @router.get("/plugins", response_model=PluginListOut)
-def list_plugins():
+def list_plugins(user: User = Depends(get_unlocked_user)):
     """Every registered plugin, for the tool-selection screen (SCRUM-40).
     Comes straight from the registry, so a new plugin shows up here
-    without any change to this file."""
+    without any change to this file. Auth required like every other
+    endpoint (S-1); a read-only GET fetched on screen load, so it uses
+    get_unlocked_user (checks the idle lock but does not count as
+    activity). SCRUM-122."""
     reg = get_registry()
     return PluginListOut(
         plugins=[
