@@ -45,10 +45,10 @@ def _clean(values: Optional[Iterable[str]]) -> tuple[str, ...]:
     return tuple(seen)
 
 
-def _checked(value: Optional[str], label: str) -> Optional[str]:
+def _checked(value: Optional[str], label: str, *, fold_whitespace: bool = False) -> Optional[str]:
     """One free-text filter value: trimmed, length-capped, no control characters."""
     try:
-        return clean_text(value, label, max_length=MAX_TEXT_LENGTH)
+        return clean_text(value, label, max_length=MAX_TEXT_LENGTH, fold_whitespace=fold_whitespace)
     except ValidationFailure as e:
         raise FilterError(str(e)) from None
 
@@ -145,7 +145,7 @@ def build_filter(
         if k not in MESSAGE_KINDS:
             raise FilterError(f"Unknown message kind '{k}'. Use one of: {', '.join(MESSAGE_KINDS)}.")
 
-    text = _checked(text, "search text")
+    text = _checked(text, "search text", fold_whitespace=True)   # nak replies in real logs contain tabs
 
     kinds = _clean(flag_categories)
     from app.privacy.scanner import CATEGORY_LABELS

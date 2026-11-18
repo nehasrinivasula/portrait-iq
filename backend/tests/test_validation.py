@@ -33,6 +33,22 @@ def test_control_and_invisible_characters_are_rejected(bad):
         clean_text(bad, "name", max_length=20)
 
 
+def test_fold_whitespace_turns_tabs_and_line_breaks_into_spaces():
+    assert clean_text("nak\treply\r\nnext", "search text", max_length=50, fold_whitespace=True) == "nak reply  next"
+    assert clean_text("\t\n ", "search text", max_length=50, fold_whitespace=True) is None
+
+
+def test_fold_whitespace_still_refuses_other_control_and_invisible_characters():
+    for bad in ["a\x00b", "a\x1bb", "a\u200bb", "a\u202eb"]:
+        with pytest.raises(ValidationFailure, match="control or invisible"):
+            clean_text(bad, "search text", max_length=50, fold_whitespace=True)
+
+
+def test_without_folding_a_tab_is_refused():
+    with pytest.raises(ValidationFailure):
+        clean_text("a\tb", "name", max_length=50)
+
+
 def test_ordinary_unicode_is_allowed():
     assert clean_text("Zoë – Röntgen 3", "name", max_length=20)
 
@@ -80,6 +96,11 @@ def test_label_is_optional_and_capped():
 @pytest.mark.parametrize("name", ["a.csv", "A.LOG", "export.v2.txt", "bundle.zip"])
 def test_upload_name_accepts_supported_types(name):
     assert validate_upload_name(name, SUFFIXES) == name
+
+
+def test_upload_name_message_names_the_kind_of_file():
+    with pytest.raises(ValidationFailure, match=r"'a.exe' is not a supported log file \(\.csv, \.log, \.txt, \.zip\)"):
+        validate_upload_name("a.exe", SUFFIXES, kind="log file")
 
 
 @pytest.mark.parametrize("name", ["", "noext", ".csv", "a.exe", "../a.csv", "dir\\a.csv", "a\nb.csv", "x" * 256 + ".csv"])

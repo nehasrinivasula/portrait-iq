@@ -18,8 +18,11 @@ export const hasControlChars = (v: string): boolean => CONTROL.test(v);
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** Length and character checks for one free-text value. Empty is allowed unless `required`. */
-export function validateText(value: string, label: string, opts: { max: number; required?: boolean }): string | null {
-  const v = value.trim();
+export function validateText(
+  value: string, label: string, opts: { max: number; required?: boolean; foldWhitespace?: boolean },
+): string | null {
+  // Search text is pasted from logs, which contain tabs and line breaks; the API treats those as spaces.
+  const v = (opts.foldWhitespace ? value.replace(/[\t\n\r]/g, " ") : value).trim();
   if (!v) return opts.required ? `Enter ${label}.` : null;
   if (v.length > opts.max) return `${cap(label)} is limited to ${opts.max} characters (now ${v.length}).`;
   if (hasControlChars(v)) return `${cap(label)} can't contain control or invisible characters.`;
@@ -59,6 +62,10 @@ export const validatePassword = (v: string): string | null =>
 
 export const validateFilterValue = (v: string, label: string): string | null =>
   validateText(v, label, { max: MAX_FILTER_VALUE });
+
+/** The log search box: like a filter value, but tabs and line breaks are fine (they count as spaces). */
+export const validateSearchText = (v: string): string | null =>
+  validateText(v, "search text", { max: MAX_FILTER_VALUE, foldWhitespace: true });
 
 export const validateIdFilter = (v: string, label: string): string | null => validateText(v, label, { max: MAX_ID });
 

@@ -4,7 +4,7 @@ import * as ToggleGroup from "@radix-ui/react-toggle-group";
 import TimeFramePicker from "./TimeFramePicker";
 import type { TimeFrameChoice } from "./timeframe";
 import FieldError, { fieldA11y } from "../../ui/FieldError";
-import { validateFilterValue } from "../../validation";
+import { validateFilterValue, validateSearchText } from "../../validation";
 import type { ActiveFilter } from "./activeFilters";
 import type { Facets, FieldColumn, LogFilter, Severity } from "./logsApi";
 
@@ -32,7 +32,7 @@ export default function LogFilters({ frame, onFrame, filter, onFilter, facets, a
   const uid = useId();
   const set = (patch: Partial<LogFilter>) => onFilter({ ...filter, ...patch });
   const valueError = validateFilterValue(filter.value, "value");
-  const qError = validateFilterValue(filter.q, "search text");
+  const qError = validateSearchText(filter.q);
   const options =
     filter.column === "device" ? facets?.devices : filter.column === "category" ? facets?.categories : undefined;
 

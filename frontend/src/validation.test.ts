@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_FILTER_VALUE, validateFilterValue, validateHost, validateImportFiles, validateLabel, validatePassword,
-  validatePort, validateTargetIp, validateText, validateUsername,
+  validatePort, validateSearchText, validateTargetIp, validateText, validateUsername,
 } from "./validation";
 
 describe("validateText", () => {
@@ -60,6 +60,19 @@ describe("filters and labels", () => {
   it("labels are optional and capped at 64", () => {
     expect(validateLabel("")).toBeNull();
     expect(validateLabel("x".repeat(65))).toMatch(/limited to 64/);
+  });
+});
+
+describe("validateSearchText", () => {
+  it.each(["nak\treply", "line one\nline two", "a\r\nb"])("accepts tabs and line breaks pasted from logs: %j", (v) =>
+    expect(validateSearchText(v)).toBeNull());
+  it("still refuses other control and invisible characters", () => {
+    expect(validateSearchText("a\u0000b")).toMatch(/control or invisible/);
+    expect(validateSearchText("a\u200bb")).toMatch(/control or invisible/);
+  });
+  it("caps the length at the backend limit, counting folded whitespace", () => {
+    expect(validateSearchText("x".repeat(MAX_FILTER_VALUE))).toBeNull();
+    expect(validateSearchText("x".repeat(MAX_FILTER_VALUE) + "\ty")).toMatch(/limited to 200/);
   });
 });
 

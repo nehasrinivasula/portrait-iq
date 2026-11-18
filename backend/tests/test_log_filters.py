@@ -102,3 +102,12 @@ def test_values_are_trimmed_and_deduplicated():
     f = build_filter(devices=[" H50 ", "H50", ""], process="  axonerouter ")
     assert f.devices == ("H50",)
     assert f.process == "axonerouter"
+
+
+def test_search_text_accepts_tabs_and_line_breaks_as_spaces():
+    assert build_filter(text="nak\treply\nnext").text == "nak reply next"
+
+
+def test_other_values_still_refuse_tabs():
+    with pytest.raises(FilterError, match="control or invisible"):
+        build_filter(process="a\tb")

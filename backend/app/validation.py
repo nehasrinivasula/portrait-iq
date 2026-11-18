@@ -32,9 +32,18 @@ def has_control_chars(value: str) -> bool:
     return any(unicodedata.category(ch) in ("Cc", "Cf") for ch in value)
 
 
-def clean_text(value: str | None, label: str, *, max_length: int, required: bool = False) -> str | None:
-    """Trim, then check length and characters. Returns None for an empty optional value."""
-    text = (value or "").strip()
+_WHITESPACE_CONTROLS = str.maketrans({"\t": " ", "\n": " ", "\r": " "})
+
+
+def clean_text(value: str | None, label: str, *, max_length: int, required: bool = False,
+               fold_whitespace: bool = False) -> str | None:
+    """Trim, then check length and characters. Returns None for an empty optional value.
+    fold_whitespace turns tabs and line breaks into spaces first (for search text, which people paste from
+    logs that contain them); every other control or invisible character is still refused."""
+    text = (value or "")
+    if fold_whitespace:
+        text = text.translate(_WHITESPACE_CONTROLS)
+    text = text.strip()
     if not text:
         if required:
             raise ValidationFailure(f"Enter {label}.")
@@ -87,11 +96,12 @@ def validate_label(value: str | None) -> str | None:
     return clean_text(value, "device label", max_length=MAX_LABEL)
 
 
-def validate_upload_name(name: str | None, allowed_suffixes: set[str] | frozenset[str]) -> str:
+def validate_upload_name(name: str | None, allowed_suffixes: set[str] | frozenset[str],
+                         kind: str = "file") -> str:
     """Reject empty names, path separators, control characters and unsupported file types."""
     text = (name or "").strip()
     if not text:
-        raise ValidationFailure("The file has no name.")
+        raise ValidationFailure(f"'unnamed' is not a supported {kind} ({', '.join(sorted(allowed_suffixes))}).")
     if len(text) > MAX_UPLOAD_NAME:
         raise ValidationFailure(f"File names are limited to {MAX_UPLOAD_NAME} characters.")
     if has_control_chars(text) or "/" in text or "\\" in text:
@@ -100,5 +110,5 @@ def validate_upload_name(name: str | None, allowed_suffixes: set[str] | frozense
     suffix = text[dot:].lower() if dot > 0 else ""
     if suffix not in allowed_suffixes:
         allowed = ", ".join(sorted(allowed_suffixes))
-        raise ValidationFailure(f"'{text}' isn't a supported file type. Use one of: {allowed}.")
+        raise ValidationFailure(f"'{text or 'unnamed'}' is not a supported {kind} ({allowed}).")
     return text
