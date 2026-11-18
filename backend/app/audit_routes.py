@@ -57,11 +57,11 @@ def list_audit_log(
         actor = clean_text(actor, "user", max_length=MAX_ID)
         action = clean_text(action, "action", max_length=MAX_ID)
     except ValidationFailure as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(422, str(e))
     normalized_since = _normalize_query_time(since) if since else None
     normalized_until = _normalize_query_time(until) if until else None
     if normalized_since and normalized_until and normalized_since >= normalized_until:
-        raise HTTPException(400, "until must be after since")
+        raise HTTPException(422, "until must be after since")
 
     query = db.query(AuditLogEntry)
     if session_id:

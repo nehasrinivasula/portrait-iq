@@ -73,7 +73,7 @@ def _filter(
             message_kinds=message_kind, components=component, correlation_id=correlation_id,
         )
     except FilterError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(422, str(e))
 
 
 def _with_job(f: EventFilter, job_id: Optional[str]) -> EventFilter:
@@ -82,7 +82,7 @@ def _with_job(f: EventFilter, job_id: Optional[str]) -> EventFilter:
     try:
         return replace(f, job_id=clean_text(job_id, "job id", max_length=MAX_TEXT_LENGTH))
     except ValidationFailure as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(422, str(e))
 
 
 def _utc(ts: Optional[datetime]) -> Optional[datetime]:
@@ -172,7 +172,7 @@ def _page(db: Session, user: User, f: EventFilter, *, limit: int, order: str, cu
     try:
         page = store.search_events(db, f, limit=limit, order=order, cursor=cursor)
     except FilterError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(422, str(e))
     if cursor is None:
         # Once per search, not once per page. Field names only: the text
         # search could be a patient identifier.
@@ -252,7 +252,7 @@ def get_sequences(
     try:
         seqs = sequences.find_sequences(db, f, now=window_end)
     except FilterError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(422, str(e))
     counts, stats = sequences.summarize(seqs)
     picked = [s for s in seqs if (not state or s.state in state) and (command is None or s.command == command)]
     picked.reverse()   # newest first
