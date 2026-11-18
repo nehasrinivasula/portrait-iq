@@ -3,24 +3,31 @@ UMF RTI: which DDS participants, topics and types are live on a UMF domain.
 
 Runs GE's axone-umf-rtitools image (Connext Pro plus the domain's security
 files; never built here, it comes from GE) as a short-lived host-network pod,
-and runs rtiddsspy in it for duration_s with the target as discovery peer.
+and runs rtiddsspy in it for duration_s.
 
-Discovery only, never message contents: rtiddsspy prints sample contents
-only with -printSample, which is never passed, and the parser keeps only the
-writer/reader/data lines (topic and type names, never values). UMF samples
-can carry patient data.
+The Admin Console reaches each UMF domain over RTI Real-Time WAN through the
+router's WAN NodePort, not plain UDP discovery -- proven on the bench
+2026-11-08 (plain UDP with the data-node profile never completes; the router
+only admits participants over its WAN endpoints). So the spy runs with the
+-WithWAN QoS and the domain's umfwan_server_* profile, with DDS_SECURE=secure
+and the DDS_RTWAN_SERVER_* env the profile reads, and peers at
+udpv4_wan://<router>:<NodePort> (32007 logger/7, 32013 source/12, 32015 view/13).
 
-Per Andrew Welch's US-side note the traffic is encrypted, so what shows up
-depends on the certificates the image carries: seeing nothing becomes a
-warning, not an empty success.
+Discovery only, never message contents: rtiddsspy prints sample contents only
+with -printSample, which is never passed, and the parser keeps only the
+writer/reader discovery lines (topic and type names, never values). UMF
+samples can carry patient data.
 
-The rtiddsspy line format is taken from RTI's documentation and has not been
-checked against the bench yet; unknown lines are kept in the raw output and
-ignored by the summary.
+The traffic is encrypted, so what shows up depends on the image's identity
+being permitted to subscribe (the SvcAxRtiTools cert is): seeing nothing
+becomes a warning, not an empty success. The rtiddsspy table format the parser
+reads was confirmed on the bench 2026-11-08; a long type name can be truncated
+to its column width, and the full output is kept in rti.txt.
 """
 import json
 import re
 import shlex
+import threading
 
 from app.collectors import k8s
 from app.collectors.base import Collector, CollectorResult, PluginConfigError, PluginError
@@ -31,20 +38,45 @@ from app.secrets_loader import redact
 # 7 logging, 12 source pod ("umfgeneral"), 13 view pod (GE's rtitools README).
 DOMAINS = (7, 12, 13)
 
+# RTI Real-Time WAN wiring, proven on the bench 2026-11-08. Per domain: the
+# name its QoS profile and DDS_RTWAN_SERVER_PORT_* env use, and the router
+# NodePort (svc axone-router-1-np) to peer at over UDPv4_WAN.
+WAN_BY_DOMAIN = {
+    7:  ("logger", 32007),
+    12: ("sourcepod", 32013),
+    13: ("viewpod", 32015),
+}
+
 
 def rtps_port_range(domain: int) -> tuple[int, int]:
     """The UDP ports RTPS uses on a domain: 250 from 7400 + 250 * domain."""
     first = 7400 + 250 * domain
     return first, first + 249
 
-# e.g.  1698077520.123456 New writer   from 10.0.0.1   "Topic"   "Type"
-SPY_LINE = re.compile(
-    r"\b(?P<event>New writer|New reader|New data|Deleted writer|Deleted reader|"
-    r"Updated writer|Updated reader)\s+from\s+(?P<host>\S+)\s+"
-    r"\"(?P<topic>[^\"]*)\"\s+\"(?P<type>[^\"]*)\""
+# rtiddsspy's discovery table (confirmed on the bench 2026-11-08), e.g.:
+#   1794181298.729353  R +N  C0A80003  umflog  umflog::S35c_sapphire
+# Info starts with W (writer) or R (reader) then a change code (+N, -D, ...);
+# Src HostId is hex. Data-sample lines are a different shape and, so sample
+# contents never surface, are deliberately left unmatched.
+RTI_SPY_LINE = re.compile(
+    r"^\s*\d+\.\d+\s+"
+    r"(?P<kind>[WR])\s*(?P<change>[-+])\S*\s+"
+    r"(?P<host>[0-9A-Fa-f]+)\s+"
+    r"(?P<topic>\S+)\s+"
+    r"(?P<type>\S+)\s*$",
+    re.MULTILINE,
 )
 
 TIMED_OUT = 124   # coreutils timeout: the expected way rtiddsspy ends
+
+# A host-network RTI run binds a fixed local WAN port per domain
+# (NodePort + rti_wan_local_port_offset), so two runs on the *same* domain on the
+# same node fight for that port and one can silently fail to form its DDS
+# participant (SCRUM-39 review). The backend is single-replica, so a process-wide
+# guard is enough: one run per domain at a time. Different domains use different
+# ports and still run in parallel.
+_active_domains: set[int] = set()
+_active_lock = threading.Lock()
 
 
 class RtiCollector(Collector):
@@ -62,6 +94,7 @@ class RtiCollector(Collector):
         self.duration_s = self.DEFAULT_DURATION_S
         self._runner = None
         self._pod: str | None = None
+        self._claimed_domain: int | None = None
 
     def configure(self, options):
         """Options: domain (7, 12 or 13; default 12) and duration_s
@@ -84,36 +117,87 @@ class RtiCollector(Collector):
     def audit_fields(self):
         return dict(self.options)
 
-    def spy_argv(self, target_ip: str) -> list[str]:
-        argv = ["timeout", str(self.duration_s), "rtiddsspy", "-domainId", str(self.domain),
-                "-peer", target_ip]
+    def spy_argv(self, node_ip: str, target_ip: str) -> list[str]:
+        """The rtiddsspy command, wired for RTI Real-Time WAN. node_ip is the
+        tool pod's node (from wait_running): the WAN public address a
+        host-network pod advertises, and the default router host."""
+        role, nodeport = WAN_BY_DOMAIN[self.domain]
+        public_address = settings.rti_wan_public_address or node_ip or target_ip
+        router_host = settings.rti_wan_router_host or target_ip or node_ip
+        offset = settings.rti_wan_local_port_offset
+        peer = settings.rti_peer or f"udpv4_wan://{router_host}:{nodeport}"
+        profile = settings.rti_qos_profile or f"AxoneNetQoSLibrary::umfwan_server_{role}_qos"
+        # DDS_SECURE=secure selects the secured QoS chain (the image env ships
+        # 'unsecure'); the DDS_RTWAN_SERVER_* vars fill the $()s the WAN profile
+        # reads. `env` adds them to the exec without a shell.
+        #
+        # The shared -WithWAN QoS file references the WAN server port of every
+        # UMF domain (LOGGER, SOURCEPOD, VIEWPOD), and RTI expands every $() in
+        # the file when it parses it -- before any profile is chosen -- so all
+        # three must be defined or the whole file fails to parse, even though we
+        # drive one domain. (A run with only the selected domain's port set died
+        # on the bench with "Undefined environment variable
+        # DDS_RTWAN_SERVER_PORT_LOGGER".)
+        argv = [
+            "env",
+            "DDS_SECURE=secure",
+            f"DDS_RTWAN_SERVER_PUBLIC_ADDRESS={public_address}",
+        ]
+        for r, np in WAN_BY_DOMAIN.values():
+            argv.append(f"DDS_RTWAN_SERVER_PORT_{r.upper()}={np + offset}")
+        argv += [
+            "timeout", str(self.duration_s), "rtiddsspy",
+            "-domainId", str(self.domain), "-peer", peer,
+        ]
         if settings.rti_qos_file:
             argv += ["-qosFile", settings.rti_qos_file]
-        if settings.rti_qos_profile:
-            argv += ["-qosProfile", settings.rti_qos_profile]
+        if profile:
+            argv += ["-qosProfile", profile]
         return argv
 
     def run(self, target_ip: str) -> CollectorResult:
         if not is_host(target_ip):
             raise PluginError(f"rti: target {target_ip!r} is not an IP address or host name")
         out_dir = self.require_output_dir()
-        argv = self.spy_argv(target_ip)
         if self._pod:            # run() again after a partial failure: start clean
             self.cleanup()
+
+        # One run per domain per node: a second run on this domain would bind the
+        # same local WAN port and could silently fail (SCRUM-39 review). cleanup()
+        # releases the claim.
+        with _active_lock:
+            if self.domain in _active_domains:
+                raise PluginError(
+                    f"an RTI diagnostic is already running on domain {self.domain}",
+                    safe_reason="Another RTI diagnostic is already running on this domain; try again shortly.",
+                )
+            _active_domains.add(self.domain)
+        self._claimed_domain = self.domain
 
         start_s = settings.tool_pod_start_timeout_seconds
         deadline = start_s + self.duration_s + 60
         namespace = getattr(self, "namespace", None)
         self._runner = k8s.get_pod_runner(namespace) if namespace else k8s.get_pod_runner()
         self._pod = k8s.pod_name(self.name, self.job_id)   # set first, so cleanup() finds it
-        # Host network: DDS discovery uses the node's interfaces. No extra
+        # Host network: the WAN transport advertises the node's IP and binds
+        # its port there, so the router can reach this participant. No extra
         # capabilities: a participant only needs ordinary UDP sockets.
+        # The image's own DDS security files are the SvcAxRtiTools identity,
+        # which the domain permits to subscribe (confirmed on the bench), so no
+        # Secret is needed by default. One can still be mounted to override them.
+        secret_mount = (
+            (settings.rti_security_secret, settings.rti_sdds_dir)
+            if settings.rti_security_secret else None
+        )
         self._runner.create(
             name=self._pod, tool=self.name, job_id=self.job_id,
             image=settings.rti_image, command=["sleep", str(deadline)],
             deadline_s=deadline, limits=self.limits, host_network=True,
+            secret_mount=secret_mount,
         )
-        self._runner.wait_running(self._pod, start_s)
+        node_ip = self._runner.wait_running(self._pod, start_s)
+        # Built now: the WAN public address is the node this pod landed on.
+        argv = self.spy_argv(node_ip or "", target_ip)
         res = self._runner.exec(self._pod, argv, self.duration_s + 30)
         stdout, stderr = redact(res.stdout), redact(res.stderr)
         if res.exit_code not in (0, TIMED_OUT):
@@ -135,8 +219,8 @@ class RtiCollector(Collector):
         if not found["topics"]:
             warnings.append(
                 f"No DDS participants seen on domain {self.domain} in {self.duration_s}s. "
-                "The target may be off or unreachable, or the image's certificates may not "
-                "match this site's DDS security."
+                "Nothing may be publishing on that domain, or the router's WAN endpoint "
+                "may be unreachable from here."
             )
         if res.truncated:
             warnings.append("rtiddsspy output was cut at the size limit; the summary may be incomplete")
@@ -149,29 +233,45 @@ class RtiCollector(Collector):
         )
 
     def cleanup(self) -> None:
+        # Release the per-domain claim only once the pod is actually gone. A pod
+        # that is still running holds this domain's fixed local WAN port, so a new
+        # run on the domain would collide with it (SCRUM-39 review). If delete()
+        # raises (Kubernetes could not remove the pod) we keep both the pod
+        # reference and the claim: the domain stays blocked and a later cleanup()
+        # can retry. A delete() that returns — including for an already-absent pod,
+        # which the runner treats as success — means the pod is gone.
         if self._pod and self._runner:
-            self._runner.delete(self._pod)
+            self._runner.delete(self._pod)   # raises if the pod could not be deleted
         self._pod = None
+        if self._claimed_domain is not None:
+            with _active_lock:
+                _active_domains.discard(self._claimed_domain)
+            self._claimed_domain = None
 
 
 def summarize(spy_output: str) -> dict:
-    """Hosts and topics from rtiddsspy's discovery lines: per topic its type,
-    writer/reader hosts and how many samples arrived (never their contents)."""
-    hosts, topics = set(), {}
-    for m in SPY_LINE.finditer(spy_output):
-        hosts.add(m["host"])
-        t = topics.setdefault(m["topic"], {"type": m["type"], "writers": set(), "readers": set(), "samples": 0})
-        if m["event"].endswith("writer"):
-            t["writers"].add(m["host"])
-        elif m["event"].endswith("reader"):
-            t["readers"].add(m["host"])
+    """Topics from rtiddsspy's discovery lines: per topic its type and the
+    writer/reader host ids present at the END of the capture. rtiddsspy reports a
+    change code per record -- new/updated (+) or deleted (-) -- so a participant
+    that is discovered and then deleted during the run is removed, and the
+    summary reflects what was live when the run ended rather than everything ever
+    seen. Sample contents are never matched."""
+    topics: dict = {}
+    for m in RTI_SPY_LINE.finditer(spy_output):
+        t = topics.setdefault(m["topic"], {"type": m["type"], "writers": set(), "readers": set()})
+        who = t["writers"] if m["kind"] == "W" else t["readers"]
+        if m["change"] == "-":
+            who.discard(m["host"])
         else:
-            t["samples"] += 1
+            who.add(m["host"])
+    topics = {name: t for name, t in topics.items() if t["writers"] or t["readers"]}
+    hosts: set = set()
+    for t in topics.values():
+        hosts |= t["writers"] | t["readers"]
     return {
         "hosts": sorted(hosts),
         "topics": {
-            name: {"type": t["type"], "writers": sorted(t["writers"]),
-                   "readers": sorted(t["readers"]), "samples": t["samples"]}
+            name: {"type": t["type"], "writers": sorted(t["writers"]), "readers": sorted(t["readers"])}
             for name, t in sorted(topics.items())
         },
     }

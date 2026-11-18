@@ -92,10 +92,36 @@ class Settings(BaseSettings):
     # 192.168.0.3:30003/spectro-images/... mirror path instead.
     rti_enabled: bool = False
     rti_image: str = "docker-axone-all/axone-umf-rtitools:branch-latest"
-    # QoS profile that carries the domain's security settings. The file is
-    # in /opt/axone-tools/qos/ in the image; empty uses the image's default.
-    rti_qos_file: str = ""
-    rti_qos_profile: str = "AxoneNetQoSLibrary::umfgeneral_qos"
+    # The Admin Console reaches each UMF domain over RTI Real-Time WAN through
+    # the router's WAN NodePort, NOT plain UDP discovery -- the data-node QoS
+    # blocks unknown peers, so plain UDP never completes (proven on the bench
+    # 2026-11-08). The defaults below drive the WAN path; override to experiment.
+    # QoS file in /opt/axone-tools/qos/ in the image. The -WithWAN variant
+    # carries the umfwan_server_* profiles; empty uses the image's default.
+    rti_qos_file: str = "/opt/axone-tools/qos/MDH-tools-RTIAdminConsole-WithWAN.xml"
+    # Empty picks the WAN profile for the domain: umfwan_server_logger_qos (7),
+    # _sourcepod_qos (12), _viewpod_qos (13). Set to force one profile.
+    rti_qos_profile: str = ""
+    # DDS_RTWAN_SERVER_PUBLIC_ADDRESS: the address the router sends WAN replies
+    # to. Empty uses the tool pod's node IP (right for a host-network pod).
+    rti_wan_public_address: str = ""
+    # Where the router's WAN NodePorts are reachable. Empty uses the job's
+    # target IP, then the node IP. On the bench the node, e.g. 192.168.0.3.
+    rti_wan_router_host: str = ""
+    # Our own WAN port = the router NodePort + this offset, so a host-network
+    # pod does not collide with the router's NodePort on the node. Set 0 when
+    # the collector has its own pod IP (non-host-network).
+    rti_wan_local_port_offset: int = 100
+    # A full -peer string used verbatim instead of the udpv4_wan peer built
+    # from the router host and the domain's NodePort. For experiments.
+    rti_peer: str = ""
+    # DDS security files (identity cert and key, CA, governance, permissions)
+    # for rtiddsspy, held in a Kubernetes Secret in the tools namespace and
+    # mounted read-only over the image's own set at rti_sdds_dir. Empty keeps
+    # the image's files. The Secret's keys must be the file names the image's
+    # QoS looks for under that directory. SCRUM-39.
+    rti_security_secret: str = ""
+    rti_sdds_dir: str = "/opt/axone-tools/sdds"
     # Where tshark and editcap are on the machine running the backend, when
     # they are not on PATH (the Windows installer does not add them), e.g.
     # C:\Program Files\Wireshark

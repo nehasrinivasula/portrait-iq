@@ -181,6 +181,25 @@ undeploy() {
     echo "Imported images stay in the container runtime; remove them with the runtime's own command if needed."
 }
 
+clean_images() {
+    # Remove old portrait-iq backend images from the node, keeping the tag the
+    # deployment currently runs (both its docker.io and registry-alias names).
+    # Tool images (netshoot, tshark, rtitools) are left alone.
+    keep=$(k3s kubectl -n "$NAMESPACE" get deploy portrait-iq \
+        -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
+    keeptag=${keep##*:}
+    [ -n "$keeptag" ] || die "could not read the deployed image tag; nothing removed"
+    echo "Keeping tag $keeptag (deployed: $keep)"
+    removed=0
+    for ref in $(k3s ctr -n k8s.io images ls -q | grep -E 'portrait-iq:'); do
+        case "$ref" in
+            *:"$keeptag") ;;   # a name of the running image: keep
+            *) echo "removing $ref"; k3s ctr -n k8s.io images rm "$ref" >/dev/null && removed=$((removed+1)) ;;
+        esac
+    done
+    echo "Removed $removed old image name(s)."
+}
+
 case "${1:-}" in
     api-check) api_check ;;
     load-images) load_images ;;
@@ -190,5 +209,6 @@ case "${1:-}" in
     status) status ;;
     logs) logs ;;
     undeploy) undeploy ;;
+    clean-images) clean_images ;;
     *) die "unknown command '${1:-}'" ;;
 esac

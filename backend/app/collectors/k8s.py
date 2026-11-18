@@ -122,9 +122,14 @@ class PodRunner:
         host_network: bool = False,
         add_capabilities: tuple[str, ...] = (),
         tmp_size_mb: int = 64,
+        secret_mount: tuple[str, str] | None = None,
     ) -> None:
         """Start a pod that runs command (usually a long sleep) so the plugin
-        can exec its checks in it. Only /tmp is writable."""
+        can exec its checks in it. Only /tmp is writable.
+
+        secret_mount, when given, is (secret_name, mount_path): that Secret is
+        mounted read-only at mount_path, each of its keys appearing as a file.
+        Used for the DDS security files rtiddsspy needs (SCRUM-39)."""
         labels = {
             **TOOL_LABELS,
             "portrait-iq/tool": tool.replace("_", "-"),
@@ -160,6 +165,15 @@ class PodRunner:
                 "volumes": [{"name": "tmp", "emptyDir": {"sizeLimit": f"{tmp_size_mb}Mi"}}],
             },
         }
+        if secret_mount is not None:
+            secret_name, mount_path = secret_mount
+            # Read-only, and the key is 0444 inside this single-use tool pod.
+            body["spec"]["containers"][0]["volumeMounts"].append(
+                {"name": "dds-security", "mountPath": mount_path, "readOnly": True}
+            )
+            body["spec"]["volumes"].append(
+                {"name": "dds-security", "secret": {"secretName": secret_name, "defaultMode": 0o444}}
+            )
         try:
             self.api.create_namespaced_pod(self.namespace, body, _request_timeout=API_TIMEOUT_S)
         except ApiException as e:

@@ -78,6 +78,30 @@ spec:
             # = true in deploy/lab.mk, for a bench whose owners approved it.
             - name: TSHARK_LIVE_CAPTURE_ENABLED
               value: "__TSHARK_LIVE_CAPTURE__"
+            # UMF RTI (SCRUM-39): off unless RTI = true in deploy/lab.mk, once
+            # GE's rtitools image is imported and the mentors approved it.
+            - name: RTI_ENABLED
+              value: "__RTI__"
+            - name: RTI_IMAGE
+              value: "__RTI_IMAGE__"
+            # The QoS XML in that image. The collector reaches each UMF domain
+            # over RTI Real-Time WAN via the router's WAN NodePort, so this is
+            # the -WithWAN file (umfwan_server_* profiles); empty uses the
+            # image's default and the WAN profiles are unavailable.
+            - name: RTI_QOS_FILE
+              value: "__RTI_QOS_FILE__"
+            # Override the WAN peer rtiddsspy builds (udpv4_wan://<router>:
+            # <NodePort>); empty builds it from the job target and the domain.
+            - name: RTI_PEER
+              value: "__RTI_PEER__"
+            # A Secret in this namespace with replacement DDS security files,
+            # mounted read-only over RTI_SDDS_DIR in the tool pod (the dir the
+            # image's QoS reads). Empty keeps the image's own files. The
+            # Secret's keys must be the file names that QoS looks for there.
+            - name: RTI_SECURITY_SECRET
+              value: "__RTI_SECURITY_SECRET__"
+            - name: RTI_SDDS_DIR
+              value: "__RTI_SDDS_DIR__"
           # The pod shares the MiniEdge with the Portrait software and must
           # not starve it. Raise only after watching real usage.
           resources:
@@ -100,6 +124,11 @@ spec:
             httpGet: {path: /health, port: 8000}
             initialDelaySeconds: 20
             periodSeconds: 30
+            # The single worker can be busy for a while on a big log ingest or
+            # PHI/PII scan (SCRUM-95), so tolerate a few slow health checks
+            # instead of restarting the pod mid-job.
+            timeoutSeconds: 5
+            failureThreshold: 6
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: tmp, mountPath: /tmp}
