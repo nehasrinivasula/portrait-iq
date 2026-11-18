@@ -52,6 +52,7 @@ from app.schemas import (
     UploadOut,
 )
 from app.secrets_loader import redaction_scope
+from app.validation import ValidationFailure, validate_ipv4
 
 log = logging.getLogger(__name__)
 
@@ -236,6 +237,10 @@ def start_job(
     The job runs after the response is sent; poll GET /jobs/{id}. It keeps
     running if the UI session locks (S-2)."""
 
+    try:
+        target_ip = validate_ipv4(target_ip)
+    except ValidationFailure as e:
+        raise HTTPException(422, str(e))
     namespace = req.namespace or settings.tools_namespace
     if namespace not in allowed_tools_namespaces():
         raise HTTPException(422, "namespace is not enabled for diagnostic pods")

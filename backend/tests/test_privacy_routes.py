@@ -102,7 +102,7 @@ def test_search_filters_on_flags(env):
     assert [e["source_line"] for e in items(client, flagged=True)] == [3, 4]
     assert [e["source_line"] for e in items(client, flagged=False)] == [2]
     assert [e["source_line"] for e in items(client, flag_category="ssn")] == [4]
-    assert client.get("/api/logs/events", params={"flag_category": "nope"}).status_code == 400
+    assert client.get("/api/logs/events", params={"flag_category": "nope"}).status_code == 422
 
 
 def test_events_not_scanned_by_the_current_scanner_say_so(env):

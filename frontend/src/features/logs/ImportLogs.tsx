@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { ApiError } from "../../api";
 import { useNotify } from "../../ui/Notifications";
 import { importLogFiles } from "./logsApi";
+import { validateImportFiles } from "../../validation";
 
 // Demo path: hand the tool log files you already have (local import). Real
 // runs bring their logs in automatically.
@@ -12,6 +13,12 @@ export default function ImportLogs({ onImported }: { onImported: () => void }) {
 
   async function onPick(files: FileList | null) {
     if (!files?.length) return;
+    const problems = validateImportFiles([...files].map((f) => f.name));
+    if (problems.length) {
+      notify({ kind: "error", title: "Nothing was imported", body: problems.slice(0, 3).join(" ") + (problems.length > 3 ? ` (+${problems.length - 3} more)` : "") });
+      if (input.current) input.current.value = "";
+      return;
+    }
     setBusy(true);
     try {
       const r = await importLogFiles([...files]);
@@ -32,7 +39,7 @@ export default function ImportLogs({ onImported }: { onImported: () => void }) {
 
   return (
     <>
-      <input ref={input} type="file" multiple hidden onChange={(e) => onPick(e.target.files)} aria-label="Choose log files to import" />
+      <input ref={input} type="file" multiple hidden accept=".csv,.zip,.log,.txt" onChange={(e) => onPick(e.target.files)} aria-label="Choose log files to import" />
       <button className="btn ghost" disabled={busy} onClick={() => input.current?.click()}>
         {busy ? "Importing…" : "Import log files"}
       </button>

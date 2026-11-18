@@ -26,6 +26,7 @@ from app.schemas import (
     SourceOut, SourceStatusOut,
 )
 from app.sources import registry
+from app.validation import ValidationFailure, validate_upload_name
 from app.sources.base import ALLOWED_SUFFIXES, LogSource, SourceError
 from app.sources.devices import add_manual, display_name, list_known
 from app.sources.service import (
@@ -190,10 +191,10 @@ def upload_logs(
     try:
         for i, upload in enumerate(files):
             name = Path(upload.filename or "").name
-            if not name or Path(name).suffix.lower() not in ALLOWED_SUFFIXES:
-                raise HTTPException(
-                    400, f"'{name or 'unnamed'}' is not a supported log file ({', '.join(sorted(ALLOWED_SUFFIXES))})."
-                )
+            try:
+                validate_upload_name(name, ALLOWED_SUFFIXES, kind="log file")
+            except ValidationFailure as e:
+                raise HTTPException(400, str(e))
             dest = inbox / f"{i:04d}" / name  # same-named uploads must not overwrite each other
             dest.parent.mkdir(parents=True, exist_ok=True)
             with dest.open("wb") as out:

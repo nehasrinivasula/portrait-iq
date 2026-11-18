@@ -84,3 +84,30 @@ def test_cursor_round_trips(ts):
 def test_garbage_cursors_are_rejected_not_crashed_on(bad):
     with pytest.raises(FilterError, match="Invalid cursor"):
         decode_cursor(bad)
+
+
+@pytest.mark.parametrize("field", ["devices", "sources", "categories", "components"])
+def test_list_values_are_length_limited(field):
+    with pytest.raises(FilterError, match="limited"):
+        build_filter(**{field: ["x" * (MAX_TEXT_LENGTH + 1)]})
+
+
+@pytest.mark.parametrize("field", ["process", "source_file", "job_id", "correlation_id", "text"])
+def test_single_values_reject_control_characters(field):
+    with pytest.raises(FilterError, match="control or invisible"):
+        build_filter(**{field: "ok\x00bad"})
+
+
+def test_values_are_trimmed_and_deduplicated():
+    f = build_filter(devices=[" H50 ", "H50", ""], process="  axonerouter ")
+    assert f.devices == ("H50",)
+    assert f.process == "axonerouter"
+
+
+def test_search_text_accepts_tabs_and_line_breaks_as_spaces():
+    assert build_filter(text="nak\treply\nnext").text == "nak reply next"
+
+
+def test_other_values_still_refuse_tabs():
+    with pytest.raises(FilterError, match="control or invisible"):
+        build_filter(process="a\tb")
