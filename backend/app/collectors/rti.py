@@ -232,15 +232,20 @@ class RtiCollector(Collector):
         )
 
     def cleanup(self) -> None:
-        try:
-            if self._pod and self._runner:
-                self._runner.delete(self._pod)
-            self._pod = None
-        finally:
-            if self._claimed_domain is not None:
-                with _active_lock:
-                    _active_domains.discard(self._claimed_domain)
-                self._claimed_domain = None
+        # Release the per-domain claim only once the pod is actually gone. A pod
+        # that is still running holds this domain's fixed local WAN port, so a new
+        # run on the domain would collide with it (SCRUM-39 review). If delete()
+        # raises (Kubernetes could not remove the pod) we keep both the pod
+        # reference and the claim: the domain stays blocked and a later cleanup()
+        # can retry. A delete() that returns — including for an already-absent pod,
+        # which the runner treats as success — means the pod is gone.
+        if self._pod and self._runner:
+            self._runner.delete(self._pod)   # raises if the pod could not be deleted
+        self._pod = None
+        if self._claimed_domain is not None:
+            with _active_lock:
+                _active_domains.discard(self._claimed_domain)
+            self._claimed_domain = None
 
 
 def summarize(spy_output: str) -> dict:

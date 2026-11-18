@@ -207,6 +207,37 @@ def test_one_run_per_domain_at_a_time(tmp_path, monkeypatch, enabled):
     configured(tmp_path, monkeypatch, FakeRunner(), domain=12).run("192.0.2.10")   # free again, no raise
 
 
+# SCRUM-39 follow-up review: cleanup() must not release the domain while the pod
+# may still be running (and still holding its WAN port). A failed delete keeps
+# the domain blocked until a later cleanup confirms the pod is gone.
+
+def test_a_failed_pod_deletion_keeps_the_domain_blocked(tmp_path, monkeypatch, enabled):
+    class FlakyDeleteRunner(FakeRunner):
+        fail_delete = True
+
+        def delete(self, name):
+            if self.fail_delete:
+                raise RuntimeError("kubernetes could not delete the pod")
+            super().delete(name)
+
+    runner = FlakyDeleteRunner()
+    r = configured(tmp_path, monkeypatch, runner, domain=12)
+    r.run("192.0.2.10")                               # claims domain 12
+
+    with pytest.raises(RuntimeError, match="could not delete"):
+        r.cleanup()                                   # delete fails: claim must survive
+    assert runner.deleted == []
+
+    blocked = configured(tmp_path, monkeypatch, FakeRunner(), domain=12)
+    with pytest.raises(PluginError, match="already running on domain 12"):
+        blocked.run("192.0.2.10")                     # domain still blocked by the stuck pod
+
+    runner.fail_delete = False
+    r.cleanup()                                       # pod confirmed gone, claim released
+    assert runner.deleted == [runner.created[0]["name"]]
+    configured(tmp_path, monkeypatch, FakeRunner(), domain=12).run("192.0.2.10")   # free again, no raise
+
+
 # SCRUM-39 review, finding 2: a participant deleted mid-capture leaves the summary.
 
 def test_summary_drops_participants_deleted_during_the_capture():
