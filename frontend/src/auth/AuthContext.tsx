@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { apiFetch, setUnauthorizedHandler, tokenStore, type SignOutReason } from "../api";
+import { endServerSession } from "../features/cleanup/cleanupApi";
 
 // Real policy is 5 idle minutes (backend SESSION_IDLE_TIMEOUT_SECONDS). The demo
 // uses 75s so the 60s warning appears after 15s of inactivity.
@@ -16,6 +17,8 @@ interface AuthState {
   ready: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: (reason?: "idle" | SignOutReason) => void;
+  /** The engineer chose to sign out: end the session on the server too, then clear it here. */
+  signOut: (leftoversUndecided?: number) => Promise<void>;
   notice: string | null;
   /** Seconds until idle sign-out; null until the final minute. */
   idleSecondsLeft: number | null;
@@ -48,6 +51,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             : null,
     );
   }, []);
+
+  const signOut = useCallback(async (leftoversUndecided = 0) => {
+    await endServerSession(leftoversUndecided);
+    logout();
+  }, [logout]);
 
   useEffect(() => {
     setUnauthorizedHandler(logout);
@@ -96,5 +104,5 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(me);
   }, []);
 
-  return <Ctx.Provider value={{ user, ready, login, logout, notice, idleSecondsLeft }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, ready, login, logout, signOut, notice, idleSecondsLeft }}>{children}</Ctx.Provider>;
 }

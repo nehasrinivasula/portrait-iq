@@ -101,6 +101,10 @@ const ACTION_LABELS: Record<string, string> = {
   package_download: "Download package",
   findings_run: "Pattern detection run",
   findings_coverage_view: "Pattern coverage viewed",
+  cleanup_choice: "Cleanup choice",
+  cleanup_item: "Cleanup item",
+  leftovers_pending: "Leftovers waiting for a choice",
+  logout: "Sign out",
   findings_run_failed: "Pattern detection failed",
 };
 

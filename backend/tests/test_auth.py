@@ -278,7 +278,9 @@ def test_every_signed_in_route_checks_the_idle_lock():
                  and auth.get_current_user in set(_dependencies(r.dependant))]
     assert protected   # the walk found the routes
     unchecked = [r.path for r in protected if auth.get_unlocked_user not in set(_dependencies(r.dependant))]
-    assert unchecked == []
+    # Signing out must work on a locked session too (a person whose session went idle still has to be able to
+    # end it), so logout checks the token but deliberately not the lock.
+    assert unchecked == ["/api/auth/logout"]
 
 
 def test_diagnostic_status_survives_idle_lock_and_relogin(client: TestClient, db, demo_credentials, monkeypatch):

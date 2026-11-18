@@ -40,6 +40,15 @@ API_TIMEOUT_S = 15              # one Kubernetes API call; exec streams have the
 
 
 @dataclass
+class PodInfo:
+    name: str
+    tool: str
+    job_id: str          # "adhoc" when the pod was not started by a job
+    phase: str
+    created_at: str | None
+
+
+@dataclass
 class ExecResult:
     exit_code: int | None    # None: timed out, or the stream broke
     stdout: str
@@ -201,6 +210,24 @@ class PodRunner:
                 f"could not delete pod {name}: {_api_message(e)}",
                 safe_reason="Could not remove the diagnostic's pod.",
             ) from None
+
+    def list_tool_pods(self) -> list[PodInfo]:
+        """Every tool pod of ours in the namespace, for the cleanup prompt."""
+        pods = self.api.list_namespaced_pod(
+            self.namespace, label_selector=TOOL_SELECTOR, _request_timeout=API_TIMEOUT_S
+        )
+        out = []
+        for p in pods.items:
+            labels = p.metadata.labels or {}
+            created = getattr(p.metadata, "creation_timestamp", None)
+            out.append(PodInfo(
+                name=p.metadata.name,
+                tool=labels.get("portrait-iq/tool", "unknown"),
+                job_id=labels.get("portrait-iq/job", "adhoc"),
+                phase=getattr(getattr(p, "status", None), "phase", None) or "Unknown",
+                created_at=created.isoformat() if created else None,
+            ))
+        return out
 
     def sweep(self) -> list[str]:
         """Delete every tool pod in our namespace. For startup only, when no
