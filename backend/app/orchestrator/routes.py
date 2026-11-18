@@ -14,6 +14,7 @@ from app import uploads
 from app.analysis.coverage import coverage_report
 from app.analysis.engine import run_analysis
 from app.analysis.findings import findings_for
+from app.analysis.status import findings_status
 from app.audit import log_action
 from app.auth import User, get_active_user, get_unlocked_user
 from app.collectors.base import Collector, PluginError, ResourceLimits
@@ -31,6 +32,7 @@ from app.reporting.summary import build_summary, render_markdown, summary_to_jso
 from app.schemas import (
     ConnectRequest,
     CoverageOut,
+    FindingsStatusOut,
     ConnectivityCheckRequest,
     ConnectivityCheckResponse,
     DeviceOut,
@@ -386,6 +388,16 @@ def run_findings(job_id: str, db: Session = Depends(get_db), user: User = Depend
     log_action(db, user.id, "findings_run", detail=f"job={job_id}", session_id=user.session_id)
     run_analysis(db, job_id)
     return findings_for(db, job_id)
+
+
+@router.get("/jobs/{job_id}/findings/status", response_model=FindingsStatusOut)
+def get_findings_status(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_unlocked_user)):
+    """Whether this collection's findings are there, being produced, failed, or out of date. Not audited:
+    a page polls it while it waits. Refuses a locked session, but does not count as activity, so a page
+    left polling does not keep the session from locking."""
+    if db.get(Job, job_id) is None:
+        raise HTTPException(404, "job not found")
+    return findings_status(db, job_id)
 
 
 @router.get("/jobs/{job_id}/findings/coverage", response_model=CoverageOut)

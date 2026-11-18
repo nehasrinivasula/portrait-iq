@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.audit import log_action
 from app.audit_routes import router as audit_router
 from app.config import settings
+from app.analysis.status import recover_interrupted_analysis
 from app.db import SessionLocal, get_db, init_db
 from app.auth import AuthError, User, authenticate_demo_user, create_access_token, end_session, get_current_user, get_unlocked_user, start_session
 from app.cleanup.routes import router as cleanup_router
@@ -96,6 +97,7 @@ def _startup() -> None:
     init_db()
     with SessionLocal() as db:
         recover_interrupted_jobs(db)
+        recover_interrupted_analysis(db)
 
 
 @app.get("/health")

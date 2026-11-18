@@ -50,11 +50,22 @@ describe("ACTION_OPTIONS", () => {
     const labels = ACTION_OPTIONS.map(([, l]) => l);
     expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
   });
+  // The authoritative check is backend/tests/test_audit_actions_filterable.py, which reads the actions from the
+  // server source. This list only guards the labels the page shows.
+  it("includes the actions the server records, so each can be filtered to", () => {
+    const codes = ["collection_view", "collections_view", "device_add", "device_update", "devices_view", "discover",
+      "findings_view", "job_interrupted", "job_results_view", "job_view", "logs_facets_view", "logs_view",
+      "logs_privacy_scan_start", "plugin_cleanup_failed", "source_devices_view", "sources_view", "tool_pods_swept", "session_lock", "summary_view", "logs_sequences_view",
+      "source_preview"];
+    const offered = ACTION_OPTIONS.map(([code]) => code);
+    codes.forEach((c) => expect(offered).toContain(c));
+  });
 });
 
 describe("pattern detection actions", () => {
   it("can be filtered to by their readable names", () => {
     expect(ACTION_OPTIONS).toContainEqual(["findings_run", "Pattern detection run"]);
     expect(ACTION_OPTIONS).toContainEqual(["findings_coverage_view", "Pattern coverage viewed"]);
+    expect(ACTION_OPTIONS).toContainEqual(["findings_run_failed", "Pattern detection failed"]);
   });
 });
