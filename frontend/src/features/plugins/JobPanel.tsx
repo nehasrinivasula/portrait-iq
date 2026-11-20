@@ -64,7 +64,7 @@ export default function JobPanel() {
         <div className={`alert ${logPull.state === "error" ? "error" : logPull.state === "done" ? (logPull.skipped ? "warn" : "ok") : "info"}`}
           role={logPull.state === "error" ? "alert" : "status"}>
           <strong>System logs</strong>
-          {logPull.state === "running" && "Collecting…"}
+          {logPull.state === "running" && (logPull.progress ?? "Collecting…")}
           {logPull.state === "error" && logPull.message}
           {logPull.state === "done" && (
             <>{logPull.events} events from {logPull.newFiles} new file{logPull.newFiles === 1 ? "" : "s"}. {logPull.skipped > 0 && <>{logPull.skipped} malformed log lines skipped. </>}
