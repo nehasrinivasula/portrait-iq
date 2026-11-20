@@ -45,7 +45,11 @@ HEALTH_QUERIES = {
     "nodes_not_ready":           'sum(kube_node_status_condition{condition="Ready",status="false"}) or vector(0)',
     "nodes_memory_pressure":     'sum(kube_node_status_condition{condition="MemoryPressure",status="true"}) or vector(0)',
     "nodes_disk_pressure":       'sum(kube_node_status_condition{condition="DiskPressure",status="true"}) or vector(0)',
-    "pods_not_ready":            'count(kube_pod_status_ready{condition="true"} == 0) or vector(0)',
+    # Not-ready but not finished: exclude Succeeded pods (completed Job pods are
+    # Ready=false but fine) so this counts "should be ready but isn't", not every
+    # non-Ready pod -- on a Palette cluster, done import jobs otherwise inflate it.
+    "pods_not_ready":            ('count((kube_pod_status_ready{condition="true"} == 0) and on(namespace, pod) '
+                                  '(kube_pod_status_phase{phase="Succeeded"} == 0)) or vector(0)'),
     "containers_restarting_15m": 'count(rate(kube_pod_container_status_restarts_total[15m]) > 0) or vector(0)',
     "targets_down":              'count(up == 0) or vector(0)',
     "load1":                     'max(node_load1) or vector(0)',
