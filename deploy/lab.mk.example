@@ -38,5 +38,13 @@ NODE_PORT            = 30080
 # 7, 12 and 13. Default: false.
 # TSHARK_LIVE_CAPTURE  = true
 
+# Grafana / system-health collector (SCRUM-105): the in-cluster Grafana URL.
+# Empty leaves the tool off. On the Axone bench the monitoring stack lives in
+# the `compute` namespace; find it with:
+#   kubectl get svc -A | grep grafana
+# The Viewer API token is a secret, not here: put it in SECRETS_DIR as a file
+# named GRAFANA_API_TOKEN (backend/SECRETS.md).
+# GRAFANA_BASE_URL     = http://axone-compute-monitoring-grafana.compute.svc:80
+
 # Absolute path to a folder outside the repo, e.g. $(HOME)/portrait-iq-secrets
 SECRETS_DIR          =

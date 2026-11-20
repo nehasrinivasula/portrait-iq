@@ -111,6 +111,18 @@ class Settings(BaseSettings):
     # Files a field engineer hands in (e.g. a hospital's .pcap).
     upload_dir: str = "./data/uploads"
     upload_max_mb: int = 500
+    # SCRUM-105: Grafana / system-health collector. Read-only Grafana HTTP API,
+    # reachable in-cluster with no internet (e.g. http://grafana.<ns>.svc:3000).
+    # Empty base URL disables the tool. The token is a read-only Grafana
+    # service-account / API token.
+    grafana_base_url: str | None = None
+    grafana_api_token: SecretStr | None = None
+    grafana_timeout_seconds: float = 15.0
+    # Snapshot size cap, also bounded by the job's max_output_mb limit.
+    grafana_max_snapshot_mb: int = 16
+    # Optional: pin the Prometheus data source by uid; empty auto-picks the
+    # first Grafana data source of type "prometheus".
+    grafana_datasource_uid: str = ""
 
     class Config:
         env_file = ".env"
@@ -119,10 +131,13 @@ class Settings(BaseSettings):
 # Login settings that may also come from NAME_FILE, so a Kubernetes Secret
 # volume can supply them (backend/SECRETS.md). Plain NAME / .env still work.
 LOGIN_SECRET_NAMES = ("DEMO_AUTH_USERNAME", "DEMO_AUTH_PASSWORD", "AUTH_TOKEN_SECRET")
+# Other file-backed secrets, loaded by the same mechanism. The Grafana Viewer
+# token for the system-health collector (SCRUM-105).
+FILE_SECRET_NAMES = LOGIN_SECRET_NAMES + ("GRAFANA_API_TOKEN",)
 
 
 def load_login_secret_files(s: Settings) -> None:
-    for name in LOGIN_SECRET_NAMES:
+    for name in FILE_SECRET_NAMES:
         path = os.environ.get(f"{name}_FILE")
         if not path:
             continue
