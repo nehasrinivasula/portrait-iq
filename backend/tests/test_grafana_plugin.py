@@ -71,6 +71,21 @@ def test_off_unless_configured():
         GrafanaHealthCollector(LIMITS).configure({})
 
 
+def test_token_loads_from_a_secret_file(monkeypatch, tmp_path):
+    # The Viewer token is a mounted secret file in the pod, like the login
+    # secrets (SCRUM-105 deploy wiring): GRAFANA_API_TOKEN_FILE -> setting.
+    from app.config import Settings, load_login_secret_files
+    path = tmp_path / "GRAFANA_API_TOKEN"
+    path.write_text("glsa_testtoken")
+    path.chmod(0o400)
+    monkeypatch.setenv("GRAFANA_API_TOKEN_FILE", str(path))
+    s = Settings()
+    assert s.grafana_api_token is None
+    load_login_secret_files(s)
+    assert s.grafana_api_token is not None
+    assert s.grafana_api_token.get_secret_value() == "glsa_testtoken"
+
+
 def test_takes_no_options(enabled):
     with pytest.raises(PluginConfigError, match="takes no options"):
         GrafanaHealthCollector(LIMITS).configure({"window": "5m"})

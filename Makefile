@@ -32,6 +32,7 @@ LOG_EXPORT_SERVICE ?= axone-log-export-tcp
 NAMESPACE     ?= portrait-iq
 NODE_PORT     ?= 30080
 TSHARK_LIVE_CAPTURE ?= false
+GRAFANA_BASE_URL ?=#  in-cluster Grafana for the system-health collector (SCRUM-105); empty = off
 LOG_EXPORT_URL ?= http://$(LOG_EXPORT_SERVICE).$(LOG_EXPORT_NAMESPACE).svc.cluster.local:9200
 SECRETS_DIR   ?=#   folder OUTSIDE the repo, one file per secret (backend/SECRETS.md)
 API_CHECK_HOUR ?=#  optional, YYYY-MM-DDTHH; default is the last full hour on the node
@@ -139,7 +140,8 @@ render:
 	for f in deploy/k8s/*.yaml; do \
 		sed -e "s|__IMAGE__|$$image|" -e "s|__LOG_EXPORT_URL__|$(LOG_EXPORT_URL)|" \
 		    -e "s|__NODE_PORT__|$(NODE_PORT)|" -e "s|__NAMESPACE__|$(NAMESPACE)|" \
-		    -e "s|__TSHARK_LIVE_CAPTURE__|$(TSHARK_LIVE_CAPTURE)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
+		    -e "s|__TSHARK_LIVE_CAPTURE__|$(TSHARK_LIVE_CAPTURE)|" \
+		    -e "s|__GRAFANA_BASE_URL__|$(GRAFANA_BASE_URL)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
 	done
 
 bundle: render

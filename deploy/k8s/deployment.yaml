@@ -78,6 +78,14 @@ spec:
             # = true in deploy/lab.mk, for a bench whose owners approved it.
             - name: TSHARK_LIVE_CAPTURE_ENABLED
               value: "__TSHARK_LIVE_CAPTURE__"
+            # Grafana / system-health collector (SCRUM-105). Empty base URL
+            # leaves the tool off; set GRAFANA_BASE_URL in deploy/lab.mk to the
+            # in-cluster Grafana to enable it. The Viewer API token is a secret
+            # file, like the login secrets above.
+            - name: GRAFANA_BASE_URL
+              value: "__GRAFANA_BASE_URL__"
+            - name: GRAFANA_API_TOKEN_FILE
+              value: /run/secrets/portrait-iq/GRAFANA_API_TOKEN
           # The pod shares the MiniEdge with the Portrait software and must
           # not starve it. Raise only after watching real usage.
           resources:

@@ -131,10 +131,13 @@ class Settings(BaseSettings):
 # Login settings that may also come from NAME_FILE, so a Kubernetes Secret
 # volume can supply them (backend/SECRETS.md). Plain NAME / .env still work.
 LOGIN_SECRET_NAMES = ("DEMO_AUTH_USERNAME", "DEMO_AUTH_PASSWORD", "AUTH_TOKEN_SECRET")
+# Other file-backed secrets, loaded by the same mechanism. The Grafana Viewer
+# token for the system-health collector (SCRUM-105).
+FILE_SECRET_NAMES = LOGIN_SECRET_NAMES + ("GRAFANA_API_TOKEN",)
 
 
 def load_login_secret_files(s: Settings) -> None:
-    for name in LOGIN_SECRET_NAMES:
+    for name in FILE_SECRET_NAMES:
         path = os.environ.get(f"{name}_FILE")
         if not path:
             continue
