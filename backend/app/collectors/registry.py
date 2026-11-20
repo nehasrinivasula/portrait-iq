@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 
 # Built-in plugins, as "module:Class". Add new plugins here.
 PLUGINS = [
+    "app.collectors.grafana:GrafanaHealthCollector",
     "app.collectors.hub_import:HubImportCollector",
     "app.collectors.netshoot:NetshootCollector",
     "app.collectors.rti:RtiCollector",
