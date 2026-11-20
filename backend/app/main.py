@@ -20,6 +20,8 @@ from app.schemas import CurrentUserOut, LoginRequest, TokenResponse
 from app.secrets_loader import install_log_redaction
 from app.sources.routes import router as sources_router
 from app.storage.routes import router as logs_router
+from app.tasks.routes import router as tasks_router
+from app.tasks.service import recover_interrupted_tasks
 
 # Before anything logs, so every record (including startup) is masked. SCRUM-72.
 install_log_redaction()
@@ -29,6 +31,7 @@ app.include_router(orchestrator_router, prefix="/api")
 app.include_router(packaging_router, prefix="/api", tags=["export"])
 app.include_router(sources_router, prefix="/api/sources")
 app.include_router(logs_router, prefix="/api/logs")
+app.include_router(tasks_router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(audit_router, prefix="/api/audit", tags=["audit"])
 app.include_router(cleanup_router, prefix="/api/cleanup", tags=["cleanup"])
 
@@ -98,8 +101,11 @@ def _startup() -> None:
     with SessionLocal() as db:
         recover_interrupted_jobs(db)
         recover_interrupted_analysis(db)
+        recover_interrupted_tasks(db)  # a restart killed any worker that was running
 
 
 @app.get("/health")
-def health():
+async def health():
+    # async on purpose: it runs on the event loop and never waits for a thread-pool slot or the database, so
+    # a busy API still answers the liveness probe. Do not add I/O here.
     return {"status": "ok", "app": settings.app_name}
