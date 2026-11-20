@@ -273,3 +273,87 @@ def test_export_is_audited_without_log_values(env):
     assert [r.action for r in rows] == ["package_create", "package_ready", "package_download"]
     assert all(SSN not in (r.detail or "") for r in rows)
     assert "sha256=" in rows[-1].detail
+
+
+# --- tool output is scanned like logs (S-3) ----------------------------------------------------------------
+
+def _report(client):
+    return json.loads(open_zip(client).read("privacy/report.json"))
+
+
+def test_report_counts_what_the_tools_collected_without_the_values(env):
+    client, _ = env
+    export(client)
+    zf = open_zip(client)
+    raw = zf.read("privacy/report.json").decode()
+    tools = json.loads(raw)["tools"]
+    assert tools["scanned"] is True and tools["files_scanned"] == 1
+    assert tools["flagged_files"] == 1 and tools["flagged_lines"] == 1 and tools["by_category"] == {"ssn": 1}
+    checks = next(f for f in tools["files"] if f["file"] == "checks.txt")
+    assert checks["tool"] == "netshoot" and checks["scanned"] and checks["included"] and checks["lines"] == 2
+    assert SSN not in raw                                    # counts only
+
+
+def test_a_masked_export_leaves_out_the_capture_and_the_report_says_why(env):
+    client, _ = env
+    export(client)
+    tools = _report(client)["tools"]
+    cap = next(f for f in tools["files"] if f["file"] == "capture.pcap")
+    assert cap["scanned"] is False and cap["included"] is False and "binary" in cap["not_scanned_reason"]
+    assert tools["files_not_scanned"] == 1 and tools["complete"] is True      # nothing unscanned is in the zip
+    assert tools["limits"]
+
+
+def test_an_unmasked_export_with_a_capture_says_the_report_is_not_complete(env):
+    client, _ = env
+    s = export(client, mask=False)
+    tools = _report(client)["tools"]
+    assert tools["complete"] is False
+    assert any("capture.pcap" in w and "could not be scanned" in w for w in s["warnings"])
+    assert any("diagnostic output" in w and "as is" in w for w in s["warnings"])
+    assert SSN in open_zip(client).read("tools/netshoot/checks.txt").decode()     # unmasked means as is
+
+
+def test_tool_files_are_scanned_even_when_masking_is_off(env):
+    client, _ = env
+    export(client, mask=False)
+    assert _report(client)["tools"]["flagged_lines"] == 1
+
+
+def test_network_identifiers_in_tool_files_are_counted_apart_and_not_flagged(env):
+    client, _ = env
+    (job_output_dir("job-1") / "netshoot" / "checks.txt").write_text("ping 10.1.2.3 ok\nmac aa:bb:cc:dd:ee:ff\n")
+    export(client)
+    tools = _report(client)["tools"]
+    assert tools["flagged_lines"] == 0 and tools["flagged_files"] == 0
+    assert tools["network_identifier_lines"] == 2
+    assert tools["network_by_category"] == {"ip_address": 1, "mac_address": 1}
+
+
+def test_the_summary_and_warnings_in_results_json_are_scanned_and_masked(env):
+    client, _ = env
+    out = job_output_dir("job-1")
+    (out / "results.json").write_text(json.dumps([
+        {"tool": "netshoot", "summary": f"checked host for ssn {SSN}", "warnings": [f"also {SSN}"],
+         "artifact_paths": []},
+    ]))
+    export(client)
+    zf = open_zip(client)
+    results = zf.read("tools/results.json").decode()
+    assert SSN not in results and "[REDACTED:ssn]" in results
+    assert _report(client)["tools"]["results_json"]["flagged_lines"] == 2
+
+
+def test_the_report_never_claims_a_tool_scan_when_the_tools_step_fails(env, monkeypatch):
+    client, _ = env
+    monkeypatch.setattr("app.packaging.service.read_results", lambda _id: (_ for _ in ()).throw(RuntimeError("x")))
+    export(client)
+    tools = _report(client)["tools"]
+    assert tools["scanned"] is False and "reason" in tools
+
+
+def test_the_tools_step_detail_mentions_the_scan(env):
+    client, _ = env
+    s = export(client)
+    tools = next(x for x in s["steps"] if x["id"] == "tools")
+    assert "text file scanned" in tools["detail"] and "1 with PHI / PII" in tools["detail"]

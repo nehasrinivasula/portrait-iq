@@ -8,7 +8,7 @@ has anything in it:
     metadata.json            the run, the export and the environment (A-3)
     logs/events.jsonl        every stored event of the run, one JSON object per line
     logs/summary.json        per-file counts and completeness issues
-    privacy/report.json      the PHI/PII scan report for the run
+    privacy/report.json      the PHI/PII scan report for the run: the log events and the text the tools produced
     tools/results.json       each diagnostic's summary, warnings or error
     tools/<tool>/...         the files each diagnostic produced
     findings/findings.json   what the analysis engine found
@@ -24,6 +24,13 @@ Text files from the tools are masked too, with the personal kinds only: IP
 and MAC addresses are what the tool files are for, as on the Logs page.
 Binary files (packet captures) cannot be masked, so a masked export leaves
 them out and says so; turn masking off to include them.
+
+Tool output is scanned like logs (S-3): every line of every text file a tool
+produced, and the summary and warnings in tools/results.json, go through
+privacy.scanner.scan_text whether or not masking is on, and the counts (never
+the matched text) go into privacy/report.json under "tools". A file that
+cannot be scanned (binary, too large, not UTF-8) is listed there with the
+reason, and the export warns when one of them is in the zip.
 """
 from __future__ import annotations
 
@@ -34,6 +41,7 @@ import re
 import shutil
 import threading
 import zipfile
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -280,6 +288,7 @@ class _Ctx:
     work: Path
     status: PackageStatus
     readiness: Optional[Readiness] = None
+    report: dict = field(default_factory=dict)      # privacy/report.json; the tools step adds its section
 
 
 def _run_step(ctx: _Ctx, step: Step, func, *, fatal: bool = False) -> None:
@@ -309,12 +318,15 @@ def _step_check(ctx: _Ctx, step: Step) -> None:
     r = readiness(ctx.db, ctx.job.id)
     ctx.readiness = r
     report = privacy.privacy_report(ctx.db, ctx.job.id)
-    _write_json(ctx.work / "privacy" / "report.json", {
+    ctx.report = {
         "scanner_version": report.scanner_version, "events": report.events,
         "scanned_events": report.scanned_events, "unscanned_events": report.unscanned_events,
         "flagged_events": report.flagged_events, "network_identifier_events": report.network_events,
         "by_category": report.flags_by_category, "complete_for_packaging": r.complete_for_packaging,
-    })
+        # Filled in by the tools step; stays like this if that step fails, so the report never claims a scan.
+        "tools": {"scanned": False, "reason": "The diagnostic results were not scanned (that step did not run)."},
+    }
+    _write_json(ctx.work / "privacy" / "report.json", ctx.report)
     ctx.status.contents.append(ContentEntry("privacy/report.json", "PHI / PII scan report", files=1))
     for w in r.warnings:
         step.issues.append(Issue("PHI / PII scan", w))
@@ -367,35 +379,137 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _copy_artifact(src: Path, dest: Path, masked: bool) -> bool:
-    """Copy one tool file, masking its personal data if it is text. Returns False, copying
-    nothing, when masking is on and the file cannot be masked (binary, too large, not UTF-8):
-    it could hold patient data, so it is left out unless the engineer exports unmasked."""
-    if not masked:
+@dataclass
+class ArtifactScan:
+    """What scanning one tool file found. Counts only: never the matched text."""
+    scanned: bool = False
+    reason: Optional[str] = None                 # why it was not scanned
+    lines: int = 0
+    flagged_lines: int = 0                       # lines with personal data
+    network_lines: int = 0                       # lines with IP / MAC addresses
+    personal: Counter = field(default_factory=Counter)
+    network: Counter = field(default_factory=Counter)
+
+    def add_line(self, flags) -> list:
+        """Count one line's flags; returns the personal ones (what masking removes)."""
+        self.lines += 1
+        personal = [f for f in flags if category_group(f.category) == "personal"]
+        network = [f for f in flags if category_group(f.category) == "network"]
+        self.flagged_lines += bool(personal)
+        self.network_lines += bool(network)
+        self.personal.update(f.category for f in personal)
+        self.network.update(f.category for f in network)
+        return personal
+
+
+def _read_text(src: Path) -> tuple[Optional[list[str]], Optional[str]]:
+    """(lines, None), or (None, why it cannot be scanned)."""
+    if src.suffix.lower() in BINARY_SUFFIXES:
+        return None, "binary file: it cannot be scanned or masked"
+    if src.stat().st_size > TEXT_LIMIT:
+        return None, f"larger than {TEXT_LIMIT // (1024 * 1024)} MB: too large to scan"
+    try:
+        return src.read_text(encoding="utf-8").splitlines(keepends=True), None
+    except UnicodeDecodeError:
+        return None, "not UTF-8 text: it cannot be scanned or masked"
+
+
+def _scan_artifact(src: Path, dest: Path, masked: bool) -> tuple[bool, ArtifactScan]:
+    """Scan one tool file and copy it into the package. Returns (copied, scan).
+
+    Every readable text file is scanned, masked or not, so the report counts what a tool collected even when the
+    engineer chose not to mask it. With masking on, personal data only is removed (IPs and MACs are the point of a
+    tool file, as on the Logs page) and a file that cannot be read as text is left out, copying nothing, because
+    it could hold patient data; with masking off it is copied as it is."""
+    lines, why = _read_text(src)
+    scan = ArtifactScan(reason=why)
+    if lines is None:
+        if masked:
+            return False, scan
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
-        return True
-    if src.suffix.lower() in BINARY_SUFFIXES or src.stat().st_size > TEXT_LIMIT:
-        return False
-    try:
-        lines = src.read_text(encoding="utf-8").splitlines(keepends=True)
-    except UnicodeDecodeError:
-        return False
+        return True, scan
+    scan.scanned = True
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if not masked:
+        for line in lines:
+            scan.add_line(scan_text(line))
+        shutil.copyfile(src, dest)                  # byte for byte
+        return True, scan
     with dest.open("w", encoding="utf-8") as fh:
         for line in lines:
-            # Personal data only, like the Logs page: IPs and MACs are the point of a tool file.
-            flags = [f for f in scan_text(line) if category_group(f.category) == "personal"]
-            fh.write(mask_text(line, flags, "message") or line)
-    return True
+            personal = scan.add_line(scan_text(line))
+            fh.write(mask_text(line, personal, "message") or line)
+    return True, scan
+
+
+def _clean_text(value, scan: ArtifactScan, masked: bool):
+    """One string from results.json: scanned always, masked (personal data only) when masking is on."""
+    if not isinstance(value, str) or not value:
+        return value
+    personal = scan.add_line(scan_text(value))
+    return (mask_text(value, personal, "message") or value) if masked else value
+
+
+def _clean_results(results: list, masked: bool) -> tuple[list, ArtifactScan]:
+    """results.json carries each tool's summary, warnings and error as free text; scan them like log lines."""
+    scan = ArtifactScan(scanned=True)
+    cleaned = []
+    for r in results:
+        r = dict(r)
+        for key in ("summary", "error"):
+            if key in r:
+                r[key] = _clean_text(r[key], scan, masked)
+        if isinstance(r.get("warnings"), list):
+            r["warnings"] = [_clean_text(w, scan, masked) for w in r["warnings"]]
+        cleaned.append(r)
+    return cleaned, scan
+
+
+def _tool_report(entries: list[dict], results_scan: ArtifactScan) -> dict:
+    """The "tools" section of privacy/report.json."""
+    scanned = [e for e in entries if e["scanned"]]
+    missed = [e for e in entries if not e["scanned"]]
+    personal, network = Counter(results_scan.personal), Counter(results_scan.network)
+    for e in scanned:
+        personal.update(e["by_category"])
+        network.update(e["network_by_category"])
+    return {
+        "scanned": True,
+        "files_scanned": len(scanned),
+        "files_not_scanned": len(missed),
+        "flagged_files": sum(1 for e in scanned if e["flagged_lines"]),
+        "flagged_lines": sum(e["flagged_lines"] for e in scanned) + results_scan.flagged_lines,
+        "network_identifier_lines": sum(e["network_identifier_lines"] for e in scanned) + results_scan.network_lines,
+        "by_category": dict(sorted(personal.items())),
+        "network_by_category": dict(sorted(network.items())),
+        # True only when every file in the package was read by the scanner. A file left out of the zip does not count.
+        "complete": not any(e["included"] for e in missed),
+        "results_json": {"flagged_lines": results_scan.flagged_lines,
+                         "network_identifier_lines": results_scan.network_lines},
+        "files": entries,
+        "limits": ["Only text can be scanned: packet captures (pcap payloads) and other binary files are not, "
+                   "so an unmasked export that includes one may hold patient data this report cannot see."],
+    }
+
+
+def _file_entry(tool: str, name: str, scan: ArtifactScan, included: bool) -> dict:
+    return {"tool": tool, "file": name, "included": included, "scanned": scan.scanned,
+            "not_scanned_reason": None if scan.scanned else scan.reason,
+            "lines": scan.lines, "flagged_lines": scan.flagged_lines,
+            "network_identifier_lines": scan.network_lines,
+            "by_category": dict(sorted(scan.personal.items())),
+            "network_by_category": dict(sorted(scan.network.items()))}
 
 
 def _step_tools(ctx: _Ctx, step: Step) -> None:
-    results = read_results(ctx.job.id)
+    masked = ctx.status.masked
+    results, results_scan = _clean_results(read_results(ctx.job.id), masked)
     tools_dir = ctx.work / "tools"
     _write_json(tools_dir / "results.json", results)
     job_root = job_output_dir(ctx.job.id)
     copied = 0
+    entries: list[dict] = []
     for r in results:
         tool = str(r.get("tool", "unknown"))
         if "error" in r:
@@ -412,20 +526,38 @@ def _step_tools(ctx: _Ctx, step: Step) -> None:
             if not src.is_file():
                 step.issues.append(Issue(f"{tool}: {name}", "Left out: the file is no longer on the server."))
                 continue
-            if not _copy_artifact(src, tools_dir / tool / name, ctx.status.masked):
+            ok, scan = _scan_artifact(src, tools_dir / tool / name, masked)
+            entries.append(_file_entry(tool, name, scan, ok))
+            if not ok:
                 step.issues.append(Issue(f"{tool}: {name}", "Left out: only text files can be masked. "
                                                               "Export with masking off to include it."))
                 ctx.status.warnings.append(f"{tool}: {name} was left out because it could not be masked.")
                 continue
             copied += 1
+            if not scan.scanned:                      # in the zip, and the scanner could not read it
+                w = f"{tool}: {name} is in the zip but could not be scanned for PHI / PII ({scan.reason})."
+                step.issues.append(Issue(f"{tool}: {name}", w))
+                ctx.status.warnings.append(w)
+    tool_report = _tool_report(entries, results_scan)
+    ctx.report["tools"] = tool_report
+    _write_json(ctx.work / "privacy" / "report.json", ctx.report)
+    flagged_files = tool_report["flagged_files"]
+    if tool_report["flagged_lines"] and not masked:
+        w = (f"Masking was turned off: {tool_report['flagged_lines']:,} line(s) of diagnostic output "
+             "with PHI / PII are in the zip as is.")
+        step.issues.append(Issue("Masking", w))
+        ctx.status.warnings.append(w)
     ctx.status.contents.append(ContentEntry("tools/", "Diagnostic results and the files each tool produced",
-                                            files=copied + 1, masked=ctx.status.masked))
+                                            files=copied + 1, masked=masked))
     ran = len(results)
     failed = sum(1 for r in results if "error" in r)
     if not ran:
         step.detail = "This run used no diagnostics."
     else:
         step.detail = f"{ran - failed} of {ran} diagnostic{'s' if ran != 1 else ''} ran; {copied} file{'s' if copied != 1 else ''} added."
+        scanned = tool_report["files_scanned"]
+        step.detail += f" {scanned} text file{'s' if scanned != 1 else ''} scanned"
+        step.detail += f"; {flagged_files} with PHI / PII." if flagged_files else "; none flagged."
 
 
 def _step_findings(ctx: _Ctx, step: Step) -> None:
