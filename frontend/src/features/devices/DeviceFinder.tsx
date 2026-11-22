@@ -84,23 +84,32 @@ export default function DeviceFinder({ selectedIp, onUse }: { selectedIp: string
 
       {list.length > 0 && (
         <ul className="device-list" aria-label="Devices found">
-          {list.map((d) => (
-            <li key={d.id} className={d.ip_address === selectedIp.trim() ? "device selected" : "device"}>
-              <span className="device-main" title={d.evidence?.join(" · ") || undefined}>
-                <strong>{d.name}</strong> <code>{d.ip_address}</code>
-              </span>
-              <span className="device-actions">
-                <Label.Root htmlFor={`${uid}-k-${d.id}`} className="visually-hidden">Role of {d.ip_address}</Label.Root>
-                <select id={`${uid}-k-${d.id}`} value={d.kind} onChange={(e) => setKind(d, e.target.value as DeviceKind)}>
-                  {(Object.keys(KIND_LABELS) as DeviceKind[]).map((k) => <option key={k} value={k}>{KIND_LABELS[k]}</option>)}
-                </select>
-                <button type="button" className="btn ghost" onClick={() => onUse(d.ip_address)} aria-label={`Use ${d.name}, ${d.ip_address}`}
-                  disabled={d.ip_address === selectedIp.trim()}>
-                  {d.ip_address === selectedIp.trim() ? "Selected" : "Use"}
-                </button>
-              </span>
-            </li>
-          ))}
+          {list.map((d) => {
+            const target = d.ip_address === selectedIp.trim();
+            // Searches name a device after its role ("Hub", "System (MiniEdge)"); only a name someone typed adds anything.
+            const ownName = d.name !== "Device" && !d.name.startsWith(KIND_LABELS[d.kind]);
+            return (
+              <li key={d.id} className={target ? "device selected" : "device"}>
+                <span className="device-role">
+                  <Label.Root htmlFor={`${uid}-k-${d.id}`} className="visually-hidden">Role of {d.ip_address}</Label.Root>
+                  <select id={`${uid}-k-${d.id}`} value={d.kind} onChange={(e) => setKind(d, e.target.value as DeviceKind)}
+                    title="Best guess from network traffic. Change it if it's wrong.">
+                    {(Object.keys(KIND_LABELS) as DeviceKind[]).map((k) => <option key={k} value={k}>{KIND_LABELS[k]}</option>)}
+                  </select>
+                </span>
+                <span className="device-main" title={d.evidence?.join(" · ") || undefined}>
+                  <code>{d.ip_address}</code>
+                  {ownName && <span className="muted">{d.name}</span>}
+                </span>
+                {target ? (
+                  <span className="device-target" role="status">✓ Target</span>
+                ) : (
+                  <button type="button" className="btn ghost" onClick={() => onUse(d.ip_address)}
+                    aria-label={`Set ${d.ip_address} as the target`}>Set as target</button>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
       {devices && list.length === 0 && !busy && !error && notes.length === 0 && (
