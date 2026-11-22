@@ -33,6 +33,7 @@ function usePacedStep(job: Job | null): number {
 export default function JobPanel() {
   const { job, results, lost, logPull, clear } = useJobs();
   const shown = usePacedStep(job);
+  const names = useToolNames();
   if (!job) return null;
   const realFinished = isFinished(job.status);
   const complete = realFinished && job.status !== "failed" && job.status !== "interrupted";
@@ -77,7 +78,7 @@ export default function JobPanel() {
         <ul className="results">
           {results.map((r) => (
             <li key={r.tool} className="card">
-              <h3>{r.tool}</h3>
+              <h3>{names[r.tool] ?? r.tool}</h3>
               {"error" in r ? (
                 <div className="alert error" role="alert">
                   <strong>Failed{errorStepLabel(r.step) ? ` — ${errorStepLabel(r.step)}` : ""}</strong>
