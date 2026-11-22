@@ -40,6 +40,7 @@ export function stepPosition(steps: StepItem[]): { position: number | null; tota
 /** "0.4 s", "12 s", "1 min 05 s". Under 10 s keeps one decimal, since fast steps are the ones people squint at. */
 export function formatDuration(ms: number): string {
   const s = Math.max(0, ms) / 1000;
+  if (s < 0.1) return "< 0.1 s";        // "0.0 s" reads as broken
   if (s < 10) return `${s.toFixed(1)} s`;
   if (s < 60) return `${Math.round(s)} s`;
   const m = Math.floor(s / 60);

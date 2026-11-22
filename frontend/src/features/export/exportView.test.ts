@@ -8,7 +8,7 @@ const step = (id: string, status: ExportStep["status"], issues = 0): ExportStep 
 });
 
 const pkg = (over: Partial<Package> = {}): Package => ({
-  job_id: "job-1", state: "ready", masked: true, partial: false, requested_by: "t", started_at: "", finished_at: "",
+  export_id: "exp-1", scope: "run", title: "Run", runs: [], job_id: "job-1", state: "ready", masked: true, partial: false, requested_by: "t", started_at: "", finished_at: "",
   steps: [step("a", "done"), step("b", "done")], file_name: "x.zip", size_bytes: 10, sha256: "a".repeat(64),
   contents: [], warnings: [], error: null, downloadable: true, ...over,
 });

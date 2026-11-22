@@ -18,7 +18,15 @@ has anything in it:
     findings/findings.json   what the analysis engine found
     audit/audit.jsonl        the audit entries that mention this run
 
-Progress lives in <job dir>/package/status.json. Each step ends as done,
+Several runs can go in one zip (a "set"): runs/<folder>/ holds each run's own
+package in the layout above, and a top metadata.json lists the runs (A-3).
+
+Every export gets its own id and folder under <job output dir>/_exports/<id>/,
+so earlier zips are kept until the engineer deletes them (local disk is the
+only limit). Exports made before that lived in <job dir>/package/ and are
+still listed, downloadable and deletable ("legacy-<job id>").
+
+Progress lives in <export dir>/status.json. Each step ends as done,
 warn (finished, with something the engineer should know) or failed (with a
 reason safe to show). One failed step does not stop the others (R-2: keep
 partial results); only failing to write the zip itself fails the export.
@@ -35,6 +43,7 @@ import hashlib
 import json
 import logging
 import re
+import secrets
 import shutil
 import threading
 import zipfile
@@ -46,6 +55,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import AcquiredFileRecord, AuditLogEntry, Job, Signal
 from app.orchestrator.jobs import job_output_dir, read_results
 from app.privacy import service as privacy
@@ -83,12 +93,20 @@ class PackageError(Exception):
     """A request that cannot be met; the message is safe to show."""
 
 
+SET_PREFIX = "set-"                # a set of runs exported together
+LEGACY_PREFIX = "legacy-"          # an export from before per-export folders: <job dir>/package/
+_EXPORT_ID = re.compile(r"^(exp|set)-[0-9a-z-]{6,40}$")
+_SAFE_SCOPE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
 def scope_kind(scope: str) -> str:
+    if scope.startswith(SET_PREFIX):
+        return "runs"
     return "imported" if scope == UNASSIGNED else "all" if scope == ALL else "run"
 
 
 def scope_title(scope: str) -> str:
-    return {"imported": "Imported logs", "all": "All logs"}.get(scope_kind(scope), "Run")
+    return {"imported": "Imported logs", "all": "All logs", "runs": "Runs"}.get(scope_kind(scope), "Run")
 
 
 def _event_scope(scope: str) -> Optional[str]:
@@ -98,7 +116,7 @@ def _event_scope(scope: str) -> Optional[str]:
 
 def find_job(db: Session, scope: str) -> Optional[Job]:
     """The run behind a scope; None for imported or all logs. LookupError for an unknown run."""
-    if scope in (UNASSIGNED, ALL):
+    if scope in (UNASSIGNED, ALL) or scope.startswith(SET_PREFIX):
         return None
     job = db.get(Job, scope)
     if job is None:
@@ -147,6 +165,12 @@ class PackageStatus:
     contents: list[ContentEntry] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     error: Optional[str] = None
+    export_id: str = ""                 # empty only for legacy exports (see LEGACY_PREFIX)
+    runs: list[str] = field(default_factory=list)   # a set's run ids, in the order they were picked
+
+    @property
+    def id(self) -> str:
+        return self.export_id or f"{LEGACY_PREFIX}{self.job_id}"
 
     @property
     def partial(self) -> bool:
@@ -156,11 +180,32 @@ class PackageStatus:
 # --- reading state --------------------------------------------------------------
 
 def package_dir(job_id: str) -> Path:
+    """Where exports lived before each got its own folder; read and deleted, never written."""
     return job_output_dir(job_id) / "package"
 
 
-def _status_path(job_id: str) -> Path:
-    return package_dir(job_id) / "status.json"
+def exports_root() -> Path:
+    return Path(settings.job_output_dir) / "_exports"
+
+
+def export_dir(export_id: str) -> Path:
+    """The folder for one export id. ValueError for anything that is not a valid id (it comes from the URL)."""
+    if export_id.startswith(LEGACY_PREFIX):
+        job_id = export_id[len(LEGACY_PREFIX):]
+        if not _SAFE_SCOPE.match(job_id):
+            raise ValueError(export_id)
+        return package_dir(job_id)
+    if not _EXPORT_ID.match(export_id):
+        raise ValueError(export_id)
+    return exports_root() / export_id
+
+
+def _dir(status: PackageStatus) -> Path:
+    return export_dir(status.id)
+
+
+def _new_id(prefix: str) -> str:
+    return f"{prefix}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
 
 
 def _now() -> str:
@@ -172,18 +217,21 @@ def _utc(dt: Optional[datetime]) -> Optional[str]:
 
 
 def _save(status: PackageStatus) -> None:
-    path = _status_path(status.job_id)
+    path = _dir(status) / "status.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(asdict(status), indent=2))
     tmp.replace(path)                  # never a half-written file for a poll to read
 
 
-def load_status(job_id: str) -> Optional[PackageStatus]:
-    path = _status_path(job_id)
+def _read(path: Path) -> Optional[PackageStatus]:
     if not path.is_file():
         return None
-    raw = json.loads(path.read_text())
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    job_id = raw.get("job_id", "")
     steps = [Step(**{**s, "issues": [Issue(**i) for i in s.get("issues", [])]}) for s in raw.pop("steps", [])]
     contents = [ContentEntry(**c) for c in raw.pop("contents", [])]
     status = PackageStatus(**raw, steps=steps, contents=contents)
@@ -197,10 +245,40 @@ def load_status(job_id: str) -> Optional[PackageStatus]:
     return status
 
 
+def list_exports() -> list[PackageStatus]:
+    """Every export on this machine, newest first: per-export folders and legacy ones."""
+    paths = list(exports_root().glob("*/status.json")) + list(Path(settings.job_output_dir).glob("*/package/status.json"))
+    found = [s for s in (_read(p) for p in paths) if s is not None]
+    return sorted(found, key=lambda s: s.started_at, reverse=True)
+
+
+def load_status(job_id: str) -> Optional[PackageStatus]:
+    """The latest export of one set of logs (a run, imported, all), or None."""
+    return next((s for s in list_exports() if s.job_id == job_id), None)
+
+
+def load_export(export_id: str) -> Optional[PackageStatus]:
+    try:
+        return _read(export_dir(export_id) / "status.json")
+    except ValueError:
+        return None
+
+
+def delete_export(export_id: str) -> PackageStatus:
+    """Remove one export's folder and zip. LookupError if unknown; PackageError while it is being built."""
+    status = load_export(export_id)
+    if status is None:
+        raise LookupError(export_id)
+    if status.state == "preparing":
+        raise PackageError("This export is still being prepared. Delete it once it has finished.")
+    shutil.rmtree(_dir(status), ignore_errors=True)
+    return status
+
+
 def zip_path(status: PackageStatus) -> Optional[Path]:
     if status.state != "ready" or not status.file_name:
         return None
-    path = package_dir(status.job_id) / status.file_name
+    path = _dir(status) / status.file_name
     return path if path.is_file() else None
 
 
@@ -255,26 +333,54 @@ def start(db: Session, job_id: str, *, masked: bool, requested_by: str) -> Packa
             raise PackageError("An export of this run is already being prepared.")
         _building.add(job_id)
     status = PackageStatus(job_id=job_id, state="preparing", masked=masked, requested_by=requested_by,
-                           started_at=_now(), steps=[Step(i, label) for i, label in STEPS])
+                           started_at=_now(), steps=[Step(i, label) for i, label in STEPS], export_id=_new_id("exp"))
     _save(status)
     return status
 
 
-def build(db: Session, job_id: str) -> PackageStatus:
-    """Run every step for an export start() recorded. Never raises: the
-    outcome, and any error, are in the saved status."""
-    status = load_status_unchecked(job_id)
-    out = package_dir(job_id)
-    work = out / "build"
+def start_set(db: Session, run_ids: list[str], *, masked: bool, requested_by: str) -> PackageStatus:
+    """Several finished runs in one zip. LookupError names an unknown run; PackageError a run still going."""
+    runs = list(dict.fromkeys(run_ids))
+    if len(runs) < 2:
+        raise PackageError("Pick at least two runs to export together.")
+    for rid in runs:
+        job = find_job(db, rid)
+        if job is None:
+            raise LookupError(rid)
+        if job.status not in FINISHED:
+            raise PackageError(f"Run {rid[:8]} is still going. Export it once it has finished.")
+    set_id = _new_id(SET_PREFIX.rstrip("-"))
+    with _lock:
+        _building.add(set_id)
+    steps = [Step(f"run:{rid}", f"Adding run {rid[:8]}") for rid in runs]
+    steps += [Step("metadata", "Writing the package details"), Step("zip", "Building the zip file")]
+    status = PackageStatus(job_id=set_id, state="preparing", masked=masked, requested_by=requested_by,
+                           started_at=_now(), steps=steps, export_id=set_id, runs=runs)
+    _save(status)
+    return status
+
+
+def build(db: Session, export_id: str) -> PackageStatus:
+    """Run every step for an export start() or start_set() recorded. Never raises:
+    the outcome, and any error, are in the saved status."""
+    status = load_status_unchecked(export_id)
+    job_id = status.job_id
+    work = _dir(status) / "build"
     try:
         shutil.rmtree(work, ignore_errors=True)
-        for name in SECTIONS:
-            (work / name).mkdir(parents=True, exist_ok=True)
+        if not status.runs:
+            for name in SECTIONS:
+                (work / name).mkdir(parents=True, exist_ok=True)
         ctx = _Ctx(db=db, scope=job_id, job=find_job(db, job_id), work=work, status=status)
         for step in status.steps:
             if step.id == "zip":
                 continue
-            _run_step(ctx, step, _STEP_FUNCS[step.id])
+            if step.id.startswith("run:"):
+                _run_step(ctx, step, _step_run)
+            elif status.runs and step.id == "metadata":
+                _run_step(ctx, step, _step_set_metadata)
+            else:
+                _run_step(ctx, step, _STEP_FUNCS[step.id])
         zip_step = next(s for s in status.steps if s.id == "zip")
         _run_step(ctx, zip_step, _write_zip, fatal=True)
         status.state = "ready"
@@ -292,13 +398,15 @@ def build(db: Session, job_id: str) -> PackageStatus:
     return status
 
 
-def load_status_unchecked(job_id: str) -> PackageStatus:
+def load_status_unchecked(export_id: str) -> PackageStatus:
     """The saved status as written, without the interrupted check (the builder itself is reading it)."""
+    raw = load_export(export_id)
+    if raw is None:
+        raise LookupError(export_id)
     with _lock:
-        _building.add(job_id)
-    status = load_status(job_id)
-    if status is None:
-        raise LookupError(job_id)
+        _building.add(raw.job_id)
+    status = load_export(export_id)
+    assert status is not None
     return status
 
 
@@ -314,12 +422,14 @@ class _Ctx:
     work: Path
     status: PackageStatus
     readiness: Optional[Readiness] = None
+    persist: bool = True       # False for a run inside a set: only the set's status is saved
 
 
 def _run_step(ctx: _Ctx, step: Step, func, *, fatal: bool = False) -> None:
     step.status = "running"
     step.started_at = _now()
-    _save(ctx.status)
+    if ctx.persist:
+        _save(ctx.status)
     try:
         func(ctx, step)
         step.status = "warn" if step.issues else "done"
@@ -331,7 +441,8 @@ def _run_step(ctx: _Ctx, step: Step, func, *, fatal: bool = False) -> None:
         step.status = "failed"
         step.issues.append(Issue(step.label, f"Unexpected error ({type(e).__name__}). The server log has the details."))
     step.finished_at = _now()
-    _save(ctx.status)
+    if ctx.persist:
+        _save(ctx.status)
     if fatal and step.status == "failed":
         raise _Fatal(step.issues[-1].reason)
 
@@ -639,9 +750,10 @@ def _step_metadata(ctx: _Ctx, step: Step) -> None:
 
 def _write_zip(ctx: _Ctx, step: Step) -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
-    label = ctx.job.id[:8] if ctx.job else {"imported": "imported-logs", "all": "all-logs"}[scope_kind(ctx.scope)]
+    label = (f"{len(ctx.status.runs)}-runs" if ctx.status.runs else ctx.job.id[:8] if ctx.job
+             else {"imported": "imported-logs", "all": "all-logs"}[scope_kind(ctx.scope)])
     name = f"portrait-iq-{label}-{stamp}.zip"
-    dest = package_dir(ctx.scope) / name
+    dest = _dir(ctx.status) / name
     tmp = dest.with_suffix(".part")
     try:
         with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -651,10 +763,7 @@ def _write_zip(ctx: _Ctx, step: Step) -> None:
                     zf.writestr(arc + "/", "")      # empty sections stay in the layout
                 else:
                     zf.write(path, arc)
-        tmp.replace(dest)
-        for old in package_dir(ctx.scope).glob("*.zip"):
-            if old != dest:
-                old.unlink(missing_ok=True)      # one package per run, replaced only once the new one exists
+        tmp.replace(dest)                        # each export has its own folder: earlier zips are kept
     except OSError as e:
         tmp.unlink(missing_ok=True)
         raise PackageError(f"The zip could not be written ({e.strerror or type(e).__name__}). "
@@ -665,6 +774,58 @@ def _write_zip(ctx: _Ctx, step: Step) -> None:
             digest.update(chunk)
     ctx.status.file_name, ctx.status.size_bytes, ctx.status.sha256 = name, dest.stat().st_size, digest.hexdigest()
     step.detail = f"{name}, {ctx.status.size_bytes:,} bytes."
+
+
+def _run_folder(job: Job) -> str:
+    """runs/<this>/ inside a set: sortable by start time, unique by id."""
+    when = job.created_at.strftime("%Y%m%d-%H%M") if job.created_at else "unknown"
+    return f"{when}-{job.id[:8]}"
+
+
+def _step_run(ctx: _Ctx, step: Step) -> None:
+    """One run of a set: its own standard package under runs/<folder>/. Its notes come up to this step."""
+    job = find_job(ctx.db, step.id[len("run:"):])
+    assert job is not None
+    folder = _run_folder(job)
+    work = ctx.work / "runs" / folder
+    for name in SECTIONS:
+        (work / name).mkdir(parents=True, exist_ok=True)
+    sub = PackageStatus(job_id=job.id, state="preparing", masked=ctx.status.masked,
+                        requested_by=ctx.status.requested_by, started_at=ctx.status.started_at,
+                        steps=[Step(i, label) for i, label in STEPS if i != "zip"])
+    sub_ctx = _Ctx(db=ctx.db, scope=job.id, job=job, work=work, status=sub, persist=False)
+    for s in sub.steps:
+        _run_step(sub_ctx, s, _STEP_FUNCS[s.id])
+    step.label = f"Adding run {folder}"
+    for s in sub.steps:
+        step.issues += [Issue(f"{s.label}: {i.item}", i.reason) for i in s.issues]
+    ctx.status.warnings += [f"Run {job.id[:8]}: {w}" for w in sub.warnings]
+    logs = next((c for c in sub.contents if c.path == "logs/"), None)
+    ctx.status.contents.append(ContentEntry(f"runs/{folder}/", f"Run {job.id[:8]}: its own package (standard layout)",
+                                            files=sum(c.files for c in sub.contents), events=logs.events if logs else None,
+                                            masked=ctx.status.masked))
+    step.detail = next((s.detail for s in sub.steps if s.id == "logs"), None)
+    if any(s.status == "failed" for s in sub.steps):
+        raise PackageError("Part of this run could not be added. The notes say which.")
+
+
+def _step_set_metadata(ctx: _Ctx, step: Step) -> None:
+    jobs = [find_job(ctx.db, rid) for rid in ctx.status.runs]
+    _write_json(ctx.work / "metadata.json", {
+        "format_version": FORMAT_VERSION,
+        "scope": "runs",
+        "runs": [{"id": j.id, "folder": f"runs/{_run_folder(j)}/", "status": j.status,
+                  "tools": json.loads(j.tools or "[]"), "started_at": _utc(j.created_at),
+                  "finished_at": _utc(j.finished_at)} for j in jobs if j is not None],
+        "export": {"exported_by": ctx.status.requested_by, "exported_at": ctx.status.started_at,
+                   "masked": ctx.status.masked, "scanner_version": SCANNER_VERSION,
+                   "steps": [{"id": s.id, "status": s.status, "detail": s.detail,
+                              "issues": [asdict(i) for i in s.issues]} for s in ctx.status.steps if s.id != "metadata"],
+                   "warnings": ctx.status.warnings},
+        "layout": [c.path for c in ctx.status.contents],
+    })
+    ctx.status.contents.insert(0, ContentEntry("metadata.json", "The runs in this zip, this export and its warnings", files=1))
+    step.detail = f"{len(jobs)} runs, export and environment details."
 
 
 _STEP_FUNCS = {

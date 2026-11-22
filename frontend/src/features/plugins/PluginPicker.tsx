@@ -310,8 +310,8 @@ export default function PluginPicker({ onStarted, locked }: {
       )}
 
       {/* Start stays in view at the bottom of the screen, with what it will do or what is stopping it. */}
-      <div className="run-bar">
-        <span className={problem ? "text-error run-bar-text" : "run-bar-text"} role={problem ? "alert" : "status"}>{problem ?? summary}</span>
+      <div className="action-bar">
+        <span className={problem ? "text-error action-bar-text" : "action-bar-text"} role={problem ? "alert" : "status"}>{problem ?? summary}</span>
         <button className="btn" type="submit" disabled={busy || uploading || locked}>{label}</button>
       </div>
     </form>

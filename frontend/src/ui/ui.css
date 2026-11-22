@@ -284,3 +284,13 @@ button.chip { cursor: pointer; }
 .skeleton-bar { display: block; height: 14px; border-radius: 4px; background: var(--bg); animation: pulse 1.2s ease-in-out infinite alternate; }
 @keyframes pulse { to { opacity: .45; } }
 .active-wrap:empty { margin-top: -10px; }  /* cancel the grid gap while no filters are set */
+
+/* Action bar: the page's one primary action, stuck to the bottom of the screen while a long form scrolls,
+   with a line saying what it will do or what is stopping it. Used by Run diagnostics and Export. */
+.action-bar {
+  position: sticky; bottom: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 12px 20px;
+  flex-wrap: wrap; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px 8px 0 0; box-shadow: 0 -6px 18px rgba(0,0,0,.08);
+}
+.action-bar-text { flex: 1 1 240px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.action-bar .btn { flex: none; min-width: 220px; }

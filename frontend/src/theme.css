@@ -61,6 +61,7 @@ button, input { font: inherit; color: inherit; }
 .btn:active:not(:disabled) { transform: scale(.97); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.ghost { background: transparent; color: var(--primary); }
+.btn.danger { background: var(--error-text); border-color: var(--error-text); }
 @media (hover: hover) and (pointer: fine) {
   .btn:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
   .btn.ghost:hover:not(:disabled) { background: var(--primary-tint); border-color: var(--primary); }
