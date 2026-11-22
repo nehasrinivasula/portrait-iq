@@ -9,6 +9,6 @@
 .job-check.fail { border-left-color: var(--error); background: var(--error-bg); }
 .job-check p { flex-basis: 100%; margin: 0; }
 .job-check strong { color: var(--ok); }
-.job-check.fail strong { color: var(--error); }
+.job-check.fail strong { color: var(--error-text); }
 .job-check.warn { border-left-color: var(--warn); background: var(--warn-bg); }
 .job-check.warn strong { color: inherit; }
