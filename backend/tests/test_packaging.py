@@ -329,3 +329,12 @@ def test_collections_list_the_tools_each_run_used(env, tmp_path):
     _import_unassigned(seed, tmp_path)
     rows = {c["job_id"]: c for c in client.get("/api/logs/collections").json()}
     assert rows["job-1"]["tools"] == ["netshoot", "tshark"] and rows["unassigned"]["tools"] == []
+
+
+def test_system_manifest_lists_every_troubleshooting_file(env):
+    client, _ = env
+    export(client)
+    manifest = json.loads(open_zip(client).read("system/manifest.json"))
+    assert [m["key"] for m in manifest] == [k for k, _, _ in service.SYSTEM_ITEMS]
+    missing = [m for m in manifest if m["status"] == "missing"]
+    assert missing and all(m["needed"] for m in missing)     # each gap says what is needed

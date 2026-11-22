@@ -3,7 +3,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import ImportLogs from "./ImportLogs";
 import LogFilters from "./LogFilters";
 import LogTable from "./LogTable";
-import LogSets, { fileName } from "./LogSets";
+import SourcePicker, { fileName } from "./SourcePicker";
+import InsightsPanel from "./InsightsPanel";
 import { activeFilters, removeFilter } from "./activeFilters";
 import { emptyFilter, getFacets, IMPORTED, type Facets, type LogFilter } from "./logsApi";
 import { defaultTimeFrame, filterRange, type TimeFrameChoice } from "./timeframe";
@@ -23,8 +24,8 @@ function useDebounced<T>(value: T, ms: number): T {
   return v;
 }
 
-// Log sets on the left (all logs, imports, each run, and their files); on the
-// right the filters (always in view) and the log table, scrolling on its own.
+// The source (all logs, an import, a run, one file) on top, then what is in it
+// (insights), the filters (always in view) and the log table, scrolling on its own.
 export default function LogsPage() {
   const [params, setParams] = useSearchParams();
   const jobId = params.get("job");
@@ -54,6 +55,14 @@ export default function LogsPage() {
     return () => { live = false; };
   }, [optionScope, reloadKey, privacy.mask]);
 
+  // Insights follow every filter, unlike the dropdown options above, so hiding noise shows its effect.
+  const [insights, setInsights] = useState<Facets | null>(null);
+  useEffect(() => {
+    let live = true;
+    getFacets(applied, privacy.mask).then((f) => live && setInsights(f)).catch(() => live && setInsights(null));
+    return () => { live = false; };
+  }, [applied, reloadKey, privacy.mask]);
+
   const pick = (set: string | null, f: string | null) => {
     const next: Record<string, string> = {};
     if (set) next.job = set;
@@ -77,34 +86,35 @@ export default function LogsPage() {
   const scope = jobId ?? "all";
   const title = jobId === null ? "All logs" : jobId === IMPORTED ? "Imported files" : `Run ${jobId.slice(0, 8)}`;
   return (
-    <div className="logs-layout">
-      <LogSets selected={jobId} file={file} onSelect={pick} reloadKey={reloadKey} />
-      <div className="logs-page">
-        <div className="logs-head">
-          <div className="logs-title">
-            <h1>Logs</h1>
-            <p className="logs-head-sub">
-              {title}{file ? ` › ${fileName(file)}` : ""}{total !== null && ` · ${total.toLocaleString()} match${total === 1 ? "" : "es"}`}
-            </p>
-          </div>
-          <div className="logs-head-actions">
-            <ImportLogs onImported={() => setReloadKey((k) => k + 1)} />
-            <Link to={`/export/${encodeURIComponent(scope)}?from=logs`} className="btn">
-              {jobId === null ? "Export all logs" : jobId === IMPORTED ? "Export imported files" : "Export this run"}
-            </Link>
-          </div>
+    <div className="logs-page">
+      <div className="logs-head">
+        <div className="logs-title">
+          <h1>Logs</h1>
+          <p className="logs-head-sub">
+            {title}{file ? ` › ${fileName(file)}` : ""}{total !== null && ` · ${total.toLocaleString()} match${total === 1 ? "" : "es"}`}
+          </p>
         </div>
-
-        <PrivacyPanel jobId={jobId} options={privacy} onOptions={setPrivacy} reloadKey={reloadKey}
-          onScanned={() => setReloadKey((k) => k + 1)} />
-
-        <LogFilters frame={frame} onFrame={setFrame} filter={filter} onFilter={setFilter} masked={privacy.mask}
-          facets={privacy.mask && facets ? { ...facets, devices: [], categories: [] } : facets} active={active} onRemove={onRemove} onClear={onClear} />
-
-        <div className="logs-body">
-          <LogTable filter={applied} reloadKey={reloadKey} onTotal={onTotal} privacy={privacy}
-            filtered={active.length > 0 || !!jobId || privacy.flaggedOnly} />
+        <div className="logs-head-actions">
+          <ImportLogs onImported={() => setReloadKey((k) => k + 1)} />
+          <Link to={`/export/${encodeURIComponent(scope)}?from=logs`} className="btn">
+            {jobId === null ? "Export all logs" : jobId === IMPORTED ? "Export imported files" : "Export this run"}
+          </Link>
         </div>
+      </div>
+
+      <SourcePicker selected={jobId} file={file} onSelect={pick} reloadKey={reloadKey} />
+
+      <InsightsPanel facets={insights} filter={filter} onFilter={setFilter} masked={privacy.mask} />
+
+      <PrivacyPanel jobId={jobId} options={privacy} onOptions={setPrivacy} reloadKey={reloadKey}
+        onScanned={() => setReloadKey((k) => k + 1)} />
+
+      <LogFilters frame={frame} onFrame={setFrame} filter={filter} onFilter={setFilter} masked={privacy.mask}
+        facets={privacy.mask && facets ? { ...facets, devices: [], categories: [] } : facets} active={active} onRemove={onRemove} onClear={onClear} />
+
+      <div className="logs-body">
+        <LogTable filter={applied} reloadKey={reloadKey} onTotal={onTotal} privacy={privacy}
+          filtered={active.length > 0 || !!jobId || privacy.flaggedOnly} />
       </div>
     </div>
   );

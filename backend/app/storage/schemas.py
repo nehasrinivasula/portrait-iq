@@ -60,6 +60,8 @@ class FacetsOut(BaseModel):
     devices: list[FacetValueOut]     # the 200 busiest
     distinct_devices: int
     message_kinds: list[FacetValueOut] = []   # request / reply / ... ; null = ordinary lines
+    processes: list[FacetValueOut] = []
+    repeated_messages: list[FacetValueOut] = []   # the most repeated messages (first 200 characters); empty when masked
 
 
 class CollectionOut(BaseModel):

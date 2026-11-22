@@ -40,6 +40,8 @@ export interface Facets {
   categories: FacetValue[];
   devices: FacetValue[];
   distinct_devices: number;
+  processes?: FacetValue[];
+  repeated_messages?: FacetValue[];   // most repeated messages, cut to 200 characters; empty while masking
 }
 
 export interface LogFilter {
@@ -51,12 +53,16 @@ export interface LogFilter {
   category: string;        // the kind of event, as the system labels it; "" for any
   process: string;         // the program that wrote it; "" for any
   sourceFile: string;      // one log file; "" for any
+  hideCategories: string[];   // noise switched off: events in these categories are left out
+  hideProcesses: string[];
+  hideMessages: string[];     // events whose message starts with one of these
   q: string;
   jobId: string | null;    // a run, "unassigned" for imported logs, or null for all
 }
 
 export const emptyFilter = (): LogFilter => ({
   since: null, until: null, sources: [], severities: [], device: "", category: "", process: "", sourceFile: "",
+  hideCategories: [], hideProcesses: [], hideMessages: [],
   q: "", jobId: null,
 });
 
@@ -72,6 +78,9 @@ export function filterParams(f: LogFilter): URLSearchParams {
   if (f.process.trim() && !validateFilterValue(f.process, "process")) p.set("process", f.process.trim());
   if (f.sourceFile) p.set("source_file", f.sourceFile);
   if (f.q.trim() && !validateSearchText(f.q)) p.set("q", f.q.trim());
+  f.hideCategories.forEach((v) => p.append("not_category", v));
+  f.hideProcesses.forEach((v) => p.append("not_process", v));
+  f.hideMessages.forEach((v) => p.append("not_message", v));
   if (f.jobId) p.set("job_id", f.jobId);
   return p;
 }

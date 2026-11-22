@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Iterator, Optional
 
-from sqlalchemy import and_, false, func, or_, select
+from sqlalchemy import and_, false, func, not_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import AcquiredFileRecord, IngestedFile, Job
@@ -80,6 +80,13 @@ def _conditions(f: EventFilter) -> list:
         conds.append(E.component.in_(f.components))
     if f.correlation_id is not None:
         conds.append(E.correlation_id == f.correlation_id)
+    # Not-in must keep rows with no value: SQL's NOT IN drops NULLs.
+    if f.not_categories:
+        conds.append(or_(E.category.is_(None), E.category.not_in(f.not_categories)))
+    if f.not_processes:
+        conds.append(or_(E.process.is_(None), E.process.not_in(f.not_processes)))
+    for m in f.not_messages:
+        conds.append(not_(E.message.startswith(m, autoescape=True)))
     return conds
 
 
@@ -156,6 +163,11 @@ class Facets:
     devices: list[tuple[Optional[str], int]]
     distinct_devices: int
     message_kinds: list[tuple[Optional[str], int]] = field(default_factory=list)
+    processes: list[tuple[Optional[str], int]] = field(default_factory=list)
+    repeated_messages: list[tuple[Optional[str], int]] = field(default_factory=list)   # first 200 characters, seen 2+ times
+
+
+MESSAGE_PREFIX = 200   # matches the longest filter value, so a row can be hidden by its prefix
 
 
 def facets(db: Session, f: EventFilter) -> Facets:
@@ -177,6 +189,13 @@ def facets(db: Session, f: EventFilter) -> Facets:
         sources=grouped(E.source), severities=grouped(E.severity), categories=grouped(E.category),
         devices=grouped(E.device_id, FACET_LIMIT), distinct_devices=distinct,
         message_kinds=grouped(E.message_kind),
+        processes=grouped(E.process, FACET_LIMIT),
+        # shortcut: groups in SQL on the first 200 characters; fine to ~1M events, then index or sample.
+        repeated_messages=[
+            (m, n) for m, n in db.execute(
+                select(func.substr(E.message, 1, MESSAGE_PREFIX).label("m"), func.count().label("n"))
+                .where(*conds).group_by("m").having(func.count() > 1).order_by(func.count().desc()).limit(10))
+        ],
     )
 
 

@@ -31,6 +31,10 @@ export function activeFilters(frame: TimeFrameChoice, filter: LogFilter): Active
   if (filter.process.trim() && !validateFilterValue(filter.process, "process")) out.push({ id: "process", label: "Process", value: filter.process.trim() });
   // Stored names carry where the file was staged (local/<hash>/name.csv): show the name.
   if (filter.sourceFile) out.push({ id: "file", label: "File", value: filter.sourceFile.split("/").pop() || filter.sourceFile });
+  const short = (m: string) => (m.length > 40 ? `${m.slice(0, 40)}…` : m);
+  filter.hideCategories.forEach((v) => out.push({ id: `hidecat:${v}`, label: "Hiding category", value: v }));
+  filter.hideProcesses.forEach((v) => out.push({ id: `hideproc:${v}`, label: "Hiding process", value: v }));
+  filter.hideMessages.forEach((v) => out.push({ id: `hidemsg:${v}`, label: "Hiding message", value: short(v) }));
   if (filter.q.trim() && !validateSearchText(filter.q)) out.push({ id: "q", label: "Message has", value: filter.q.trim() });
   return out;
 }
@@ -45,6 +49,9 @@ export function removeFilter(id: string, frame: TimeFrameChoice, filter: LogFilt
   if (kind === "category") return { frame, filter: { ...filter, category: "" } };
   if (kind === "process") return { frame, filter: { ...filter, process: "" } };
   if (kind === "file") return { frame, filter: { ...filter, sourceFile: "" } };
+  if (kind === "hidecat") return { frame, filter: { ...filter, hideCategories: filter.hideCategories.filter((v) => v !== value) } };
+  if (kind === "hideproc") return { frame, filter: { ...filter, hideProcesses: filter.hideProcesses.filter((v) => v !== value) } };
+  if (kind === "hidemsg") return { frame, filter: { ...filter, hideMessages: filter.hideMessages.filter((v) => v !== value) } };
   if (kind === "q") return { frame, filter: { ...filter, q: "" } };
   return { frame, filter };
 }

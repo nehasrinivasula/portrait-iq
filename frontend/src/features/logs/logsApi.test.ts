@@ -21,4 +21,11 @@ describe("filterParams", () => {
     expect(p.get("job_id")).toBe("j1");
     expect(p.get("since")).toBe("2026-10-25T00:00:00.000Z");
   });
+
+  it("sends hidden noise as not_* parameters", () => {
+    const p = filterParams({ ...emptyFilter(), hideCategories: ["PerfData"], hideProcesses: ["perfd", "svc"], hideMessages: ["cpu 12%"] });
+    expect(p.getAll("not_category")).toEqual(["PerfData"]);
+    expect(p.getAll("not_process")).toEqual(["perfd", "svc"]);
+    expect(p.getAll("not_message")).toEqual(["cpu 12%"]);
+  });
 });

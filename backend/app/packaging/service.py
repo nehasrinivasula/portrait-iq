@@ -13,6 +13,8 @@ has anything in it:
     privacy/report.json      the PHI/PII scan report for the run
     tools/results.json       each diagnostic's summary, warnings or error
     tools/<tool>/...         the files each diagnostic produced
+    system/manifest.json     the 8 troubleshooting files teams ask for: included, or missing and what is needed
+    system/<item>/...        the ones that could be collected
     findings/findings.json   what the analysis engine found
     audit/audit.jsonl        the audit entries that mention this run
 
@@ -44,7 +46,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AuditLogEntry, Job, Signal
+from app.models import AcquiredFileRecord, AuditLogEntry, Job, Signal
 from app.orchestrator.jobs import job_output_dir, read_results
 from app.privacy import service as privacy
 from app.privacy.scanner import SCANNER_VERSION, category_group, mask_text, scan_text
@@ -62,13 +64,14 @@ STEPS: list[tuple[str, str]] = [
     ("check", "Checking the PHI / PII scan"),
     ("logs", "Adding the logs"),
     ("tools", "Adding the diagnostic results"),
+    ("system", "Adding the troubleshooting files"),
     ("findings", "Adding the findings"),
     ("audit", "Adding the audit trail"),
     ("metadata", "Writing the package details"),
     ("zip", "Building the zip file"),
 ]
 
-SECTIONS = ["logs", "privacy", "tools", "findings", "audit"]
+SECTIONS = ["logs", "privacy", "tools", "system", "findings", "audit"]
 TEXT_LIMIT = 50 * 1024 * 1024      # larger tool files are copied, not scanned line by line
 BINARY_SUFFIXES = {".pcap", ".pcapng", ".gz", ".zip", ".tar", ".bin", ".png", ".jpg"}
 
@@ -469,6 +472,57 @@ def _step_tools(ctx: _Ctx, step: Step) -> None:
         step.detail = f"{ran - failed} of {ran} diagnostic{'s' if ran != 1 else ''} ran; {copied} file{'s' if copied != 1 else ''} added."
 
 
+# The troubleshooting files teams ask for. (key, what it is, what is needed to collect it.)
+# Only the two with a collector or source today are filled in; the rest are listed as missing
+# in system/manifest.json so the gap is visible in every export.
+SYSTEM_ITEMS: list[tuple[str, str, str]] = [
+    ("rti_monitor_ser", "RTI Monitor *.ser",
+     "A collector that exports the Monitor's .ser from the live RTI host (needs cluster/host access)."),
+    ("rti_adminconsole_xml", "RTI AdminConsole *.xml (discovery details)",
+     "A collector that exports the AdminConsole discovery XML from the live RTI host."),
+    ("wireshark_pcap", "Wireshark saved *.pcap",
+     "Included when the run's packet-capture tool produced one; hand-saved captures need an upload linked to the run."),
+    ("log_export_csv", "Log Export API logs (CSV)",
+     "Included from CSVs already pulled from the Log Export API; needs a live pull (port 9200) when none exist."),
+    ("cms_logs", "CMS logs via API",
+     "The CMS API endpoint, its auth and a client for it; none exist in this codebase yet."),
+    ("prometheus", "Prometheus databases",
+     "A collector that snapshots the Prometheus TSDB (admin snapshot API or copy from its volume) on the live cluster."),
+    ("core_dumps", "Core Dump folder files",
+     "A collector that reads the core dump folder on the live node(s); its path on the system is not yet known."),
+    ("firewall", "Firewall settings (printed)",
+     "A collector that prints the firewall rules on the live node(s) (command and privileges to be confirmed)."),
+]
+
+
+def _step_system(ctx: _Ctx, step: Step) -> None:
+    sys_dir = ctx.work / "system"
+    got: dict[str, list[str]] = {k: [] for k, _, _ in SYSTEM_ITEMS}
+    if ctx.job is not None:      # captures the run's tool already saved sit under tools/; point at them
+        root = job_output_dir(ctx.job.id)
+        for r in read_results(ctx.job.id):
+            got["wireshark_pcap"] += [f"tools/{r.get('tool', 'unknown')}/{Path(a).name}" for a in r.get("artifact_paths", [])
+                                      if Path(a).suffix.lower() in (".pcap", ".pcapng") and _inside(root / a, root)
+                                      and (root / a).is_file()]
+    if ctx.job is None:          # pulled CSVs carry no run id, so only imported / all exports can hold them
+        rows = ctx.db.scalars(select(AcquiredFileRecord).where(
+            AcquiredFileRecord.source == "axone", AcquiredFileRecord.status.in_(("acquired", "ingested")))).all()
+        for row in rows:
+            src = Path(row.local_path) if row.local_path else None
+            if src and src.is_file() and _copy_artifact(src, sys_dir / "log_export_csv" / src.name, ctx.status.masked):
+                got["log_export_csv"].append(f"system/log_export_csv/{src.name}")
+    items = [{"key": k, "label": label, "status": "included" if got[k] else "missing",
+              "files": got[k], "needed": None if got[k] else needed} for k, label, needed in SYSTEM_ITEMS]
+    _write_json(sys_dir / "manifest.json", items)
+    n = sum(len(v) for v in got.values())
+    ctx.status.contents.append(ContentEntry("system/", "Troubleshooting files, and which ones could not be collected",
+                                            files=n + 1, masked=ctx.status.masked))
+    for i in items:
+        if i["status"] == "missing":
+            step.issues.append(Issue(i["label"], f"Not collected. {i['needed']}"))
+    step.detail = f"{sum(1 for i in items if i['status'] == 'included')} of {len(items)} items collected; the rest are listed in system/manifest.json."
+
+
 def _step_findings(ctx: _Ctx, step: Step) -> None:
     from app.analysis.findings import findings_for     # each finding with its evidence (PHI/PII masked)
     if ctx.scope == UNASSIGNED:
@@ -567,6 +621,6 @@ def _write_zip(ctx: _Ctx, step: Step) -> None:
 
 
 _STEP_FUNCS = {
-    "check": _step_check, "logs": _step_logs, "tools": _step_tools,
+    "check": _step_check, "logs": _step_logs, "tools": _step_tools, "system": _step_system,
     "findings": _step_findings, "audit": _step_audit, "metadata": _step_metadata,
 }

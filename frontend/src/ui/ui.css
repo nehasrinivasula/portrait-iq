@@ -97,10 +97,11 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 
 /* Logs page: filters stay put, the table scrolls */
 .page.wide { max-width: none; }
-.logs-page { display: flex; flex-direction: column; height: calc(100vh - 80px - 28px - 20px); min-height: 420px; gap: 10px; }
+.logs-page { display: flex; flex-direction: column; gap: 10px; }
 .logs-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex: none; }
 .logs-head h1 { margin: 0; }
-.logs-body { flex: 1; min-height: 0; }
+/* The page scrolls to the table; the table then fills the screen and scrolls on its own. */
+.logs-body { flex: none; height: max(460px, calc(100vh - 150px)); }
 .filters { flex: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; display: grid; gap: 10px; }
 .filters .tf legend { font-size: 15px; margin-bottom: 4px !important; }
 .filter-row { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: flex-end; }
@@ -169,42 +170,34 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .dropdown-scroll { display: flex; justify-content: center; color: var(--primary); padding: 2px; cursor: default; }
 .filters .dropdown-trigger { min-height: 40px; }
 
-/* Logs page: log sets on the left, filters and table on the right */
-.logs-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 20px; align-items: start; }
+/* Logs page: source on top, then insights, filters and the table */
 .logs-title { flex: 1; min-width: 0; }
 .logs-head-sub { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
 .logs-head-actions { display: flex; gap: 10px; align-items: center; flex: none; }
-.log-sets {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 10px;
-  position: sticky; top: 16px; max-height: calc(100vh - 80px - 28px - 20px); overflow: auto;
-}
-.log-sets-head { font-size: 19px; margin: 0 6px 8px; }
-.log-sets-group { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 14px 6px 4px; }
-.log-sets-none { font-size: 15px; margin: 2px 6px; }
-.log-sets .alert { margin-top: 0; }
-.log-set-list, .log-set-files { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-.log-set-files { margin: 2px 0 6px 30px; border-left: 2px solid var(--line); padding-left: 6px; }
-.log-set-files > li.muted { font-size: 15px; padding: 4px 8px; }
-.log-set-row { display: flex; align-items: stretch; border-radius: 6px; }
-.log-set-row[data-current] { background: var(--primary); }
-.log-set-row[data-current] .log-set-pick, .log-set-row[data-current] .log-set-toggle { color: var(--on-primary); }
-.log-set-row[data-current] .log-set-sub { color: var(--on-primary); }
-.log-set-toggle {
-  flex: none; width: 30px; min-height: 44px; display: grid; place-items: center; background: none; border: 0;
-  color: var(--primary); cursor: pointer; border-radius: 6px; font-size: 14px;
-}
-.log-set-toggle:hover { background: var(--bg); }
-.log-set-pick, .log-set-file {
-  flex: 1; min-width: 0; display: grid; gap: 0; text-align: left; background: none; border: 0; border-radius: 6px;
-  padding: 6px 8px; min-height: 44px; cursor: pointer; color: inherit;
-}
-.log-set-row:not([data-current]) .log-set-pick:hover, .log-set-file:not([data-current]):hover { background: var(--bg); }
-.log-set-file { width: 100%; }
-.log-set-file[data-current] { background: var(--primary); color: var(--on-primary); }
-.log-set-file[data-current] .log-set-sub { color: var(--on-primary); }
-.log-set-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.log-set-sub { font-size: 15px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.log-set-tag { justify-self: start; margin-top: 2px; font-size: 13px; font-weight: 600; padding: 0 8px; border-radius: 999px; border: 1.5px solid var(--line); background: var(--panel); color: var(--text); }
-.log-set-tag.error { border-color: var(--error); background: var(--error-bg); }
-.log-set-tag.warn { border-color: var(--warn); background: var(--warn-bg); }
-.log-set-tag.info { border-color: var(--info); background: #e3f4f8; }
+.source-picker { flex: none; display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: flex-end; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px; }
+.source-picker .dropdown-field { min-width: 280px; flex: 1 1 280px; max-width: 520px; }
+.source-picker .dropdown-trigger { min-height: 44px; width: 100%; }
+.insights { flex: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 16px; }
+.insights > summary { cursor: pointer; font-weight: 600; font-size: 18px; min-height: 36px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.insights > summary .muted { font-weight: 400; }
+.insights-body { display: grid; gap: 10px; padding: 6px 0 4px; }
+.insight-facts { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 0; }
+.insight-facts > div { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.insight-facts dt { font-weight: 600; }
+.insight-facts dd { margin: 0; }
+.insight-levels { display: flex; gap: 6px; flex-wrap: wrap; }
+.insight-levels .chip { min-height: 36px; }
+.insight-levels .chip[data-on] { outline: 3px solid var(--primary); }
+.insight-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px 24px; }
+.insight-list h3 { margin: 0; font-size: 16px; }
+.insight-hint { margin: 0 0 4px; font-size: 14px; }
+.insight-list ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.insight-list li { position: relative; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 4px 0 8px; border-radius: 6px; overflow: hidden; }
+.insight-bar { position: absolute; inset: 0 auto 0 0; background: var(--bg); z-index: 0; }
+.insight-name, .insight-count, .insight-hide { position: relative; z-index: 1; }
+.insight-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insight-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+.insight-hide { min-height: 40px; padding: 0 12px; }
+
+/* Plain selects (run namespace, device kind) match the text inputs instead of the browser default */
+select:not(.tf-select select) { min-height: 44px; font: inherit; background: var(--bg); border: 1.5px solid var(--line); border-radius: 6px; padding: 6px 10px; color: inherit; }
