@@ -85,19 +85,19 @@ export function filterParams(f: LogFilter): URLSearchParams {
   return p;
 }
 
-export function searchEvents(f: LogFilter, cursor: string | null, limit = 100, privacy?: PrivacyOptions): Promise<LogPage> {
+export function searchEvents(f: LogFilter, cursor: string | null, limit = 100, privacy?: PrivacyOptions, signal?: AbortSignal): Promise<LogPage> {
   const p = filterParams(f);
   privacyParams(privacy).forEach((v, k) => p.set(k, v));
   p.set("limit", String(limit));
   if (cursor) p.set("cursor", cursor);
-  return apiFetch<LogPage>(`/api/logs/events?${p}`);
+  return apiFetch<LogPage>(`/api/logs/events?${p}`, { signal });
 }
 
 /** With mask on, the server leaves out device and category values that were flagged. */
-export function getFacets(f: LogFilter, mask = false) {
+export function getFacets(f: LogFilter, mask = false, signal?: AbortSignal) {
   const p = filterParams(f);
   if (mask) p.set("mask", "true");
-  return apiFetch<Facets>(`/api/logs/facets?${p}`);
+  return apiFetch<Facets>(`/api/logs/facets?${p}`, { signal });
 }
 
 export interface AcquisitionResult {

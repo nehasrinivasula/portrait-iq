@@ -44,7 +44,7 @@ export default function LogFilters({ frame, onFrame, filter, onFilter, facets, a
           <ToggleGroup.Root type="multiple" className="chips" aria-labelledby={`${uid}-src`}
             value={filter.sources} onValueChange={(v) => set({ sources: v })}>
             {facets?.sources.filter((s) => s.value).map((s) => (
-              <ToggleGroup.Item key={s.value} value={s.value!} className="chip">{s.value} <span className="muted">{s.count}</span></ToggleGroup.Item>
+              <ToggleGroup.Item key={s.value} value={s.value!} className="chip">{s.value} <span className="count">{s.count.toLocaleString()}</span></ToggleGroup.Item>
             ))}
             {facets && facets.sources.length === 0 && <span className="muted">No sources yet</span>}
           </ToggleGroup.Root>
@@ -54,9 +54,14 @@ export default function LogFilters({ frame, onFrame, filter, onFilter, facets, a
           <span className="filter-label" id={`${uid}-lvl`}>Level</span>
           <ToggleGroup.Root type="multiple" className="chips" aria-labelledby={`${uid}-lvl`}
             value={filter.severities} onValueChange={(v) => set({ severities: v as Severity[] })}>
-            {LEVELS.map((l) => (
-              <ToggleGroup.Item key={l} value={l} className={`chip lvl-${l}`}>{l}</ToggleGroup.Item>
-            ))}
+            {LEVELS.map((l) => {
+              const count = facets?.severities.find((s) => s.value === l)?.count;
+              return (
+                <ToggleGroup.Item key={l} value={l} className={`chip lvl-${l}`}>
+                  {l}{count !== undefined && <span className="count">{count.toLocaleString()}</span>}
+                </ToggleGroup.Item>
+              );
+            })}
           </ToggleGroup.Root>
         </div>
       </div>
@@ -80,17 +85,12 @@ export default function LogFilters({ frame, onFrame, filter, onFilter, facets, a
             onChange={(e) => set({ q: e.target.value })} {...fieldA11y(`${uid}-q`, qError)} />
           <FieldError id={`${uid}-q-err`} error={qError} />
         </div>
-        <button type="button" className="btn ghost" onClick={onClear} disabled={active.length === 0}>
-          Clear filters{active.length ? ` (${active.length})` : ""}
-        </button>
       </div>
 
-      <div className="active-filters" aria-live="polite">
-        <span className="filter-label">Active filters</span>
-        {active.length === 0 ? (
-          <span className="muted">None, showing all logs.</span>
-        ) : (
-          <>
+      {/* The live region stays mounted so screen readers hear filters come and go. */}
+      <div className="active-wrap" aria-live="polite">
+        {active.length > 0 && (
+          <div className="active-filters">
             <ul className="chips" aria-label="Active filters">
               {active.map((a) => (
                 <li key={a.id}>
@@ -101,8 +101,8 @@ export default function LogFilters({ frame, onFrame, filter, onFilter, facets, a
                 </li>
               ))}
             </ul>
-            <span className="muted">Logs must match every filter.</span>
-          </>
+            <button type="button" className="btn ghost clear-filters" onClick={onClear}>Clear all</button>
+          </div>
         )}
       </div>
     </section>

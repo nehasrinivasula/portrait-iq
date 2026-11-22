@@ -1,4 +1,4 @@
-import type { Facets, FacetValue, LogFilter, Severity } from "./logsApi";
+import type { Facets, FacetValue, LogFilter } from "./logsApi";
 
 // What is in the logs being viewed (this source, this file, these filters), so
 // the engineer sees the shape of the data before reading it: how many entries,
@@ -12,20 +12,19 @@ interface Props {
   masked: boolean;
 }
 
-const LEVELS: Severity[] = ["ERROR", "WARN", "INFO", "DEBUG"];
 const span = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" });
 const n = (v: number) => v.toLocaleString();
 const pct = (part: number, whole: number) => (whole ? Math.max(part ? 1 : 0, Math.round((part / whole) * 100)) : 0);
 const cut = (m: string) => (m.length > 90 ? `${m.slice(0, 90)}…` : m);
 
 export default function InsightsPanel({ facets, filter, onFilter, masked }: Props) {
-  if (!facets) return <div className="insights muted" role="status">Loading insights…</div>;
-  if (facets.total === 0) return <div className="insights muted" role="status">No entries match, so there is nothing to summarize.</div>;
+  if (!facets) return <div className="strip strip-row muted" role="status"><span className="strip-title">Insights</span> Loading…</div>;
+  if (facets.total === 0) return null;   // the table already says nothing matches
 
-  const level = (l: Severity) => facets.severities.find((s) => s.value === l)?.count ?? 0;
+  const level = (l: string) => facets.severities.find((s) => s.value === l)?.count ?? 0;
   const add = (key: "hideCategories" | "hideProcesses" | "hideMessages", v: string) =>
     onFilter({ ...filter, [key]: [...filter[key], v] });
-  const list = (title: string, hint: string, rows: FacetValue[] | undefined, key: "hideCategories" | "hideProcesses" | "hideMessages",
+  const list = (title: string, rows: FacetValue[] | undefined, key: "hideCategories" | "hideProcesses" | "hideMessages",
     show: (v: string) => string = (v) => v) => {
     const shown = (rows ?? []).filter((r) => r.value).slice(0, 3);
     if (shown.length === 0) return null;
@@ -33,7 +32,6 @@ export default function InsightsPanel({ facets, filter, onFilter, masked }: Prop
     return (
       <section className="insight-list" aria-label={title}>
         <h3>{title}</h3>
-        <p className="muted insight-hint">{hint}</p>
         <ul>
           {shown.map((r) => (
             <li key={r.value}>
@@ -51,41 +49,28 @@ export default function InsightsPanel({ facets, filter, onFilter, masked }: Prop
 
   const errors = level("ERROR"), warns = level("WARN");
   return (
-    <details className="insights">
+    <details className="strip">
       <summary>
-        Insights <span className="muted">{n(facets.total)} entries
-          {errors > 0 && <> · <strong style={{ color: "var(--error)" }}>{n(errors)} error{errors === 1 ? "" : "s"}</strong></>}
+        <span className="strip-title">Insights</span>
+        <span className="muted">{n(facets.total)} entries
+          {errors > 0 && <> · <strong className="text-error">{n(errors)} error{errors === 1 ? "" : "s"}</strong></>}
           {warns > 0 && <> · {n(warns)} warning{warns === 1 ? "" : "s"}</>}
         </span>
       </summary>
-      <div className="insights-body">
+      <div className="strip-body">
         <dl className="insight-facts">
           {facets.first_timestamp && facets.last_timestamp && (
             <div><dt>Covers</dt><dd>{span.format(new Date(facets.first_timestamp))} to {span.format(new Date(facets.last_timestamp))}</dd></div>
           )}
           <div><dt>Devices</dt><dd>{masked ? "Hidden while masking" : n(facets.distinct_devices)}</dd></div>
-          <div>
-            <dt>By level</dt>
-            <dd className="insight-levels">
-              {LEVELS.map((l) => level(l) > 0 && (
-                <button key={l} type="button" className={`chip lvl-${l}`} data-on={filter.severities.includes(l) || undefined}
-                  aria-pressed={filter.severities.includes(l)}
-                  onClick={() => onFilter({ ...filter, severities: filter.severities.includes(l)
-                    ? filter.severities.filter((s) => s !== l) : [...filter.severities, l] })}>
-                  {l} {n(level(l))}
-                </button>
-              ))}
-            </dd>
-          </div>
         </dl>
         {masked ? (
           <p className="muted">Repeated messages, categories and processes are hidden while PHI / PII masking is on.</p>
         ) : (
           <div className="insight-lists">
-            {list("Most repeated messages", "Same opening text, seen many times. Hide the ones that bury what matters.",
-              facets.repeated_messages, "hideMessages", cut)}
-            {list("Busiest categories", "The kind of event, by how often it appears.", facets.categories, "hideCategories")}
-            {list("Busiest processes", "The program that wrote the entry.", facets.processes, "hideProcesses")}
+            {list("Most repeated messages", facets.repeated_messages, "hideMessages", cut)}
+            {list("Busiest categories", facets.categories, "hideCategories")}
+            {list("Busiest processes", facets.processes, "hideProcesses")}
           </div>
         )}
       </div>

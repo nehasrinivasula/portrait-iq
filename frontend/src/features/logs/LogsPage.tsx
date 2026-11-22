@@ -11,7 +11,7 @@ import { defaultTimeFrame, filterRange, type TimeFrameChoice } from "./timeframe
 import PrivacyPanel from "../privacy/PrivacyPanel";
 import { noPrivacyOptions, type PrivacyOptions } from "../privacy/privacyApi";
 
-const DEBOUNCE_MS = 300;
+const TYPING_MS = 300;
 
 // Keyed on the value's JSON: callers pass a new object each render, and
 // restarting the timer on identity alone re-ran the search every 300 ms,
@@ -24,8 +24,15 @@ function useDebounced<T>(value: T, ms: number): T {
   return v;
 }
 
-// The source (all logs, an import, a run, one file) on top, then what is in it
-// (insights), the filters (always in view) and the log table, scrolling on its own.
+/** The same object until its JSON changes, so effects keyed on it run once per real change. */
+function useStable<T>(value: T): T {
+  const key = JSON.stringify(value);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => value, [key]);
+}
+
+// One toolbar (which logs, then how to narrow them), two one-line summaries
+// (insights, PHI / PII) that open for detail, then the table, scrolling on its own.
 export default function LogsPage() {
   const [params, setParams] = useSearchParams();
   const jobId = params.get("job");
@@ -45,22 +52,29 @@ export default function LogsPage() {
     return lastRange.current;
   }, [frame]);
 
-  const applied = useDebounced<LogFilter>({ ...filter, ...range, jobId, sourceFile: file ?? "" }, DEBOUNCE_MS);
+  // Only typed text waits for a pause; clicks (chips, dropdowns, dates) apply at once.
+  const q = useDebounced(filter.q, TYPING_MS);
+  const process = useDebounced(filter.process, TYPING_MS);
+  const applied = useStable<LogFilter>({ ...filter, q, process, ...range, jobId, sourceFile: file ?? "" });
 
   // Options come from the date range and run only, so picking one doesn't hide the others.
-  const optionScope = useDebounced({ ...emptyFilter(), ...range, jobId, sourceFile: file ?? "" }, DEBOUNCE_MS);
+  const optionScope = useStable({ ...emptyFilter(), ...range, jobId, sourceFile: file ?? "" });
   useEffect(() => {
-    let live = true;
-    getFacets(optionScope, privacy.mask).then((f) => live && setFacets(f)).catch(() => live && setFacets(null));
-    return () => { live = false; };
+    const ac = new AbortController();   // a newer scope cancels the older request instead of racing it
+    getFacets(optionScope, privacy.mask, ac.signal)
+      .then((f) => { if (!ac.signal.aborted) setFacets(f); })
+      .catch(() => { if (!ac.signal.aborted) setFacets(null); });
+    return () => ac.abort();
   }, [optionScope, reloadKey, privacy.mask]);
 
   // Insights follow every filter, unlike the dropdown options above, so hiding noise shows its effect.
   const [insights, setInsights] = useState<Facets | null>(null);
   useEffect(() => {
-    let live = true;
-    getFacets(applied, privacy.mask).then((f) => live && setInsights(f)).catch(() => live && setInsights(null));
-    return () => { live = false; };
+    const ac = new AbortController();
+    getFacets(applied, privacy.mask, ac.signal)
+      .then((f) => { if (!ac.signal.aborted) setInsights(f); })
+      .catch(() => { if (!ac.signal.aborted) setInsights(null); });
+    return () => ac.abort();
   }, [applied, reloadKey, privacy.mask]);
 
   const pick = (set: string | null, f: string | null) => {
@@ -102,15 +116,16 @@ export default function LogsPage() {
         </div>
       </div>
 
-      <SourcePicker selected={jobId} file={file} onSelect={pick} reloadKey={reloadKey} />
+      <div className="toolbar">
+        <SourcePicker selected={jobId} file={file} onSelect={pick} reloadKey={reloadKey} />
+        <LogFilters frame={frame} onFrame={setFrame} filter={filter} onFilter={setFilter} masked={privacy.mask}
+          facets={privacy.mask && facets ? { ...facets, devices: [], categories: [] } : facets} active={active} onRemove={onRemove} onClear={onClear} />
+      </div>
 
       <InsightsPanel facets={insights} filter={filter} onFilter={setFilter} masked={privacy.mask} />
 
       <PrivacyPanel jobId={jobId} options={privacy} onOptions={setPrivacy} reloadKey={reloadKey}
         onScanned={() => setReloadKey((k) => k + 1)} />
-
-      <LogFilters frame={frame} onFrame={setFrame} filter={filter} onFilter={setFilter} masked={privacy.mask}
-        facets={privacy.mask && facets ? { ...facets, devices: [], categories: [] } : facets} active={active} onRemove={onRemove} onClear={onClear} />
 
       <div className="logs-body">
         <LogTable filter={applied} reloadKey={reloadKey} onTotal={onTotal} privacy={privacy}
