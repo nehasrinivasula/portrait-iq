@@ -134,7 +134,7 @@ def test_remove_deletes_the_pod_and_the_files_and_the_state_is_clean(db, jobs_di
         ids=["pod:piq-tshark-aaaa", f"files:{dead.id}"], context="restart")
     assert [o.result for o in outcomes] == ["removed", "removed"]
     assert runner.deleted == ["piq-tshark-aaaa"]
-    assert not (jobs_dir / dead.id).exists()
+    assert not (jobs_dir / dead.id / "tshark").exists()   # what the run collected is gone; the folder stays for its export
     assert after.state == "clean"
 
 
@@ -295,7 +295,7 @@ def test_after_a_crash_the_pods_are_kept_until_the_engineer_chooses(db, jobs_dir
         db, actor="neha", session_id="s2", action="remove",
         ids=[i.id for i in status.pending], context="restart")
     assert [o.result for o in outcomes] == ["removed", "removed"]
-    assert runner.pods == {} and not (jobs_dir / job.id).exists()
+    assert runner.pods == {} and not (jobs_dir / job.id / "tshark").exists()
     assert after.state == "clean"
     assert "context=restart" in audit(db, "cleanup_choice")[0].detail and "state=clean" in audit(db, "cleanup_choice")[0].detail
 
