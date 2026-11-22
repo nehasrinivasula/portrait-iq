@@ -15,6 +15,11 @@
   --ok-bg: #d1f1e5;
   --warn-bg: #fdf3c4;
   --error-bg: #fce0d8;
+  --error-text: #b3361b;     /* --error is a fill/border colour; as text it is 2.6:1, this is 6:1 */
+  --line-strong: #8a8a8a;    /* borders of things you can click: 3.4:1 on white (WCAG non-text 3:1) */
+  --primary-hover: #4e1b88;
+  --primary-tint: #f1eaf9;
+  --ease-out: cubic-bezier(.23, 1, .32, 1);
   --font: "Source Sans Pro", Calibri, Arial, sans-serif;
 }
 
@@ -50,15 +55,21 @@ button, input { font: inherit; color: inherit; }
   padding: 11px 20px;
   font-weight: 600;
   cursor: pointer;
+  transition: transform 120ms var(--ease-out), background-color 150ms ease, border-color 150ms ease;
 }
+.btn:active:not(:disabled) { transform: scale(.97); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.ghost { background: transparent; color: var(--primary); }
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
+  .btn.ghost:hover:not(:disabled) { background: var(--primary-tint); border-color: var(--primary); }
+}
 
 .field label { display: block; font-weight: 600; font-size: 16px; margin-bottom: 3px; }
 .field input {
   width: 100%;
   background: var(--bg);
-  border: 1.5px solid var(--line);
+  border: 1.5px solid var(--line-strong);
   border-radius: 6px;
   padding: 9px 12px;
 }
@@ -76,3 +87,6 @@ button, input { font: inherit; color: inherit; }
   padding: 14px 24px; background: var(--primary); color: #fff;
 }
 .app-header .btn.ghost { color: #fff; border-color: #fff; }
+@media (hover: hover) and (pointer: fine) {
+  .app-header .btn.ghost:hover:not(:disabled) { background: rgba(255,255,255,.14); border-color: #fff; }
+}
