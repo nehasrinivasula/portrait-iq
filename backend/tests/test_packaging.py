@@ -338,3 +338,11 @@ def test_system_manifest_lists_every_troubleshooting_file(env):
     assert [m["key"] for m in manifest] == [k for k, _, _ in service.SYSTEM_ITEMS]
     missing = [m for m in manifest if m["status"] == "missing"]
     assert missing and all(m["needed"] for m in missing)     # each gap says what is needed
+
+
+def test_preview_lists_system_files_with_what_is_needed(env):
+    client, _ = env
+    sysf = {x["key"]: x for x in client.get("/api/jobs/job-1/package/preview").json()["system"]}
+    assert list(sysf) == [k for k, _, _ in service.SYSTEM_ITEMS]
+    assert sysf["wireshark_pcap"]["available"] is False or sysf["wireshark_pcap"]["needed"] is None
+    assert sysf["firewall"]["available"] is False and sysf["firewall"]["needed"]

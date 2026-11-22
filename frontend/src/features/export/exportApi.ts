@@ -51,6 +51,7 @@ export interface Preview {
   finished: boolean;
   events: number;
   tools: { tool: string; ok: boolean; files: number; error: string | null }[];
+  system: { key: string; label: string; available: boolean; needed: string | null }[];
   findings: number;
   privacy: {
     complete_for_packaging: boolean;

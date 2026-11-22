@@ -485,7 +485,8 @@ SYSTEM_ITEMS: list[tuple[str, str, str]] = [
     ("log_export_csv", "Log Export API logs (CSV)",
      "Included from CSVs already pulled from the Log Export API; needs a live pull (port 9200) when none exist."),
     ("cms_logs", "CMS logs via API",
-     "The CMS API endpoint, its auth and a client for it; none exist in this codebase yet."),
+     "CMS_BASE_URL set and the server reachable (and its auth, if any, which is not known yet). "
+     "Downloads the newest existing snap as a tar; a tar cannot be masked, so export with masking off."),
     ("prometheus", "Prometheus databases",
      "A collector that snapshots the Prometheus TSDB (admin snapshot API or copy from its volume) on the live cluster."),
     ("core_dumps", "Core Dump folder files",
@@ -495,22 +496,64 @@ SYSTEM_ITEMS: list[tuple[str, str, str]] = [
 ]
 
 
+def _add_cms_snap(ctx: _Ctx, sys_dir: Path, got: dict[str, list[str]], step: Step) -> None:
+    """The newest existing CMS snap, if the CMS is configured, reachable and masking is off."""
+    from app.config import settings
+    from app.sources.base import SourceError
+    from app.sources.cms_client import CmsClient
+    if not settings.cms_base_url:
+        return
+    if ctx.status.masked:
+        step.issues.append(Issue("CMS logs", "Left out: a tar cannot be masked. Export with masking off to include it."))
+        return
+    try:
+        client = CmsClient(settings.cms_base_url, timeout=settings.axone_timeout_seconds)
+        snaps = client.list_snaps()
+        if not snaps:
+            step.issues.append(Issue("CMS logs", "The CMS has no snaps yet; one must be generated there first."))
+            return
+        client.download(snaps[-1], sys_dir / "cms_logs" / snaps[-1])
+        got["cms_logs"].append(f"system/cms_logs/{snaps[-1]}")
+    except SourceError as e:
+        step.issues.append(Issue("CMS logs", str(e)))
+
+
+def _pcaps(job: Optional[Job]) -> list[tuple[str, Path]]:
+    """(tool, file) for each packet capture the run's tools saved; the tools step copies them to tools/<tool>/."""
+    if job is None:
+        return []
+    root = job_output_dir(job.id)
+    found = ((str(r.get("tool", "unknown")), root / a) for r in read_results(job.id) for a in r.get("artifact_paths", []))
+    return [(t, p) for t, p in found if p.suffix.lower() in (".pcap", ".pcapng") and _inside(p, root) and p.is_file()]
+
+
+def _csv_sources(db: Session, job: Optional[Job]) -> list[Path]:
+    """Log Export CSVs already pulled. They carry no run id, so only imported / all exports hold them."""
+    if job is not None:
+        return []
+    rows = db.scalars(select(AcquiredFileRecord).where(
+        AcquiredFileRecord.source == "axone", AcquiredFileRecord.status.in_(("acquired", "ingested")))).all()
+    return [p for p in (Path(r.local_path) for r in rows if r.local_path) if p.is_file()]
+
+
+def system_preview(db: Session, job: Optional[Job]) -> list[dict]:
+    """Per troubleshooting file: can an export collect it now, and if not, what is needed.
+    Same checks the export makes, without collecting anything."""
+    from app.config import settings
+    have = {"wireshark_pcap": bool(_pcaps(job)), "log_export_csv": bool(_csv_sources(db, job)),
+            "cms_logs": bool(settings.cms_base_url)}
+    return [{"key": k, "label": label, "available": have.get(k, False),
+             "needed": None if have.get(k) else needed} for k, label, needed in SYSTEM_ITEMS]
+
+
 def _step_system(ctx: _Ctx, step: Step) -> None:
     sys_dir = ctx.work / "system"
     got: dict[str, list[str]] = {k: [] for k, _, _ in SYSTEM_ITEMS}
-    if ctx.job is not None:      # captures the run's tool already saved sit under tools/; point at them
-        root = job_output_dir(ctx.job.id)
-        for r in read_results(ctx.job.id):
-            got["wireshark_pcap"] += [f"tools/{r.get('tool', 'unknown')}/{Path(a).name}" for a in r.get("artifact_paths", [])
-                                      if Path(a).suffix.lower() in (".pcap", ".pcapng") and _inside(root / a, root)
-                                      and (root / a).is_file()]
-    if ctx.job is None:          # pulled CSVs carry no run id, so only imported / all exports can hold them
-        rows = ctx.db.scalars(select(AcquiredFileRecord).where(
-            AcquiredFileRecord.source == "axone", AcquiredFileRecord.status.in_(("acquired", "ingested")))).all()
-        for row in rows:
-            src = Path(row.local_path) if row.local_path else None
-            if src and src.is_file() and _copy_artifact(src, sys_dir / "log_export_csv" / src.name, ctx.status.masked):
-                got["log_export_csv"].append(f"system/log_export_csv/{src.name}")
+    got["wireshark_pcap"] = [f"tools/{t}/{p.name}" for t, p in _pcaps(ctx.job)]
+    for src in _csv_sources(ctx.db, ctx.job):
+        if _copy_artifact(src, sys_dir / "log_export_csv" / src.name, ctx.status.masked):
+            got["log_export_csv"].append(f"system/log_export_csv/{src.name}")
+    _add_cms_snap(ctx, sys_dir, got, step)
     items = [{"key": k, "label": label, "status": "included" if got[k] else "missing",
               "files": got[k], "needed": None if got[k] else needed} for k, label, needed in SYSTEM_ITEMS]
     _write_json(sys_dir / "manifest.json", items)
