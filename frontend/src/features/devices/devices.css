@@ -14,10 +14,13 @@
   border: 1.5px solid var(--line); border-radius: 6px; background: var(--panel); transition: border-color 150ms ease; }
 .device.selected { border-color: var(--primary); background: var(--primary-tint); }
 .device-main { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; }
-.device-main code { font-size: 16px; color: var(--muted); }
-.device-actions { display: flex; gap: 8px; align-items: center; flex: none; }
-.device-actions select { min-height: 40px; }
-.device-actions .btn { min-height: 40px; padding: 6px 16px; min-width: 96px; }
+.device-main code { font-size: 17px; }
+/* The role reads as a label with an arrow; the box only shows on hover or focus, since it's rarely changed. */
+.device-role { flex: none; width: 130px; }
+.device .device-role select { width: 100%; min-height: 40px; font-weight: 600; border-color: transparent; background-color: transparent; }
+.device .device-role select:hover, .device .device-role select:focus-visible { border-color: var(--line-strong); background-color: var(--bg); }
+.device .btn, .device-target { flex: none; min-height: 40px; min-width: 140px; padding: 6px 16px; }
+.device-target { display: inline-flex; align-items: center; justify-content: center; font-weight: 600; color: var(--primary); }
 @media (max-width: 560px) { .device { flex-wrap: wrap; } }
 .sweep-option { display: flex; gap: 10px; align-items: flex-start; font-weight: 600; }
 .sweep-option input { width: 20px; height: 20px; margin-top: 3px; flex: none; accent-color: var(--primary); }
