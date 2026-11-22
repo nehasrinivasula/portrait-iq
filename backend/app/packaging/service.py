@@ -1,6 +1,8 @@
 """
-Build the export zip for one run (SCRUM-61), step by step, so the UI can show
-what is happening and what went wrong.
+Build the export zip for a set of logs (SCRUM-61), step by step, so the UI can
+show what is happening and what went wrong. A set is one run (its job id),
+the logs imported without a run (UNASSIGNED), or every log on this machine
+(ALL), so logs can be exported whether or not a run was ever made.
 
 Every package has the same layout (A-2, SCRUM-63), whether or not a section
 has anything in it:
@@ -11,6 +13,8 @@ has anything in it:
     privacy/report.json      the PHI/PII scan report for the run
     tools/results.json       each diagnostic's summary, warnings or error
     tools/<tool>/...         the files each diagnostic produced
+    system/manifest.json     the 8 troubleshooting files teams ask for: included, or missing and what is needed
+    system/<item>/...        the ones that could be collected
     findings/findings.json   what the analysis engine found
     audit/audit.jsonl        the audit entries that mention this run
 
@@ -42,16 +46,17 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AuditLogEntry, Job
+from app.models import AcquiredFileRecord, AuditLogEntry, Job, Signal
 from app.orchestrator.jobs import job_output_dir, read_results
 from app.privacy import service as privacy
 from app.privacy.scanner import SCANNER_VERSION, category_group, mask_text, scan_text
 from app.storage import events as store
-from app.storage.filters import EventFilter
+from app.storage.filters import UNASSIGNED, EventFilter
 
 log = logging.getLogger(__name__)
 
 FORMAT_VERSION = 1
+ALL = "all"                        # every log on this machine
 FINISHED = ("done", "partial", "failed", "cleanup_failed", "interrupted")
 
 # (id, label). Labels are what the engineer reads, in the style of the run steps.
@@ -59,13 +64,14 @@ STEPS: list[tuple[str, str]] = [
     ("check", "Checking the PHI / PII scan"),
     ("logs", "Adding the logs"),
     ("tools", "Adding the diagnostic results"),
+    ("system", "Adding the troubleshooting files"),
     ("findings", "Adding the findings"),
     ("audit", "Adding the audit trail"),
     ("metadata", "Writing the package details"),
     ("zip", "Building the zip file"),
 ]
 
-SECTIONS = ["logs", "privacy", "tools", "findings", "audit"]
+SECTIONS = ["logs", "privacy", "tools", "system", "findings", "audit"]
 TEXT_LIMIT = 50 * 1024 * 1024      # larger tool files are copied, not scanned line by line
 BINARY_SUFFIXES = {".pcap", ".pcapng", ".gz", ".zip", ".tar", ".bin", ".png", ".jpg"}
 
@@ -75,6 +81,29 @@ _lock = threading.Lock()
 
 class PackageError(Exception):
     """A request that cannot be met; the message is safe to show."""
+
+
+def scope_kind(scope: str) -> str:
+    return "imported" if scope == UNASSIGNED else "all" if scope == ALL else "run"
+
+
+def scope_title(scope: str) -> str:
+    return {"imported": "Imported logs", "all": "All logs"}.get(scope_kind(scope), "Run")
+
+
+def _event_scope(scope: str) -> Optional[str]:
+    """The job filter for event queries: None means every event."""
+    return None if scope == ALL else scope
+
+
+def find_job(db: Session, scope: str) -> Optional[Job]:
+    """The run behind a scope; None for imported or all logs. LookupError for an unknown run."""
+    if scope in (UNASSIGNED, ALL):
+        return None
+    job = db.get(Job, scope)
+    if job is None:
+        raise LookupError(scope)
+    return job
 
 
 @dataclass
@@ -190,15 +219,17 @@ def readiness(db: Session, job_id: str) -> Readiness:
     """The same check the Logs page's PHI/PII panel shows (complete_for_packaging).
     Failing it does not stop an export; the export carries the warnings instead."""
     from app.storage.routes import _ingest_complete   # the one definition of "all stored"
-    report = privacy.privacy_report(db, job_id)
-    complete = _ingest_complete(db, job_id)
+    report = privacy.privacy_report(db, _event_scope(job_id))
+    complete = _ingest_complete(db, _event_scope(job_id))
     warnings = []
     if report.unscanned_events:
         warnings.append(f"{report.unscanned_events:,} log entries have not been scanned for PHI / PII. "
                         "Masking still checks them as they are exported, but the scan report will not count them.")
     if not complete and report.events:
-        warnings.append("Not every log file of this run was stored completely. "
+        warnings.append("Not every log file here was stored completely. "
                         "The Logs page's completeness report lists which files and rows are missing.")
+    if job_id == ALL and not complete and not report.events:
+        complete = True    # nothing stored anywhere: nothing can be missing
     return Readiness(
         complete_for_packaging=report.all_scanned and complete,
         all_scanned=report.all_scanned, ingest_complete=complete, events=report.events,
@@ -211,11 +242,12 @@ def readiness(db: Session, job_id: str) -> Readiness:
 def start(db: Session, job_id: str, *, masked: bool, requested_by: str) -> PackageStatus:
     """Check the run can be exported and record the export as preparing.
     The caller then runs build() in the background."""
-    job = db.get(Job, job_id)
-    if job is None:
-        raise LookupError(job_id)
-    if job.status not in FINISHED:
+    job = find_job(db, job_id)
+    if job is not None and job.status not in FINISHED:
         raise PackageError("This run is still going. Export it once it has finished.")
+    if job is None and not store.count_events(db, EventFilter(job_id=_event_scope(job_id))):
+        raise PackageError("There are no imported logs to export yet." if job_id == UNASSIGNED
+                           else "There are no logs on this machine to export yet.")
     with _lock:
         if job_id in _building:
             raise PackageError("An export of this run is already being prepared.")
@@ -236,8 +268,7 @@ def build(db: Session, job_id: str) -> PackageStatus:
         shutil.rmtree(work, ignore_errors=True)
         for name in SECTIONS:
             (work / name).mkdir(parents=True, exist_ok=True)
-        job = db.get(Job, job_id)
-        ctx = _Ctx(db=db, job=job, work=work, status=status)
+        ctx = _Ctx(db=db, scope=job_id, job=find_job(db, job_id), work=work, status=status)
         for step in status.steps:
             if step.id == "zip":
                 continue
@@ -276,7 +307,8 @@ class _Fatal(Exception):
 @dataclass
 class _Ctx:
     db: Session
-    job: Job
+    scope: str                 # a job id, UNASSIGNED or ALL
+    job: Optional[Job]         # None for imported or all logs
     work: Path
     status: PackageStatus
     readiness: Optional[Readiness] = None
@@ -292,7 +324,7 @@ def _run_step(ctx: _Ctx, step: Step, func, *, fatal: bool = False) -> None:
         step.status = "failed"
         step.issues.append(Issue(step.label, str(e)))
     except Exception as e:  # noqa: BLE001  type only: an unexpected error's text may hold anything
-        log.exception("package %s: step %s failed", ctx.job.id, step.id)
+        log.exception("package %s: step %s failed", ctx.scope, step.id)
         step.status = "failed"
         step.issues.append(Issue(step.label, f"Unexpected error ({type(e).__name__}). The server log has the details."))
     _save(ctx.status)
@@ -306,9 +338,9 @@ def _write_json(path: Path, data: Any) -> None:
 
 
 def _step_check(ctx: _Ctx, step: Step) -> None:
-    r = readiness(ctx.db, ctx.job.id)
+    r = readiness(ctx.db, ctx.scope)
     ctx.readiness = r
-    report = privacy.privacy_report(ctx.db, ctx.job.id)
+    report = privacy.privacy_report(ctx.db, _event_scope(ctx.scope))
     _write_json(ctx.work / "privacy" / "report.json", {
         "scanner_version": report.scanner_version, "events": report.events,
         "scanned_events": report.scanned_events, "unscanned_events": report.unscanned_events,
@@ -320,7 +352,7 @@ def _step_check(ctx: _Ctx, step: Step) -> None:
         step.issues.append(Issue("PHI / PII scan", w))
         ctx.status.warnings.append(w)
     if not r.events:
-        step.detail = "This run has no logs to scan."
+        step.detail = "There are no logs to scan."
     elif r.complete_for_packaging:
         step.detail = f"All {r.events:,} log entries scanned; {r.flagged_events:,} flagged."
     else:
@@ -332,24 +364,30 @@ def _step_logs(ctx: _Ctx, step: Step) -> None:
     masked = ctx.status.masked
     n = flagged = 0
     with (ctx.work / "logs" / "events.jsonl").open("w") as fh:
-        for e in store.iter_events(ctx.db, EventFilter(job_id=ctx.job.id)):
+        for e in store.iter_events(ctx.db, EventFilter(job_id=_event_scope(ctx.scope))):
             out = _event_out(e, mask=masked)
             flagged += bool(out.masked)
             fh.write(json.dumps(out.model_dump(mode="json")) + "\n")
             n += 1
-    summary = store.collection_summary(ctx.db, ctx.job.id)
-    files = summary.files if summary else []
+    if ctx.scope == ALL:
+        # Every log set on the machine, each with its own per-file summary.
+        sets = [store.collection_summary(ctx.db, c.job_id) for c in store.list_collections(ctx.db, limit=1_000_000)]
+        sets = [x for x in sets if x is not None]
+    else:
+        one = store.collection_summary(ctx.db, ctx.scope)
+        sets = [one] if one else []
+    files = [f for x in sets for f in x.files]
     _write_json(ctx.work / "logs" / "summary.json", {
         "events": n,
-        "by_source": summary.by_source if summary else [],
-        "by_severity": summary.by_severity if summary else [],
-        "files": [asdict(f) for f in files],
-        "issues": [asdict(i) for i in summary.issues] if summary else [],
+        "sets": [{
+            "id": x.job_id, "events": x.events_stored, "by_source": x.by_source, "by_severity": x.by_severity,
+            "files": [asdict(f) for f in x.files], "issues": [asdict(i) for i in x.issues],
+        } for x in sets],
     })
     ctx.status.contents.append(ContentEntry("logs/", "Standardized log entries and a per-file summary",
                                             files=2, events=n, masked=masked))
     if not n:
-        step.detail = "This run has no logs. The logs folder is in the zip, empty."
+        step.detail = "No logs. The logs folder is in the zip, empty."
         return
     step.detail = f"{n:,} log entries from {len(files)} file{'s' if len(files) != 1 else ''}"
     step.detail += f"; {flagged:,} masked." if masked else "; not masked."
@@ -391,8 +429,14 @@ def _copy_artifact(src: Path, dest: Path, masked: bool) -> bool:
 
 
 def _step_tools(ctx: _Ctx, step: Step) -> None:
-    results = read_results(ctx.job.id)
     tools_dir = ctx.work / "tools"
+    if ctx.job is None:
+        _write_json(tools_dir / "results.json", [])
+        ctx.status.contents.append(ContentEntry("tools/", "Diagnostic results (exported with each run)", files=1))
+        step.detail = ("Imported logs have no diagnostic results." if ctx.scope == UNASSIGNED
+                       else "Diagnostic results are exported with each run, from its own export.")
+        return
+    results = read_results(ctx.job.id)
     _write_json(tools_dir / "results.json", results)
     job_root = job_output_dir(ctx.job.id)
     copied = 0
@@ -428,28 +472,100 @@ def _step_tools(ctx: _Ctx, step: Step) -> None:
         step.detail = f"{ran - failed} of {ran} diagnostic{'s' if ran != 1 else ''} ran; {copied} file{'s' if copied != 1 else ''} added."
 
 
+# The troubleshooting files teams ask for. (key, what it is, what is needed to collect it.)
+# Only the two with a collector or source today are filled in; the rest are listed as missing
+# in system/manifest.json so the gap is visible in every export.
+SYSTEM_ITEMS: list[tuple[str, str, str]] = [
+    ("rti_monitor_ser", "RTI Monitor *.ser",
+     "A collector that exports the Monitor's .ser from the live RTI host (needs cluster/host access)."),
+    ("rti_adminconsole_xml", "RTI AdminConsole *.xml (discovery details)",
+     "A collector that exports the AdminConsole discovery XML from the live RTI host."),
+    ("wireshark_pcap", "Wireshark saved *.pcap",
+     "Included when the run's packet-capture tool produced one; hand-saved captures need an upload linked to the run."),
+    ("log_export_csv", "Log Export API logs (CSV)",
+     "Included from CSVs already pulled from the Log Export API; needs a live pull (port 9200) when none exist."),
+    ("cms_logs", "CMS logs via API",
+     "The CMS API endpoint, its auth and a client for it; none exist in this codebase yet."),
+    ("prometheus", "Prometheus databases",
+     "A collector that snapshots the Prometheus TSDB (admin snapshot API or copy from its volume) on the live cluster."),
+    ("core_dumps", "Core Dump folder files",
+     "A collector that reads the core dump folder on the live node(s); its path on the system is not yet known."),
+    ("firewall", "Firewall settings (printed)",
+     "A collector that prints the firewall rules on the live node(s) (command and privileges to be confirmed)."),
+]
+
+
+def _step_system(ctx: _Ctx, step: Step) -> None:
+    sys_dir = ctx.work / "system"
+    got: dict[str, list[str]] = {k: [] for k, _, _ in SYSTEM_ITEMS}
+    if ctx.job is not None:      # captures the run's tool already saved sit under tools/; point at them
+        root = job_output_dir(ctx.job.id)
+        for r in read_results(ctx.job.id):
+            got["wireshark_pcap"] += [f"tools/{r.get('tool', 'unknown')}/{Path(a).name}" for a in r.get("artifact_paths", [])
+                                      if Path(a).suffix.lower() in (".pcap", ".pcapng") and _inside(root / a, root)
+                                      and (root / a).is_file()]
+    if ctx.job is None:          # pulled CSVs carry no run id, so only imported / all exports can hold them
+        rows = ctx.db.scalars(select(AcquiredFileRecord).where(
+            AcquiredFileRecord.source == "axone", AcquiredFileRecord.status.in_(("acquired", "ingested")))).all()
+        for row in rows:
+            src = Path(row.local_path) if row.local_path else None
+            if src and src.is_file() and _copy_artifact(src, sys_dir / "log_export_csv" / src.name, ctx.status.masked):
+                got["log_export_csv"].append(f"system/log_export_csv/{src.name}")
+    items = [{"key": k, "label": label, "status": "included" if got[k] else "missing",
+              "files": got[k], "needed": None if got[k] else needed} for k, label, needed in SYSTEM_ITEMS]
+    _write_json(sys_dir / "manifest.json", items)
+    n = sum(len(v) for v in got.values())
+    ctx.status.contents.append(ContentEntry("system/", "Troubleshooting files, and which ones could not be collected",
+                                            files=n + 1, masked=ctx.status.masked))
+    for i in items:
+        if i["status"] == "missing":
+            step.issues.append(Issue(i["label"], f"Not collected. {i['needed']}"))
+    step.detail = f"{sum(1 for i in items if i['status'] == 'included')} of {len(items)} items collected; the rest are listed in system/manifest.json."
+
+
 def _step_findings(ctx: _Ctx, step: Step) -> None:
     from app.analysis.findings import findings_for     # each finding with its evidence (PHI/PII masked)
-    signals = findings_for(ctx.db, ctx.job.id)
-    _write_json(ctx.work / "findings" / "findings.json", [s.model_dump(mode="json") for s in signals])
+    if ctx.scope == UNASSIGNED:
+        found: list[tuple[str, Any]] = []
+    else:
+        if ctx.scope == ALL:
+            job_ids = sorted(set(ctx.db.scalars(select(Signal.job_id)).all()))
+        else:
+            job_ids = [ctx.scope]
+        found = [(jid, f) for jid in job_ids for f in findings_for(ctx.db, jid)]
+    _write_json(ctx.work / "findings" / "findings.json",
+                [{"run": jid, **f.model_dump(mode="json")} for jid, f in found])
     ctx.status.contents.append(ContentEntry("findings/findings.json", "What the analysis found, with the evidence for each",
                                             files=1))
-    step.detail = f"{len(signals)} finding{'s' if len(signals) != 1 else ''}." if signals else "No findings for this run."
+    none = "Imported logs are not analysed for findings." if ctx.scope == UNASSIGNED else "No findings."
+    step.detail = f"{len(found)} finding{'s' if len(found) != 1 else ''}." if found else none
 
 
 def _step_audit(ctx: _Ctx, step: Step) -> None:
-    pattern = re.compile(rf"\bjob={re.escape(ctx.job.id)}(\s|$)")
-    rows = ctx.db.scalars(
-        select(AuditLogEntry).where(AuditLogEntry.detail.like(f"%job={ctx.job.id}%")).order_by(AuditLogEntry.id)
-    ).all()
+    if ctx.scope == ALL:
+        rows, keep = ctx.db.scalars(select(AuditLogEntry).order_by(AuditLogEntry.id)).all(), (lambda a: True)
+    elif ctx.scope == UNASSIGNED:
+        # Imports carry no run id: the import actions and this set's own exports.
+        rows = ctx.db.scalars(select(AuditLogEntry).where(AuditLogEntry.action.in_(
+            ("acquire_logs", "upload", "package_create", "package_ready", "package_failed", "package_download")
+        )).order_by(AuditLogEntry.id)).all()
+        own = re.compile(rf"\bjob={UNASSIGNED}(\s|$)")
+        keep = lambda a: not a.action.startswith("package_") or bool(a.detail and own.search(a.detail))  # noqa: E731
+    else:
+        pattern = re.compile(rf"\bjob={re.escape(ctx.scope)}(\s|$)")
+        rows = ctx.db.scalars(
+            select(AuditLogEntry).where(AuditLogEntry.detail.like(f"%job={ctx.scope}%")).order_by(AuditLogEntry.id)
+        ).all()
+        keep = lambda a: bool(a.detail and pattern.search(a.detail))  # noqa: E731
     n = 0
     with (ctx.work / "audit" / "audit.jsonl").open("w") as fh:
         for a in rows:
-            if a.detail and pattern.search(a.detail):
+            if keep(a):
                 fh.write(json.dumps({"timestamp": _utc(a.timestamp), "actor": a.actor, "session_id": a.session_id,
                                      "action": a.action, "detail": a.detail}) + "\n")
                 n += 1
-    ctx.status.contents.append(ContentEntry("audit/audit.jsonl", "Audit entries for this run", files=1, events=n))
+    what = {"run": "this run", "imported": "the imports", "all": "this machine"}[scope_kind(ctx.scope)]
+    ctx.status.contents.append(ContentEntry("audit/audit.jsonl", f"Audit entries for {what}", files=1, events=n))
     step.detail = f"{n} audit entr{'ies' if n != 1 else 'y'}."
 
 
@@ -457,9 +573,11 @@ def _step_metadata(ctx: _Ctx, step: Step) -> None:
     job = ctx.job
     _write_json(ctx.work / "metadata.json", {
         "format_version": FORMAT_VERSION,
-        "run": {"id": job.id, "mode": job.mode, "status": job.status, "tools": json.loads(job.tools or "[]"),
-                "requested_by": job.requested_by, "started_at": _utc(job.created_at),
-                "finished_at": _utc(job.finished_at)},
+        "scope": scope_kind(ctx.scope),
+        "run": None if job is None else {
+            "id": job.id, "mode": job.mode, "status": job.status, "tools": json.loads(job.tools or "[]"),
+            "requested_by": job.requested_by, "started_at": _utc(job.created_at),
+            "finished_at": _utc(job.finished_at)},
         "export": {"exported_by": ctx.status.requested_by, "exported_at": ctx.status.started_at,
                    "masked": ctx.status.masked, "scanner_version": SCANNER_VERSION,
                    "steps": [{"id": s.id, "status": s.status, "detail": s.detail,
@@ -467,14 +585,16 @@ def _step_metadata(ctx: _Ctx, step: Step) -> None:
                    "warnings": ctx.status.warnings},
         "layout": [c.path for c in ctx.status.contents],
     })
-    ctx.status.contents.insert(0, ContentEntry("metadata.json", "The run, this export and its warnings", files=1))
-    step.detail = "Run, export and environment details."
+    ctx.status.contents.insert(0, ContentEntry("metadata.json", "The run, this export and its warnings" if job
+                                               else "This export and its warnings", files=1))
+    step.detail = "Run, export and environment details." if job else "Export and environment details."
 
 
 def _write_zip(ctx: _Ctx, step: Step) -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
-    name = f"portrait-iq-{ctx.job.id[:8]}-{stamp}.zip"
-    dest = package_dir(ctx.job.id) / name
+    label = ctx.job.id[:8] if ctx.job else {"imported": "imported-logs", "all": "all-logs"}[scope_kind(ctx.scope)]
+    name = f"portrait-iq-{label}-{stamp}.zip"
+    dest = package_dir(ctx.scope) / name
     tmp = dest.with_suffix(".part")
     try:
         with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -485,7 +605,7 @@ def _write_zip(ctx: _Ctx, step: Step) -> None:
                 else:
                     zf.write(path, arc)
         tmp.replace(dest)
-        for old in package_dir(ctx.job.id).glob("*.zip"):
+        for old in package_dir(ctx.scope).glob("*.zip"):
             if old != dest:
                 old.unlink(missing_ok=True)      # one package per run, replaced only once the new one exists
     except OSError as e:
@@ -501,6 +621,6 @@ def _write_zip(ctx: _Ctx, step: Step) -> None:
 
 
 _STEP_FUNCS = {
-    "check": _step_check, "logs": _step_logs, "tools": _step_tools,
+    "check": _step_check, "logs": _step_logs, "tools": _step_tools, "system": _step_system,
     "findings": _step_findings, "audit": _step_audit, "metadata": _step_metadata,
 }

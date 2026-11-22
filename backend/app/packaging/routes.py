@@ -1,5 +1,7 @@
 """
-/api/jobs/{id}/package: export a finished run as one zip (SCRUM-61).
+/api/jobs/{id}/package: export a set of logs as one zip (SCRUM-61). {id} is a
+run's job id, "unassigned" for logs imported without a run, or "all" for
+every log on this machine, so there is always something to export.
 
     GET  .../package/preview    what an export would hold, and the PHI/PII check
     POST .../package            start an export (masked unless mask=false); 202
@@ -19,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.audit import log_action
 from app.auth import User, get_active_user, get_unlocked_user
 from app.db import SessionLocal, get_db
-from app.models import Job, Signal
+from app.models import Signal
 from app.orchestrator.jobs import read_results
 from app.packaging import service
 
@@ -82,7 +84,9 @@ class PreviewPrivacyOut(BaseModel):
 
 class PreviewOut(BaseModel):
     job_id: str
-    job_status: str
+    scope: str                       # run | imported | all
+    title: str                       # "Run", "Imported logs" or "All logs"
+    job_status: Optional[str]        # None unless a run
     finished: bool
     events: int
     tools: list[PreviewToolOut]
@@ -109,11 +113,12 @@ def _out(s: service.PackageStatus) -> PackageOut:
     )
 
 
-def _job(db: Session, job_id: str) -> Job:
-    job = db.get(Job, job_id)
-    if job is None:
-        raise HTTPException(404, "Run not found.")
-    return job
+def _job(db: Session, job_id: str):
+    """The run behind the id, or None for imported / all logs. 404 for an unknown run."""
+    try:
+        return service.find_job(db, job_id)
+    except LookupError:
+        raise HTTPException(404, "Run not found.") from None
 
 
 @router.get("/jobs/{job_id}/package/preview", response_model=PreviewOut)
@@ -121,15 +126,19 @@ def preview(job_id: str, db: Session = Depends(get_db), user: User = Depends(get
     job = _job(db, job_id)
     r = service.readiness(db, job_id)
     tools = []
-    for res in read_results(job_id):
+    for res in (read_results(job_id) if job else []):
         err = res.get("error")
         tools.append(PreviewToolOut(tool=str(res.get("tool", "unknown")), ok=err is None,
                                     files=len(res.get("artifact_paths", [])), error=err))
-    findings = db.query(Signal).filter(Signal.job_id == job_id).count()
+    if job is not None:
+        findings = db.query(Signal).filter(Signal.job_id == job_id).count()
+    else:
+        findings = db.query(Signal).count() if job_id == service.ALL else 0
     last = service.load_status(job_id)
     log_action(db, user.id, "package_preview", detail=f"job={job_id}", session_id=user.session_id)
     return PreviewOut(
-        job_id=job_id, job_status=job.status, finished=job.status in service.FINISHED, events=r.events,
+        job_id=job_id, scope=service.scope_kind(job_id), title=service.scope_title(job_id),
+        job_status=job.status if job else None, finished=job is None or job.status in service.FINISHED, events=r.events,
         tools=tools, findings=findings,
         privacy=PreviewPrivacyOut(complete_for_packaging=r.complete_for_packaging, all_scanned=r.all_scanned,
                                   ingest_complete=r.ingest_complete, flagged_events=r.flagged_events,
