@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExportStep, Package } from "./exportApi";
-import { formatBytes, headline, issueCount, returnTarget, shortHash, stepPosition } from "./exportView";
+import { formatBytes, headline, issueCount, returnTarget, scopeText, shortHash, stepPosition } from "./exportView";
 
 const step = (id: string, status: ExportStep["status"], issues = 0): ExportStep => ({
   id, label: `Step ${id}`, status, detail: null,
@@ -18,6 +18,17 @@ describe("returnTarget", () => {
     expect(returnTarget("logs", "job 1")).toEqual({ to: "/logs?job=job%201", label: "Back to Logs" });
     expect(returnTarget("run", "j")).toEqual({ to: "/run", label: "Back to Run diagnostics" });
     expect(returnTarget(null, "j").to).toBe("/run");
+    expect(returnTarget("logs", "all").to).toBe("/logs");
+    expect(returnTarget("logs", "unassigned").to).toBe("/logs?job=unassigned");
+  });
+});
+
+describe("scopeText", () => {
+  it("names what is exported", () => {
+    expect(scopeText("run", "abcdef0123").heading).toBe("Export run");
+    expect(scopeText("run", "abcdef0123").about).toContain("Run abcdef01");
+    expect(scopeText("imported", "unassigned").heading).toBe("Export imported files");
+    expect(scopeText("all", "all").heading).toBe("Export all logs");
   });
 });
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { ApiError } from "../../api";
 import { downloadPackage, getPackage, getPreview, startExport, type Package, type Preview } from "./exportApi";
-import { formatBytes, headline, isPreparing, returnTarget } from "./exportView";
+import { formatBytes, headline, isPreparing, logsLink, returnTarget, scopeText } from "./exportView";
 import { formatElapsed, parseServerTime } from "../plugins/progress";
 import ExportSteps from "./ExportSteps";
 import DownloadDialog from "./DownloadDialog";
@@ -10,8 +10,9 @@ import "./export.css";
 
 const POLL_MS = 1000;
 
-// One page per run (SCRUM-61): review what goes in the zip, watch it being
-// prepared, then download it. Opened from Run diagnostics or Logs; ?from= says which.
+// One page per set of logs (SCRUM-61): a run, the imported files, or all logs.
+// Review what goes in the zip, watch it being prepared, then download it.
+// Opened from Run diagnostics or Logs; ?from= says which.
 export default function ExportPage() {
   const { jobId = "" } = useParams<{ jobId: string }>();
   const [params] = useSearchParams();
@@ -43,7 +44,7 @@ export default function ExportPage() {
         // An export still being prepared is shown straight away, e.g. after a reload.
         if (isPreparing(p.package)) setReviewing(false);
       })
-      .catch((e) => { if (live) setLoadError(e instanceof ApiError && e.status === 404 ? "This run was not found." : "Couldn't load this run."); });
+      .catch((e) => { if (live) setLoadError(e instanceof ApiError && e.status === 404 ? "This run was not found." : "Couldn't load what to export."); });
     return () => { live = false; };
   }, [jobId, loadKey]);
 
@@ -105,7 +106,7 @@ export default function ExportPage() {
     return (
       <>
         <Link to={back.to}>{back.label}</Link>
-        <h1>Export run</h1>
+        <h1>Export</h1>
         <div className="alert error" role="alert">
           <strong>{loadError}</strong>
           <button type="button" className="btn ghost" onClick={() => setLoadKey((k) => k + 1)}>Try again</button>
@@ -113,13 +114,14 @@ export default function ExportPage() {
       </>
     );
   }
-  if (!preview) return <><h1>Export run</h1><p className="muted" role="status">Loading…</p></>;
+  if (!preview) return <><h1>Export</h1><p className="muted" role="status">Loading…</p></>;
 
+  const { heading, about } = scopeText(preview.scope, jobId);
   return (
     <div className="export-page">
       <Link to={back.to}>{back.label}</Link>
-      <h1>Export run</h1>
-      <p className="muted">Run <code>{jobId.slice(0, 8)}</code> · all its logs, diagnostic results and findings in one zip file.</p>
+      <h1>{heading}</h1>
+      <p className="muted">{about}</p>
 
       {reviewing || !pkg
         ? <Review preview={preview} mask={mask} onMask={setMask} starting={starting} startError={startError}
@@ -147,12 +149,19 @@ interface ReviewProps {
 function Review({ preview: p, mask, onMask, starting, startError, onStart, onShowLast, onDownloadLast, back }: ReviewProps) {
   const last = p.package;
   const privacyOk = p.privacy.complete_for_packaging || p.events === 0;
+  const isRun = p.scope === "run";
   return (
     <>
       {!p.finished && (
         <div className="alert info" role="status">
           <strong>This run is still going</strong>
           You can export it once it has finished.
+        </div>
+      )}
+      {!isRun && p.events === 0 && (
+        <div className="alert info" role="status">
+          <strong>Nothing to export yet</strong>
+          {p.scope === "imported" ? "Import log files on the Logs page first." : "There are no logs on this machine yet."}
         </div>
       )}
       {last && last.state === "ready" && (
@@ -169,8 +178,8 @@ function Review({ preview: p, mask, onMask, starting, startError, onStart, onSho
       <section className="card export-card" aria-labelledby="exp-what">
         <h2 id="exp-what">What goes in the zip</h2>
         <ul className="export-list">
-          <li><strong>Logs</strong> {p.events ? `${p.events.toLocaleString()} log entries, in the standard format` : "This run has no logs"}</li>
-          <li>
+          <li><strong>Logs</strong> {p.events ? `${p.events.toLocaleString()} log entries, in the standard format` : "No logs"}</li>
+          {isRun && <li>
             <strong>Diagnostic results</strong>{" "}
             {p.tools.length === 0 ? "This run used no diagnostics" : `${p.tools.length} diagnostic${p.tools.length === 1 ? "" : "s"}`}
             {p.tools.length > 0 && (
@@ -184,9 +193,9 @@ function Review({ preview: p, mask, onMask, starting, startError, onStart, onSho
                 ))}
               </ul>
             )}
-          </li>
-          <li><strong>Findings</strong> {p.findings ? `${p.findings} from the analysis` : "None for this run"}</li>
-          <li><strong>Audit trail and run details</strong> who ran and exported it, and when</li>
+          </li>}
+          {p.scope !== "imported" && <li><strong>Findings</strong> {p.findings ? `${p.findings} from the analysis` : "None"}</li>}
+          <li><strong>Audit trail and details</strong> {isRun ? "who ran and exported it, and when" : p.scope === "imported" ? "who imported and exported the files, and when" : "every action recorded on this machine"}</li>
         </ul>
       </section>
 
@@ -199,7 +208,7 @@ function Review({ preview: p, mask, onMask, starting, startError, onStart, onSho
           {!privacyOk && (
             <>
               <ul className="export-list">{p.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
-              <Link to={`/logs?job=${encodeURIComponent(p.job_id)}`}>Scan or check these logs on the Logs page</Link>
+              <Link to={logsLink(p.job_id)}>Scan or check these logs on the Logs page</Link>
             </>
           )}
         </div>
@@ -222,7 +231,7 @@ function Review({ preview: p, mask, onMask, starting, startError, onStart, onSho
 
       {startError && <div className="alert error" role="alert"><strong>Couldn't start the export</strong>{startError}</div>}
       <div className="export-actions">
-        <button type="button" className="btn" disabled={!p.finished || starting} onClick={onStart}>
+        <button type="button" className="btn" disabled={!p.finished || starting || (!isRun && p.events === 0)} onClick={onStart}>
           {starting ? "Starting…" : "Export zip"}
         </button>
         <Link to={back.to} className="btn ghost">Cancel</Link>
