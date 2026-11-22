@@ -202,6 +202,7 @@ class JobOut(BaseModel):
     tools: list[str] = []                 # the tools selected for this run, in run order
     configuration: Optional[dict[str, Any]] = None
     skipped_steps: list[str] = []         # steps the selected tools never use
+    step_times: dict[str, list[Optional[str]]] = {}   # step -> [started, finished], naive UTC ISO
     error: Optional[RunErrorOut] = None   # set only on a failed/interrupted run
     created_at: datetime
     finished_at: Optional[datetime]

@@ -119,6 +119,8 @@ class Step:
     status: str = "pending"            # pending | running | done | warn | failed
     detail: Optional[str] = None       # one line: what this step did
     issues: list[Issue] = field(default_factory=list)
+    started_at: Optional[str] = None   # UTC ISO; the UI shows each step's duration from these
+    finished_at: Optional[str] = None
 
 
 @dataclass
@@ -316,6 +318,7 @@ class _Ctx:
 
 def _run_step(ctx: _Ctx, step: Step, func, *, fatal: bool = False) -> None:
     step.status = "running"
+    step.started_at = _now()
     _save(ctx.status)
     try:
         func(ctx, step)
@@ -327,6 +330,7 @@ def _run_step(ctx: _Ctx, step: Step, func, *, fatal: bool = False) -> None:
         log.exception("package %s: step %s failed", ctx.scope, step.id)
         step.status = "failed"
         step.issues.append(Issue(step.label, f"Unexpected error ({type(e).__name__}). The server log has the details."))
+    step.finished_at = _now()
     _save(ctx.status)
     if fatal and step.status == "failed":
         raise _Fatal(step.issues[-1].reason)

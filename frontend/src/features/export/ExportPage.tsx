@@ -4,11 +4,11 @@ import { ApiError } from "../../api";
 import { downloadPackage, getPackage, getPreview, startExport, type Package, type Preview } from "./exportApi";
 import { formatBytes, headline, isPreparing, logsLink, returnTarget, scopeText } from "./exportView";
 import { formatElapsed, parseServerTime } from "../plugins/progress";
+import { pollDelay } from "../../ui/stepModel";
 import ExportSteps from "./ExportSteps";
 import DownloadDialog from "./DownloadDialog";
 import "./export.css";
 
-const POLL_MS = 1000;
 
 // One page per set of logs (SCRUM-61): a run, the imported files, or all logs.
 // Review what goes in the zip, watch it being prepared, then download it.
@@ -60,7 +60,7 @@ export default function ExportPage() {
         setLost(true);
         setPkg((p) => (p ? { ...p } : p));    // re-arm the timer
       }
-    }, POLL_MS);
+    }, pollDelay(Date.now() - (parseServerTime(pkg?.started_at) ?? Date.now())));
     return () => window.clearTimeout(t);
   }, [pkg, jobId]);
 

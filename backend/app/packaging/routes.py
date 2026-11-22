@@ -39,6 +39,8 @@ class StepOut(BaseModel):
     status: str
     detail: Optional[str] = None
     issues: list[IssueOut] = []
+    started_at: Optional[str] = None     # UTC ISO
+    finished_at: Optional[str] = None
 
 
 class ContentOut(BaseModel):
@@ -114,7 +116,8 @@ def _out(s: service.PackageStatus) -> PackageOut:
         job_id=s.job_id, state=s.state, masked=s.masked, partial=s.partial, requested_by=s.requested_by,
         started_at=s.started_at, finished_at=s.finished_at,
         steps=[StepOut(id=x.id, label=x.label, status=x.status, detail=x.detail,
-                       issues=[IssueOut(item=i.item, reason=i.reason) for i in x.issues]) for x in s.steps],
+                       issues=[IssueOut(item=i.item, reason=i.reason) for i in x.issues],
+                       started_at=x.started_at, finished_at=x.finished_at) for x in s.steps],
         file_name=s.file_name, size_bytes=s.size_bytes, sha256=s.sha256,
         contents=[ContentOut(**c.__dict__) for c in s.contents], warnings=s.warnings, error=s.error,
         downloadable=service.zip_path(s) is not None,
