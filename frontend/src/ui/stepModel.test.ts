@@ -19,7 +19,8 @@ describe("formatDuration", () => {
     expect(formatDuration(420)).toBe("0.4 s");
     expect(formatDuration(12_400)).toBe("12 s");
     expect(formatDuration(65_000)).toBe("1 min 05 s");
-    expect(formatDuration(-5)).toBe("0.0 s");
+    expect(formatDuration(-5)).toBe("< 0.1 s");
+    expect(formatDuration(40)).toBe("< 0.1 s");
   });
 });
 
