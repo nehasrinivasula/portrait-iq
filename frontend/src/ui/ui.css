@@ -4,7 +4,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .segmented { display: flex; flex-wrap: wrap; gap: 8px; }
 .seg {
   min-height: 44px; padding: 8px 16px; border-radius: 6px; cursor: pointer;
-  background: var(--panel); border: 1.5px solid var(--line); font-weight: 600;
+  background: var(--panel); border: 1.5px solid var(--line-strong); font-weight: 600;
 }
 .seg[data-state="checked"] { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .hint { font-size: 15px; color: var(--muted); margin-top: 4px; }
@@ -13,6 +13,18 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .alert.ok { border-color: var(--ok); background: var(--ok-bg); }
 .alert.warn { border-color: var(--warn); background: var(--warn-bg); }
 .alert.error { border-color: var(--error); background: var(--error-bg); }
+.text-error { color: var(--error-text); }
+
+/* Press and state feedback, shared by every toggle-like control.
+   Colour changes ease; presses scale. Nothing here animates layout. */
+.seg, .chip, .tabs-trigger, .app-nav a {
+  transition: transform 120ms var(--ease-out), background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+.seg:active, button.chip:active { transform: scale(.97); }
+@media (hover: hover) and (pointer: fine) {
+  .seg:hover:not([data-state="checked"]), button.chip:hover:not([data-state="on"]) { border-color: var(--primary); background: var(--primary-tint); }
+  .tabs-trigger:hover:not([data-state="active"]) { color: var(--text); }
+}
 
 /* App chrome */
 .app-nav { display: flex; gap: 6px; align-items: center; }
@@ -20,7 +32,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
   color: #fff; text-decoration: none; font-weight: 600; padding: 10px 16px; border-radius: 6px; min-height: 44px;
   display: inline-flex; align-items: center; border: 1.5px solid transparent;
 }
-.app-nav a:hover { background: rgba(255,255,255,.14); }
+@media (hover: hover) and (pointer: fine) { .app-nav a:hover:not([aria-current="page"]) { background: rgba(255,255,255,.14); } }
 .app-nav a[aria-current="page"] { background: #fff; color: var(--primary); }
 .app-header :focus-visible { outline-color: #fff; }
 .page { padding: 28px 24px 48px; max-width: 1100px; margin: 0 auto; }
@@ -29,9 +41,12 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .action-card {
   display: grid; gap: 6px; text-decoration: none; color: inherit; background: var(--panel);
   border: 1.5px solid var(--line); border-radius: 8px; padding: 22px; min-height: 120px;
-  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 200ms var(--ease-out);
 }
-.action-card:hover { border-color: var(--primary); box-shadow: 0 2px 10px rgba(96,34,166,.12); transform: translateY(-1px); }
+@media (hover: hover) and (pointer: fine) {
+  .action-card:hover { border-color: var(--primary); box-shadow: 0 2px 10px rgba(96,34,166,.12); transform: translateY(-1px); }
+}
+.action-card:active { transform: scale(.99); }
 .action-card h2 { font-size: 22px; margin: 0; color: var(--primary); }
 
 /* Tabs */
@@ -51,13 +66,20 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .toast[data-kind="ok"] { border-left-color: var(--ok); }
 .toast[data-kind="error"] { border-left-color: var(--error); }
 .toast[data-kind="warn"] { border-left-color: var(--warn); }
-.toast[data-state="open"] { animation: toast-in .18s ease-out; }
-.toast[data-state="closed"] { animation: toast-out .12s ease-in; }
+.toast[data-state="open"] { animation: toast-in 240ms var(--ease-out); }
+.toast[data-state="closed"] { animation: fade-out 140ms var(--ease-out); }
 .toast-title { font-weight: 600; }
 .toast-close { grid-row: 1 / span 2; grid-column: 2; align-self: start; min-width: 44px; min-height: 44px; background: none; border: 0; font-size: 22px; cursor: pointer; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
-@keyframes toast-out { to { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .toast, .action-card { animation: none !important; transition: none; } }
+@keyframes pop-in { from { opacity: 0; transform: scale(.97); } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
+
+/* Reduced motion: keep fades and colour changes (they explain state), drop movement and scale. */
+@media (prefers-reduced-motion: reduce) {
+  .btn:active, .seg:active, .chip:active, .action-card:hover, .action-card:active { transform: none !important; }
+  .toast[data-state="open"] { animation-name: fade-in !important; }
+}
 
 /* Log table */
 .table-wrap { overflow: auto; height: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
@@ -81,7 +103,7 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .tf-select { display: grid; gap: 4px; max-width: 280px; }
 .tf-select label, .tf-calendar-title { font-size: 15px; font-weight: 600; }
 .tf-select select {
-  min-height: 44px; width: 100%; padding: 6px 12px; border: 1.5px solid var(--line);
+  min-height: 44px; width: 100%; padding: 6px 12px; border: 1.5px solid var(--line-strong);
   border-radius: 6px; background: var(--panel); color: inherit; font: inherit;
 }
 .tf-calendar { max-width: 640px; }
@@ -108,7 +130,8 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .filter-group { display: grid; gap: 4px; }
 .filter-label { font-weight: 600; font-size: 15px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { min-height: 40px; padding: 4px 14px; border-radius: 999px; background: var(--panel); border: 1.5px solid var(--line); font-weight: 600; cursor: pointer; }
+.chip { min-height: 40px; padding: 4px 14px; border-radius: 999px; background: var(--panel); border: 1.5px solid var(--line-strong); font-weight: 600; }
+button.chip { cursor: pointer; }
 .chip[data-state="on"] { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 .chip .muted { font-weight: 400; }
 .chip[data-state="on"] .muted { color: var(--on-primary); }
