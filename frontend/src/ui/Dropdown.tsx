@@ -29,7 +29,7 @@ export default function Dropdown({ id, label, value, onChange, options, anyLabel
       <Select.Root value={current} onValueChange={(v) => onChange(v === ANY ? "" : v)} disabled={disabled}>
         <Select.Trigger id={id} className="dropdown-trigger" aria-labelledby={`${id}-label`}>
           <Select.Value placeholder={anyLabel} />
-          <Select.Icon className="dropdown-icon" aria-hidden="true">▾</Select.Icon>
+          <Select.Icon asChild><span className="dropdown-icon caret" aria-hidden="true" /></Select.Icon>
         </Select.Trigger>
         <Select.Portal>
           <Select.Content className="dropdown-content" position="popper" sideOffset={4}>
