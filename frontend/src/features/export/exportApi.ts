@@ -13,6 +13,8 @@ export interface ExportStep {
   status: StepStatus;
   detail: string | null;
   issues: ExportIssue[];
+  started_at?: string | null;
+  finished_at?: string | null;
 }
 
 export interface ContentEntry {

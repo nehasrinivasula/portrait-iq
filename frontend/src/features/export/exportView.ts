@@ -1,4 +1,4 @@
-import type { ExportStep, Package, StepStatus } from "./exportApi";
+import type { ExportStep, Package } from "./exportApi";
 
 // Pure helpers behind the Export page, kept apart so they can be tested.
 
@@ -20,31 +20,6 @@ export function scopeText(scope: string, jobId: string): { heading: string; abou
   if (scope === "imported") return { heading: "Export imported files", about: "Every log file imported without a run, in one zip file." };
   if (scope === "all") return { heading: "Export all logs", about: "Every log on this machine, from every run and import, in one zip file." };
   return { heading: "Export run", about: `Run ${jobId.slice(0, 8)}: all its logs, diagnostic results and findings in one zip file.` };
-}
-
-/** Plain words for a step's status, read by screen readers next to the mark. */
-export const STEP_STATUS_TEXT: Record<StepStatus, string> = {
-  pending: "not started",
-  running: "in progress",
-  done: "done",
-  warn: "done, with notes",
-  failed: "failed",
-};
-
-/** The mark shown beside a step. Never the only signal: the status text goes with it. */
-export const STEP_MARK: Record<StepStatus, string> = {
-  pending: "○",
-  running: "●",
-  done: "✓",
-  warn: "!",
-  failed: "✗",
-};
-
-export function stepPosition(steps: ExportStep[]): { position: number | null; total: number } {
-  const i = steps.findIndex((s) => s.status === "running");
-  if (i >= 0) return { position: i + 1, total: steps.length };
-  const finished = steps.filter((s) => s.status !== "pending").length;
-  return { position: finished > 0 && finished < steps.length ? finished : null, total: steps.length };
 }
 
 export function headline(p: Package): [AlertKind, string, string] {

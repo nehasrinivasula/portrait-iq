@@ -346,3 +346,9 @@ def test_preview_lists_system_files_with_what_is_needed(env):
     assert list(sysf) == [k for k, _, _ in service.SYSTEM_ITEMS]
     assert sysf["wireshark_pcap"]["available"] is False or sysf["wireshark_pcap"]["needed"] is None
     assert sysf["firewall"]["available"] is False and sysf["firewall"]["needed"]
+
+
+def test_each_export_step_records_when_it_started_and_finished(env):
+    client, _ = env
+    s = export(client)
+    assert all(x["started_at"] and x["finished_at"] and x["started_at"] <= x["finished_at"] for x in s["steps"])
