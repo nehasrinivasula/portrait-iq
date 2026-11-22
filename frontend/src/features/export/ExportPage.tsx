@@ -194,6 +194,18 @@ function Review({ preview: p, mask, onMask, starting, startError, onStart, onSho
               </ul>
             )}
           </li>}
+          {(p.system ?? []).length > 0 && <li>
+            <strong>Troubleshooting files</strong>{" "}
+            {(p.system ?? []).filter((x) => x.available).length} of {(p.system ?? []).length} can be collected now
+            <ul className="export-tools">
+              {(p.system ?? []).map((x) => (
+                <li key={x.key} data-ok={x.available}>
+                  <strong>{x.label}</strong> <span className="tool-status">{x.available ? "Ready" : "Not available"}</span>{" "}
+                  {!x.available && <span className="muted">{x.needed}</span>}
+                </li>
+              ))}
+            </ul>
+          </li>}
           {p.scope !== "imported" && <li><strong>Findings</strong> {p.findings ? `${p.findings} from the analysis` : "None"}</li>}
           <li><strong>Audit trail and details</strong> {isRun ? "who ran and exported it, and when" : p.scope === "imported" ? "who imported and exported the files, and when" : "every action recorded on this machine"}</li>
         </ul>

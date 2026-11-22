@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     # http://axone-log-export-tcp.<namespace>.svc.cluster.local:9200
     axone_base_url: str | None = None
     axone_timeout_seconds: int = 60
+    # CMS log snaps (/cms/sprsnap/*). Base URL only; auth is not known yet.
+    cms_base_url: str | None = None
     # Pause between calls so a long pull doesn't load the live system.
     axone_request_delay_seconds: float = 0.5
     # Timezone the API's start/end timestamps are in.

@@ -82,6 +82,13 @@ class PreviewPrivacyOut(BaseModel):
     unscanned_events: int
 
 
+class PreviewSystemOut(BaseModel):
+    key: str
+    label: str
+    available: bool                  # an export can collect it now
+    needed: Optional[str] = None     # what is missing, when it cannot be
+
+
 class PreviewOut(BaseModel):
     job_id: str
     scope: str                       # run | imported | all
@@ -90,6 +97,7 @@ class PreviewOut(BaseModel):
     finished: bool
     events: int
     tools: list[PreviewToolOut]
+    system: list[PreviewSystemOut]
     findings: int
     privacy: PreviewPrivacyOut
     warnings: list[str]
@@ -139,7 +147,7 @@ def preview(job_id: str, db: Session = Depends(get_db), user: User = Depends(get
     return PreviewOut(
         job_id=job_id, scope=service.scope_kind(job_id), title=service.scope_title(job_id),
         job_status=job.status if job else None, finished=job is None or job.status in service.FINISHED, events=r.events,
-        tools=tools, findings=findings,
+        tools=tools, system=[PreviewSystemOut(**x) for x in service.system_preview(db, job)], findings=findings,
         privacy=PreviewPrivacyOut(complete_for_packaging=r.complete_for_packaging, all_scanned=r.all_scanned,
                                   ingest_complete=r.ingest_complete, flagged_events=r.flagged_events,
                                   unscanned_events=r.unscanned_events),
