@@ -1,17 +1,32 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { searchEvents, type LogEvent, type LogFilter } from "./logsApi";
 import { categoryLabel, type PrivacyOptions } from "../privacy/privacyApi";
 import "../privacy/privacy.css";
 
 const time = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
 
+/** A message is only a button when two lines cut it off; short ones are plain text with no arrow. */
 function Message({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
+  const [cut, setCut] = useState(false);
+  const clip = useRef<HTMLSpanElement>(null);
+  // Re-measured when the column width changes; while open, it stays a button so it can close.
+  useLayoutEffect(() => {
+    const el = clip.current;
+    if (!el || open) return;
+    const check = () => setCut(el.scrollHeight > el.clientHeight + 1);
+    check();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [text, open, cut]);
+  if (!cut && !open) return <span ref={clip} className="clip">{text}</span>;
   return (
     <button className="msg-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}
       title={open ? "Show less" : "Show the full message"}>
-      <span className="chev" aria-hidden="true">›</span>
-      <span className="clip">{text}</span>
+      <span className="caret" aria-hidden="true" />
+      <span ref={clip} className="clip">{text}</span>
     </button>
   );
 }
@@ -138,7 +153,7 @@ export default function LogTable({ filter, reloadKey, onTotal, filtered, privacy
               <tr key={e.id} data-sev={e.severity}>
                 <td className="nowrap"><time dateTime={e.timestamp} title={`${e.timestamp} (UTC)`}>{time.format(new Date(e.timestamp))}</time></td>
                 <td><span className={`sev ${e.severity}`}>{e.severity}</span></td>
-                <td><Message text={e.message} /></td>
+                <td className="msg-cell"><Message text={e.message} /></td>
                 <td className="meta">{e.device_id ?? "—"}</td>
                 <td className="meta">{e.source}</td>
                 <td className="meta">{e.process ?? "—"}</td>
