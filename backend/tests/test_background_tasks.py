@@ -208,7 +208,7 @@ def test_process_mode_hands_off_to_the_launcher_and_returns_at_once(db, monkeypa
 # --- routes ----------------------------------------------------------------------------------------------
 
 @pytest.fixture()
-def client(engine):
+def client(engine, monkeypatch):
     Session = sessionmaker(bind=engine)
 
     def override_db():
@@ -220,6 +220,8 @@ def client(engine):
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = lambda: User(id="tester", name="Tester")
+    # An overridden user has no login session, which the idle lock would refuse (423).
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)
     yield TestClient(app)
     app.dependency_overrides.clear()
 
