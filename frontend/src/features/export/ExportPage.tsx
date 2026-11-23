@@ -1,233 +1,310 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { ApiError } from "../../api";
-import { downloadPackage, getPackage, getPreview, startExport, type Package, type Preview } from "./exportApi";
-import { formatBytes, headline, isPreparing, returnTarget } from "./exportView";
+import {
+  deleteExport, downloadPackage, getExport, getPreview, listExports, selectionScope, startExport,
+  type Package, type Preview, type Selection,
+} from "./exportApi";
+import { formatBytes, headline, isPreparing, logsLink, returnTarget } from "./exportView";
 import { formatElapsed, parseServerTime } from "../plugins/progress";
+import { listPlugins } from "../plugins/api";
+import { IMPORTED, listLogSets, type LogSet } from "../logs/logsApi";
+import { pollDelay } from "../../ui/stepModel";
 import ExportSteps from "./ExportSteps";
+import ExportPicker, { runWhen } from "./ExportPicker";
+import ExportHistory from "./ExportHistory";
 import DownloadDialog from "./DownloadDialog";
 import "./export.css";
 
-const POLL_MS = 1000;
+/** What the page opens with: the run, imported files or all logs it was opened for; runs with nothing ticked from the nav. */
+function initialSelection(jobId: string | undefined): Selection {
+  if (!jobId) return { kind: "runs", runs: [] };
+  if (jobId === "all") return { kind: "all" };
+  if (jobId === IMPORTED) return { kind: "imported" };
+  return { kind: "runs", runs: [jobId] };
+}
 
-// One page per run (SCRUM-61): review what goes in the zip, watch it being
-// prepared, then download it. Opened from Run diagnostics or Logs; ?from= says which.
+// Export (SCRUM-61): 1 pick what goes in the zip (one run, several runs in one zip,
+// the imported files or every log), 2 check it, then export. Every zip stays on this
+// machine, listed below, until the engineer deletes it.
 export default function ExportPage() {
-  const { jobId = "" } = useParams<{ jobId: string }>();
+  const { jobId } = useParams<{ jobId: string }>();
   const [params] = useSearchParams();
-  const back = returnTarget(params.get("from"), jobId);
+  const from = params.get("from");
+  const back = returnTarget(from, jobId ?? "all");
 
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [pkg, setPkg] = useState<Package | null>(null);
+  const [selection, setSelection] = useState<Selection>(() => initialSelection(jobId));
   const [mask, setMask] = useState(true);
+  const [sets, setSets] = useState<LogSet[] | null>(null);
+  const [toolNames, setToolNames] = useState<Record<string, string>>({});
+  const [previews, setPreviews] = useState<Record<string, Preview>>({});
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [history, setHistory] = useState<{ exports: Package[]; total_bytes: number } | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyKey, setHistoryKey] = useState(0);
+  const [pkg, setPkg] = useState<Package | null>(null);      // the export being followed
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [lost, setLost] = useState(false);
-  const [reviewing, setReviewing] = useState(true);       // false once an export is shown
-  const [download, setDownload] = useState<"idle" | "running" | "error">("idle");
+  const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
-  const [saved, setSaved] = useState<string | null>(null);  // file name of a finished download: opens the dialog
-  const [loadKey, setLoadKey] = useState(0);
+  const [saved, setSaved] = useState<{ pkg: Package; name: string } | null>(null);
   const resultRef = useRef<HTMLHeadingElement>(null);
-  const announced = useRef<string | null>(null);
+
+  useEffect(() => {
+    listLogSets().then(setSets).catch(() => setSets([]));
+    listPlugins().then((l) => setToolNames(Object.fromEntries(l.plugins.map((p) => [p.name, p.display_name || p.name])))).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     let live = true;
-    setLoadError(null);
-    getPreview(jobId)
-      .then((p) => {
-        if (!live) return;
-        setPreview(p);
-        setPkg(p.package);
-        // An export still being prepared is shown straight away, e.g. after a reload.
-        if (isPreparing(p.package)) setReviewing(false);
-      })
-      .catch((e) => { if (live) setLoadError(e instanceof ApiError && e.status === 404 ? "This run was not found." : "Couldn't load this run."); });
+    listExports()
+      .then((h) => { if (live) { setHistory(h); setHistoryError(null); } })
+      .catch(() => { if (live) setHistoryError("Check the connection to the server, then reload the page."); });
     return () => { live = false; };
-  }, [jobId, loadKey]);
+  }, [historyKey]);
 
-  // Poll while the zip is being prepared.
+  // One preview per set of logs picked: a single scope shows its full detail, several runs a row each.
+  const scopes = useMemo(() => {
+    const one = selectionScope(selection);
+    return one ? [one] : selection.kind === "runs" ? selection.runs : [];
+  }, [selection]);
+  useEffect(() => {
+    let live = true;
+    setPreviewError(null);
+    const missing = scopes.filter((s) => !previews[s]);
+    if (!missing.length) return;
+    Promise.all(missing.map((s) => getPreview(s).then((p) => [s, p] as const)))
+      .then((got) => { if (live) setPreviews((cur) => ({ ...cur, ...Object.fromEntries(got) })); })
+      .catch(() => { if (live) setPreviewError("Couldn't load what would go in the zip."); });
+    return () => { live = false; };
+  }, [scopes]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Follow an export while it is prepared: often at first, then gently.
   useEffect(() => {
     if (!isPreparing(pkg)) return;
     const t = window.setTimeout(async () => {
       try {
-        setPkg(await getPackage(jobId));
+        const next = await getExport(pkg!.export_id);
+        setPkg(next);
         setLost(false);
+        if (!isPreparing(next)) { setHistoryKey((k) => k + 1); resultRef.current?.focus(); }
       } catch (e) {
         if (e instanceof ApiError && (e.status === 401 || e.status === 423)) return;
         setLost(true);
         setPkg((p) => (p ? { ...p } : p));    // re-arm the timer
       }
-    }, POLL_MS);
+    }, pollDelay(Date.now() - (parseServerTime(pkg?.started_at) ?? Date.now())));
     return () => window.clearTimeout(t);
-  }, [pkg, jobId]);
-
-  // When an export finishes, move focus to the result once; its alert announces it.
-  useEffect(() => {
-    if (!pkg || reviewing || isPreparing(pkg)) return;
-    const key = `${pkg.job_id}:${pkg.started_at}`;
-    if (announced.current === key) return;
-    announced.current = key;
-    resultRef.current?.focus();
-  }, [pkg, reviewing]);
+  }, [pkg]);
 
   const begin = useCallback(async () => {
     setStarting(true);
     setStartError(null);
     try {
-      const p = await startExport(jobId, mask);
-      announced.current = null;
+      const p = await startExport(selection, mask);
       setPkg(p);
-      setReviewing(false);
-      setDownload("idle");
+      setHistoryKey((k) => k + 1);
     } catch (e) {
       setStartError(e instanceof ApiError ? e.message : "Couldn't start the export.");
     } finally {
       setStarting(false);
     }
-  }, [jobId, mask]);
+  }, [selection, mask]);
 
-  const save = useCallback(async () => {
-    if (!pkg?.file_name) return;
-    setDownload("running");
+  const download = useCallback(async (p: Package) => {
+    if (!p.file_name) return;
+    setDownloading(p.export_id);
     setDownloadError(null);
     try {
-      setSaved(await downloadPackage(jobId, pkg.file_name));
-      setDownload("idle");
+      setSaved({ pkg: p, name: await downloadPackage(p.export_id, p.file_name) });
     } catch (e) {
-      setDownload("error");
       setDownloadError(e instanceof ApiError ? e.message : "The download did not finish.");
+    } finally {
+      setDownloading(null);
     }
-  }, [jobId, pkg]);
+  }, []);
 
-  if (loadError) {
-    return (
-      <>
-        <Link to={back.to}>{back.label}</Link>
-        <h1>Export run</h1>
-        <div className="alert error" role="alert">
-          <strong>{loadError}</strong>
-          <button type="button" className="btn ghost" onClick={() => setLoadKey((k) => k + 1)}>Try again</button>
-        </div>
-      </>
-    );
-  }
-  if (!preview) return <><h1>Export run</h1><p className="muted" role="status">Loading…</p></>;
+  const remove = useCallback(async (ids: string[]) => {
+    try {
+      for (const id of ids) await deleteExport(id);
+    } catch (e) {
+      setHistoryError(e instanceof ApiError ? e.message : "Couldn't delete the export.");
+    }
+    if (pkg && ids.includes(pkg.export_id)) setPkg(null);
+    setHistoryKey((k) => k + 1);
+  }, [pkg]);
 
+  const runs = (sets ?? []).filter((s) => s.job_id !== IMPORTED);
+  const exportedRuns = new Set((history?.exports ?? []).flatMap((p) => (p.scope === "runs" ? p.runs : p.scope === "run" ? [p.job_id] : [])));
+  const toolName = (t: string) => toolNames[t] ?? t;
+  const picked = scopes.map((s) => previews[s]).filter((p): p is Preview => !!p);
+  const ready = picked.length === scopes.length && scopes.length > 0;
+  const events = picked.reduce((n, p) => n + p.events, 0);
+  const flagged = picked.reduce((n, p) => n + p.privacy.flagged_events, 0);
+  const unfinished = picked.some((p) => !p.finished);
+  const empty = ready && events === 0 && !picked.some((p) => p.scope === "run");
+
+  // Nothing picked yet is a prompt, not an error: only real problems are shown in red.
+  const prompt = scopes.length === 0 ? "Pick one or more runs above." : null;
+  const problem = startError ? `Couldn't start the export. ${startError}`
+    : unfinished ? "A picked run is still going. Export it once it has finished."
+    : empty ? "There's nothing to export here yet."
+    : null;
+  const summary = selection.kind === "runs"
+    ? `${selection.runs.length} run${selection.runs.length === 1 ? "" : "s"}${selection.runs.length > 1 ? " in one zip" : ""}`
+    : selection.kind === "imported" ? "Imported files" : "All logs";
+
+  const following = pkg !== null;
   return (
     <div className="export-page">
-      <Link to={back.to}>{back.label}</Link>
-      <h1>Export run</h1>
-      <p className="muted">Run <code>{jobId.slice(0, 8)}</code> · all its logs, diagnostic results and findings in one zip file.</p>
+      {from && <Link to={back.to}>{back.label}</Link>}
+      <h1>Export</h1>
 
-      {reviewing || !pkg
-        ? <Review preview={preview} mask={mask} onMask={setMask} starting={starting} startError={startError}
-            onStart={begin} onShowLast={() => setReviewing(false)} onDownloadLast={save} back={back} />
-        : <Result pkg={pkg} lost={lost} resultRef={resultRef} download={download} downloadError={downloadError}
-            onDownload={save} onAgain={() => { setReviewing(true); setLoadKey((k) => k + 1); }} back={back} />}
+      {following ? (
+        <Result pkg={pkg} lost={lost} resultRef={resultRef} downloading={downloading === pkg.export_id}
+          downloadError={downloadError} onDownload={() => download(pkg)} onAgain={() => setPkg(null)} back={back} showBack={!!from} />
+      ) : (
+        <>
+          <section className="export-step" aria-labelledby="exp-pick">
+            <h2 id="exp-pick">What to export</h2>
+            <ExportPicker sets={sets} selection={selection} onSelection={setSelection} exported={exportedRuns} toolName={toolName} />
+          </section>
 
-      {saved && pkg && <DownloadDialog pkg={pkg} fileName={saved} back={back} onClose={() => setSaved(null)} />}
+          {scopes.length > 0 && (
+            <section className="export-step" aria-labelledby="exp-check">
+              <h2 id="exp-check">What goes in the zip</h2>
+              {previewError && <div className="alert error" role="alert"><strong>{previewError}</strong></div>}
+              {!ready && !previewError && <p className="muted" role="status">Checking…</p>}
+              {ready && (picked.length === 1 ? <Contents p={picked[0]} toolName={toolName} />
+                : <SetContents previews={picked} runs={runs} toolName={toolName} />)}
+
+              {ready && <Privacy previews={picked} />}
+              <div className="privacy-switches">
+                <label>
+                  <input type="checkbox" checked={mask} onChange={(e) => setMask(e.target.checked)} aria-describedby="mask-hint" />
+                  Mask flagged PHI / PII (recommended)
+                </label>
+              </div>
+              <p id="mask-hint" className="hint">Replaces flagged values with [REDACTED:kind], as the Logs page does. Packet captures can't be masked, so they're left out.</p>
+              {!mask && flagged > 0 && (
+                <div className="alert warn" role="status">
+                  <strong>Masking is off</strong>
+                  {flagged.toLocaleString()} flagged log entries will be in the zip as they are. The audit log records this.
+                </div>
+              )}
+            </section>
+          )}
+
+          <div className="action-bar">
+            <span className={problem ? "text-error action-bar-text" : prompt ? "muted action-bar-text" : "action-bar-text"}
+              role={problem ? "alert" : "status"}>
+              {problem ?? prompt ?? `${summary} · ${events.toLocaleString()} log entries · ${mask ? "masked" : "not masked"}`}
+            </span>
+            <button type="button" className="btn" disabled={(!!problem && !startError) || starting || !ready} onClick={begin}>
+              {starting ? "Starting…" : "Export zip"}
+            </button>
+          </div>
+        </>
+      )}
+
+      <ExportHistory exports={history?.exports ?? null} totalBytes={history?.total_bytes ?? 0} error={historyError}
+        onDownload={download} onDelete={remove} busy={downloading} />
+      {!following && downloadError && <div className="alert error" role="alert"><strong>The download did not finish</strong>{downloadError} Try again.</div>}
+
+      {saved && <DownloadDialog pkg={saved.pkg} fileName={saved.name} back={back} onClose={() => setSaved(null)} />}
     </div>
   );
 }
 
-interface ReviewProps {
-  preview: Preview;
-  mask: boolean;
-  onMask: (m: boolean) => void;
-  starting: boolean;
-  startError: string | null;
-  onStart: () => void;
-  onShowLast: () => void;
-  onDownloadLast: () => void;
-  back: { to: string; label: string };
+/** One run, the imported files or all logs: each part of the zip and what's in it. */
+function Contents({ p, toolName }: { p: Preview; toolName: (t: string) => string }) {
+  const isRun = p.scope === "run";
+  const system = p.system ?? [];
+  return (
+    <ul className="export-list">
+      <li><strong>Logs</strong> {p.events ? `${p.events.toLocaleString()} log entries, in the standard format` : "No logs"}</li>
+      {isRun && <li>
+        <strong>Diagnostic results</strong>{" "}
+        {p.tools.length === 0 ? "This run used no diagnostics" : `${p.tools.length} diagnostic${p.tools.length === 1 ? "" : "s"}`}
+        {p.tools.length > 0 && (
+          <ul className="export-tools">
+            {p.tools.map((t) => (
+              <li key={t.tool} data-ok={t.ok}>
+                <strong>{toolName(t.tool)}</strong> <span className="tool-status">{t.ok ? "Pass" : "Fail"}</span>{" "}
+                {t.ok ? <span className="muted">{t.files} file{t.files === 1 ? "" : "s"}</span>
+                  : <span>Did not finish during the run: {t.error}. Its error is included.</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </li>}
+      {system.length > 0 && <li>
+        <strong>Troubleshooting files</strong> {system.filter((x) => x.available).length} of {system.length} can be collected now
+        <ul className="export-tools">
+          {system.map((x) => (
+            <li key={x.key} data-ok={x.available}>
+              <strong>{x.label}</strong> <span className="tool-status">{x.available ? "Ready" : "Not available"}</span>{" "}
+              {!x.available && <span className="muted">{x.needed}</span>}
+            </li>
+          ))}
+        </ul>
+      </li>}
+      {p.scope !== "imported" && <li><strong>Findings</strong> {p.findings ? `${p.findings} from the analysis` : "None"}</li>}
+      <li><strong>Audit trail and details</strong> {isRun ? "who ran and exported it, and when" : p.scope === "imported" ? "who imported and exported the files, and when" : "every action recorded on this machine"}</li>
+    </ul>
+  );
 }
 
-function Review({ preview: p, mask, onMask, starting, startError, onStart, onShowLast, onDownloadLast, back }: ReviewProps) {
-  const last = p.package;
-  const privacyOk = p.privacy.complete_for_packaging || p.events === 0;
+/** Several runs in one zip: a row per run; each goes in its own folder, in the standard layout. */
+function SetContents({ previews, runs, toolName }: { previews: Preview[]; runs: LogSet[]; toolName: (t: string) => string }) {
   return (
     <>
-      {!p.finished && (
-        <div className="alert info" role="status">
-          <strong>This run is still going</strong>
-          You can export it once it has finished.
-        </div>
-      )}
-      {last && last.state === "ready" && (
-        <div className="alert info" role="status">
-          <strong>Exported before</strong>
-          {last.file_name} ({formatBytes(last.size_bytes)}). Exporting again replaces it.{" "}
-          <span className="export-inline-actions">
-            {last.downloadable && <button type="button" className="btn ghost" onClick={onDownloadLast}>Download it</button>}
-            <button type="button" className="btn ghost" onClick={onShowLast}>See what it holds</button>
-          </span>
-        </div>
-      )}
-
-      <section className="card export-card" aria-labelledby="exp-what">
-        <h2 id="exp-what">What goes in the zip</h2>
-        <ul className="export-list">
-          <li><strong>Logs</strong> {p.events ? `${p.events.toLocaleString()} log entries, in the standard format` : "This run has no logs"}</li>
-          <li>
-            <strong>Diagnostic results</strong>{" "}
-            {p.tools.length === 0 ? "This run used no diagnostics" : `${p.tools.length} diagnostic${p.tools.length === 1 ? "" : "s"}`}
-            {p.tools.length > 0 && (
-              <ul className="export-tools">
-                {p.tools.map((t) => (
-                  <li key={t.tool} data-ok={t.ok}>
-                    <strong>{t.tool}</strong> <span className="tool-status">{t.ok ? "Pass" : "Fail"}</span>{" "}
-                    {t.ok ? <span className="muted">{t.files} file{t.files === 1 ? "" : "s"}</span>
-                      : <span>Did not finish during the run: {t.error}. Its error is included.</span>}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </li>
-          <li><strong>Findings</strong> {p.findings ? `${p.findings} from the analysis` : "None for this run"}</li>
-          <li><strong>Audit trail and run details</strong> who ran and exported it, and when</li>
-        </ul>
-      </section>
-
-      <section className="export-card" aria-label="PHI and PII">
-        <div className={`alert ${privacyOk ? "ok" : "warn"}`} role="status">
-          <strong>PHI / PII scan</strong>
-          {p.events === 0 ? "No logs to scan."
-            : privacyOk ? `All ${p.events.toLocaleString()} log entries scanned; ${p.privacy.flagged_events.toLocaleString()} flagged.`
-            : "The scan is not complete. You can still export; the zip will say so."}
-          {!privacyOk && (
-            <>
-              <ul className="export-list">{p.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
-              <Link to={`/logs?job=${encodeURIComponent(p.job_id)}`}>Scan or check these logs on the Logs page</Link>
-            </>
-          )}
-        </div>
-        <div className="privacy-switches">
-          <label>
-            <input type="checkbox" checked={mask} onChange={(e) => onMask(e.target.checked)} aria-describedby="mask-hint" />
-            Mask flagged PHI / PII (recommended)
-          </label>
-        </div>
-        <p id="mask-hint" className="hint">
-          Replaces flagged values with [REDACTED:kind], as the Logs page does. Packet captures can't be masked.
-        </p>
-        {!mask && p.privacy.flagged_events > 0 && (
-          <div className="alert warn" role="status">
-            <strong>Masking is off</strong>
-            {p.privacy.flagged_events.toLocaleString()} flagged log entries will be in the zip as they are. The audit log records this.
-          </div>
-        )}
-      </section>
-
-      {startError && <div className="alert error" role="alert"><strong>Couldn't start the export</strong>{startError}</div>}
-      <div className="export-actions">
-        <button type="button" className="btn" disabled={!p.finished || starting} onClick={onStart}>
-          {starting ? "Starting…" : "Export zip"}
-        </button>
-        <Link to={back.to} className="btn ghost">Cancel</Link>
+      <p className="muted export-set-note">Each run gets its own folder in the standard layout, with a list of the runs at the top of the zip.</p>
+      <div className="table-wrap export-table">
+        <table className="log-table">
+          <caption className="visually-hidden">Runs in this zip</caption>
+          <thead><tr><th scope="col">Run</th><th scope="col">Diagnostics</th><th scope="col">Log entries</th><th scope="col">PHI / PII scan</th></tr></thead>
+          <tbody>
+            {previews.map((p) => {
+              const set = runs.find((r) => r.job_id === p.job_id);
+              const ok = p.tools.filter((t) => t.ok).length;
+              const scanned = p.privacy.complete_for_packaging || p.events === 0;
+              return (
+                <tr key={p.job_id}>
+                  <td className="nowrap">{set ? runWhen(set) : p.job_id.slice(0, 8)}</td>
+                  <td>{p.tools.length ? `${ok} of ${p.tools.length} ran · ${p.tools.map((t) => toolName(t.tool)).join(", ")}` : "None"}</td>
+                  <td className="mono">{p.events.toLocaleString()}</td>
+                  <td>{scanned ? `${p.privacy.flagged_events.toLocaleString()} flagged` : <span className="text-warn">Incomplete</span>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </>
+  );
+}
+
+/** The PHI / PII check for what is picked: complete, or what is missing and where to fix it. */
+function Privacy({ previews }: { previews: Preview[] }) {
+  const events = previews.reduce((n, p) => n + p.events, 0);
+  const flagged = previews.reduce((n, p) => n + p.privacy.flagged_events, 0);
+  const incomplete = previews.filter((p) => !(p.privacy.complete_for_packaging || p.events === 0));
+  const warnings = [...new Set(incomplete.flatMap((p) => p.warnings))];
+  return (
+    <div className={`alert ${incomplete.length ? "warn" : "ok"}`} role="status">
+      <strong>PHI / PII scan</strong>
+      {events === 0 ? "No logs to scan."
+        : !incomplete.length ? `All ${events.toLocaleString()} log entries scanned; ${flagged.toLocaleString()} flagged.`
+        : "The scan is not complete. You can still export; the zip will say so."}
+      {incomplete.length > 0 && (
+        <>
+          <ul className="export-list">{warnings.map((w) => <li key={w}>{w}</li>)}</ul>
+          {incomplete.length === 1 && <Link to={logsLink(incomplete[0].job_id)}>Scan or check these logs on the Logs page</Link>}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -235,14 +312,15 @@ interface ResultProps {
   pkg: Package;
   lost: boolean;
   resultRef: React.RefObject<HTMLHeadingElement | null>;
-  download: "idle" | "running" | "error";
+  downloading: boolean;
   downloadError: string | null;
   onDownload: () => void;
   onAgain: () => void;
   back: { to: string; label: string };
+  showBack: boolean;
 }
 
-function Result({ pkg, lost, resultRef, download, downloadError, onDownload, onAgain, back }: ResultProps) {
+function Result({ pkg, lost, resultRef, downloading, downloadError, onDownload, onAgain, back, showBack }: ResultProps) {
   const preparing = isPreparing(pkg);
   const [kind, title, body] = headline(pkg);
   return (
@@ -254,6 +332,11 @@ function Result({ pkg, lost, resultRef, download, downloadError, onDownload, onA
       </div>
       {preparing && <ExportClock startedAt={pkg.started_at} />}
       {lost && <p className="muted" role="status">Lost contact with the server. Still trying; the export is not affected.</p>}
+
+      <section className="export-card" aria-labelledby="exp-steps">
+        <h3 id="exp-steps">Steps</h3>
+        <ExportSteps steps={pkg.steps} live={preparing} />
+      </section>
 
       {pkg.downloadable && (
         <section className="card export-card" aria-labelledby="exp-file">
@@ -289,26 +372,17 @@ function Result({ pkg, lost, resultRef, download, downloadError, onDownload, onA
         </section>
       )}
 
-      <section className="export-card" aria-labelledby="exp-steps">
-        <h3 id="exp-steps">Steps</h3>
-        <ExportSteps steps={pkg.steps} live={preparing} />
-      </section>
-
-      {download === "error" && (
-        <div className="alert error" role="alert"><strong>The download did not finish</strong>{downloadError} Try again.</div>
-      )}
+      {downloadError && <div className="alert error" role="alert"><strong>The download did not finish</strong>{downloadError} Try again.</div>}
       <div className="export-actions">
         {pkg.downloadable && (
-          <button type="button" className="btn" disabled={download === "running"} onClick={onDownload}>
-            {download === "running" ? "Downloading…" : "Download zip"}
-          </button>
+          <button type="button" className="btn" disabled={downloading} onClick={onDownload}>{downloading ? "Downloading…" : "Download zip"}</button>
         )}
         {!preparing && (
           <button type="button" className={pkg.downloadable ? "btn ghost" : "btn"} onClick={onAgain}>
-            {pkg.state === "ready" ? "Export again" : "Try again"}
+            {pkg.state === "ready" ? "Export something else" : "Try again"}
           </button>
         )}
-        <Link to={back.to} className="btn ghost">{back.label}</Link>
+        {showBack && <Link to={back.to} className="btn ghost">{back.label}</Link>}
       </div>
     </>
   );

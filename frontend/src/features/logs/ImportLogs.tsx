@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { ApiError } from "../../api";
 import { useNotify } from "../../ui/Notifications";
 import { importLogFiles } from "./logsApi";
+import { progressText } from "../tasks/tasksApi";
 import { validateImportFiles } from "../../validation";
 
 // Demo path: hand the tool log files you already have (local import). Real
@@ -10,6 +11,7 @@ export default function ImportLogs({ onImported }: { onImported: () => void }) {
   const input = useRef<HTMLInputElement>(null);
   const notify = useNotify();
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
 
   async function onPick(files: FileList | null) {
     if (!files?.length) return;
@@ -21,7 +23,7 @@ export default function ImportLogs({ onImported }: { onImported: () => void }) {
     }
     setBusy(true);
     try {
-      const r = await importLogFiles([...files]);
+      const r = await importLogFiles([...files], (t) => setProgress(progressText(t)));
       const events = r.files.reduce((n, f) => n + (f.events ?? 0), 0);
       const skipped = r.files.reduce((n, f) => n + (f.rows_rejected ?? 0), 0);
       if (r.failed > 0)
@@ -33,6 +35,7 @@ export default function ImportLogs({ onImported }: { onImported: () => void }) {
       notify({ kind: "error", title: "Import failed", body: e instanceof ApiError && e.status !== 0 ? e.message : "Can't reach the server." });
     } finally {
       setBusy(false);
+      setProgress(null);
       if (input.current) input.current.value = "";
     }
   }
@@ -41,7 +44,7 @@ export default function ImportLogs({ onImported }: { onImported: () => void }) {
     <>
       <input ref={input} type="file" multiple hidden accept=".csv,.zip,.log,.txt" onChange={(e) => onPick(e.target.files)} aria-label="Choose log files to import" />
       <button className="btn ghost" disabled={busy} onClick={() => input.current?.click()}>
-        {busy ? "Importing…" : "Import log files"}
+        {busy ? (progress ?? "Importing…") : "Import log files"}
       </button>
     </>
   );

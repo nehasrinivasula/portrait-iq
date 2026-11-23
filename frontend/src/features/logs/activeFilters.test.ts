@@ -8,13 +8,15 @@ const anyTime: TimeFrameChoice = { ...defaultTimeFrame(), preset: "any" };
 describe("activeFilters", () => {
   it("lists exactly the filters the engineer picked", () => {
     const filter = { ...emptyFilter(), sources: ["portrait"], severities: ["WARN" as const, "ERROR" as const],
-      column: "category" as const, value: " PerfData ", q: "timeout" };
+      device: "host-a", category: " PerfData ", sourceFile: "local/abc123/a.csv", q: "timeout" };
     expect(activeFilters({ ...anyTime, preset: "24h" }, filter)).toEqual([
       { id: "date", label: "Date", value: "Last 24 hours" },
       { id: "source:portrait", label: "Source", value: "portrait" },
       { id: "severity:WARN", label: "Level", value: "WARN" },
       { id: "severity:ERROR", label: "Level", value: "ERROR" },
-      { id: "value", label: "Category", value: "PerfData" },
+      { id: "device", label: "Device", value: "host-a" },
+      { id: "category", label: "Category", value: "PerfData" },
+      { id: "file", label: "File", value: "a.csv" },
       { id: "q", label: "Message has", value: "timeout" },
     ]);
   });
@@ -36,6 +38,9 @@ describe("removeFilter", () => {
 
     expect(removeFilter("date", frame, filter).frame.preset).toBe("any");
     expect(removeFilter("q", frame, filter).filter.q).toBe("");
+    const picked = { ...filter, device: "host-a", category: "General" };
+    const noDevice = removeFilter("device", frame, picked).filter;
+    expect([noDevice.device, noDevice.category]).toEqual(["", "General"]);
   });
 
   it("keeps a source name that itself has a colon", () => {

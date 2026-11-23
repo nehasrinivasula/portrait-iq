@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 from sqlalchemy import and_, case, func, or_, select, true, update
 from sqlalchemy.orm import Session
@@ -116,14 +116,19 @@ def privacy_report(db: Session, job_id: Optional[str]) -> PrivacyReport:
     )
 
 
-def rescan(db: Session, job_id: Optional[str] = None) -> int:
+def rescan(db: Session, job_id: Optional[str] = None,
+           progress: Optional[Callable[[int, Optional[int], Optional[str]], None]] = None) -> int:
     """Scan every event the current scanner has not judged yet: events from
     before this feature existed, or ones scanned by an older rule set. With
     job_id, only that collection (or UNASSIGNED). Returns how many events were
-    scanned. Safe to repeat; each batch is committed on its own."""
+    scanned. Safe to repeat; each batch is committed on its own. progress(done, total, stage) is called
+    after each batch, so a long scan can be watched from outside."""
     conds = [_needs_scan()]
     if job_id is not None:
         conds.append(_in_collection(job_id))
+    note = progress or (lambda *_: None)
+    total = db.scalar(select(func.count()).select_from(E).where(and_(*conds))) or 0
+    note(0, total, "Scanning events")
     done = 0
     last_id = 0
     while True:
@@ -133,6 +138,7 @@ def rescan(db: Session, job_id: Optional[str] = None) -> int:
             .where(and_(E.id > last_id, *conds)).order_by(E.id).limit(RESCAN_BATCH)
         ).all()
         if not rows:
+            note(done, total, "Scanning events")
             return done
         last_id = rows[-1].id
         db.execute(update(E), [
@@ -142,3 +148,4 @@ def rescan(db: Session, job_id: Optional[str] = None) -> int:
         ])
         db.commit()
         done += len(rows)
+        note(done, total, "Scanning events")

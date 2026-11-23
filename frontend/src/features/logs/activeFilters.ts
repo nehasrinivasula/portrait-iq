@@ -11,7 +11,6 @@ export interface ActiveFilter {
   value: string;
 }
 
-const COLUMN_LABELS = { device: "Device", category: "Category", process: "Process" } as const;
 const fmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 function dateText(frame: TimeFrameChoice): string {
@@ -27,7 +26,15 @@ export function activeFilters(frame: TimeFrameChoice, filter: LogFilter): Active
   if (frame.preset !== "any") out.push({ id: "date", label: "Date", value: dateText(frame) });
   filter.sources.forEach((s) => out.push({ id: `source:${s}`, label: "Source", value: s }));
   filter.severities.forEach((s) => out.push({ id: `severity:${s}`, label: "Level", value: s }));
-  if (filter.value.trim() && !validateFilterValue(filter.value, "value")) out.push({ id: "value", label: COLUMN_LABELS[filter.column], value: filter.value.trim() });
+  if (filter.device.trim()) out.push({ id: "device", label: "Device", value: filter.device.trim() });
+  if (filter.category.trim()) out.push({ id: "category", label: "Category", value: filter.category.trim() });
+  if (filter.process.trim() && !validateFilterValue(filter.process, "process")) out.push({ id: "process", label: "Process", value: filter.process.trim() });
+  // Stored names carry where the file was staged (local/<hash>/name.csv): show the name.
+  if (filter.sourceFile) out.push({ id: "file", label: "File", value: filter.sourceFile.split("/").pop() || filter.sourceFile });
+  const short = (m: string) => (m.length > 40 ? `${m.slice(0, 40)}…` : m);
+  filter.hideCategories.forEach((v) => out.push({ id: `hidecat:${v}`, label: "Hiding category", value: v }));
+  filter.hideProcesses.forEach((v) => out.push({ id: `hideproc:${v}`, label: "Hiding process", value: v }));
+  filter.hideMessages.forEach((v) => out.push({ id: `hidemsg:${v}`, label: "Hiding message", value: short(v) }));
   if (filter.q.trim() && !validateSearchText(filter.q)) out.push({ id: "q", label: "Message has", value: filter.q.trim() });
   return out;
 }
@@ -38,7 +45,13 @@ export function removeFilter(id: string, frame: TimeFrameChoice, filter: LogFilt
   const [kind, value] = id.split(/:(.*)/s);
   if (kind === "source") return { frame, filter: { ...filter, sources: filter.sources.filter((s) => s !== value) } };
   if (kind === "severity") return { frame, filter: { ...filter, severities: filter.severities.filter((s) => s !== value) } };
-  if (kind === "value") return { frame, filter: { ...filter, value: "" } };
+  if (kind === "device") return { frame, filter: { ...filter, device: "" } };
+  if (kind === "category") return { frame, filter: { ...filter, category: "" } };
+  if (kind === "process") return { frame, filter: { ...filter, process: "" } };
+  if (kind === "file") return { frame, filter: { ...filter, sourceFile: "" } };
+  if (kind === "hidecat") return { frame, filter: { ...filter, hideCategories: filter.hideCategories.filter((v) => v !== value) } };
+  if (kind === "hideproc") return { frame, filter: { ...filter, hideProcesses: filter.hideProcesses.filter((v) => v !== value) } };
+  if (kind === "hidemsg") return { frame, filter: { ...filter, hideMessages: filter.hideMessages.filter((v) => v !== value) } };
   if (kind === "q") return { frame, filter: { ...filter, q: "" } };
   return { frame, filter };
 }

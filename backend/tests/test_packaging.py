@@ -2,6 +2,7 @@
 the fixed layout, errors that explain themselves, and the audit trail.
 Same setup as test_privacy_routes.py: real routes, in-memory database."""
 import io
+import shutil
 import json
 import zipfile
 
@@ -18,7 +19,7 @@ from app.auth import User, get_current_user
 from app.db import Base, get_db
 from app.ingestion import pipeline
 from app.main import app
-from app.models import AuditLogEntry, Job, Signal
+from app.models import AcquiredFileRecord, AuditLogEntry, Job, Signal
 from app.orchestrator.jobs import job_output_dir
 from app.packaging import service
 
@@ -151,18 +152,6 @@ def test_findings_in_the_zip_carry_their_evidence_fields(env):
     assert {"first_seen", "last_seen", "devices", "devices_total", "evidence"} <= set(f)
 
 
-def test_a_failed_re_export_keeps_the_last_good_zip(env, monkeypatch):
-    client, _ = env
-    export(client)
-    first = next(service.package_dir("job-1").glob("*.zip")).read_bytes()
-    monkeypatch.setitem(service._STEP_FUNCS, "tools", lambda *_: None)
-    monkeypatch.setattr(service.zipfile, "ZipFile", lambda *a, **k: (_ for _ in ()).throw(OSError(28, "No space")))
-    r = client.post("/api/jobs/job-1/package", json={})
-    assert r.status_code == 202, r.text
-    assert client.get("/api/jobs/job-1/package").json()["state"] == "failed"
-    assert [p.read_bytes() for p in service.package_dir("job-1").glob("*.zip")] == [first]
-
-
 def test_unmasked_export_keeps_values_and_warns(env):
     client, _ = env
     s = export(client, mask=False)
@@ -179,7 +168,7 @@ def test_each_step_explains_what_it_did_and_what_failed(env):
     assert [x["id"] for x in s["steps"]] == [i for i, _ in service.STEPS]
     assert all(x["detail"] for x in s["steps"])
     tools = steps["tools"]
-    assert tools["status"] == "warn" and tools["detail"] == "2 of 3 diagnostics ran; 1 file added."
+    assert tools["status"] == "warn" and tools["detail"] == "2 of 3 diagnostics ran; 1 file added. 1 text file scanned; 1 with PHI / PII."
     reasons = {i["item"]: i["reason"] for i in tools["issues"]}
     assert reasons["rti"] == "This diagnostic did not finish during the run: RTI is turned off on this server."
     assert "no longer on the server" in reasons["netshoot: gone.txt"]
@@ -255,16 +244,6 @@ def test_unknown_run_and_no_export_yet(env):
     assert r.status_code == 404 and "not been exported" in r.json()["detail"]
 
 
-def test_new_export_replaces_the_last_zip(env):
-    client, _ = env
-    first = export(client)
-    pkg = service.package_dir("job-1")
-    (pkg / first["file_name"]).rename(pkg / "portrait-iq-job-1-old.zip")
-    export(client)
-    assert [p.name for p in pkg.glob("*.zip")] != ["portrait-iq-job-1-old.zip"]
-    assert len(list(pkg.glob("*.zip"))) == 1
-
-
 def test_export_is_audited_without_log_values(env):
     client, seed = env
     export(client)
@@ -273,3 +252,315 @@ def test_export_is_audited_without_log_values(env):
     assert [r.action for r in rows] == ["package_create", "package_ready", "package_download"]
     assert all(SSN not in (r.detail or "") for r in rows)
     assert "sha256=" in rows[-1].detail
+
+
+# --- exports without a run: imported logs and all logs -------------------------------
+
+def _import_unassigned(seed, tmp_path):
+    lines = [HEADER, f'"2024-06-03T04:00:00.000+0000","0","1","INFO","host-z","u","unsetFriendlyName","svc[1:0]",":0","General","imported ssn {SSN}"']
+    path = tmp_path / "imported.csv"
+    path.write_text("\n".join(lines) + "\n")
+    pipeline.ingest_file(path, seed, job_id=None)
+
+
+def test_imported_logs_export_without_a_run(env, tmp_path):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    p = client.get("/api/jobs/unassigned/package/preview").json()
+    assert (p["scope"], p["title"], p["job_status"], p["finished"]) == ("imported", "Imported logs", None, True)
+    assert p["events"] == 1 and p["tools"] == [] and p["findings"] == 0
+    assert client.post("/api/jobs/unassigned/package", json={}).status_code == 202
+    s = client.get("/api/jobs/unassigned/package").json()
+    assert s["state"] == "ready" and s["file_name"].startswith("portrait-iq-imported-logs-")
+    zf = zipfile.ZipFile(io.BytesIO(client.get("/api/jobs/unassigned/package/download").content))
+    assert LAYOUT <= set(zf.namelist())
+    logs = zf.read("logs/events.jsonl").decode().splitlines()
+    assert len(logs) == 1 and SSN not in logs[0]                       # only the imported entry, masked
+    meta = json.loads(zf.read("metadata.json"))
+    assert meta["scope"] == "imported" and meta["run"] is None
+    tools = next(x for x in s["steps"] if x["id"] == "tools")
+    assert tools["status"] == "done" and "no diagnostic results" in tools["detail"]
+
+
+def test_all_logs_export_covers_every_set(env, tmp_path):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    p = client.get("/api/jobs/all/package/preview").json()
+    assert p["scope"] == "all" and p["events"] == 3 and p["findings"] == 1
+    client.post("/api/jobs/all/package", json={})
+    s = client.get("/api/jobs/all/package").json()
+    assert s["state"] == "ready" and s["file_name"].startswith("portrait-iq-all-logs-")
+    zf = zipfile.ZipFile(io.BytesIO(client.get("/api/jobs/all/package/download").content))
+    assert len(zf.read("logs/events.jsonl").decode().splitlines()) == 3
+    summary = json.loads(zf.read("logs/summary.json"))
+    assert {x["id"] for x in summary["sets"]} == {"job-1", "unassigned"}
+    assert json.loads(zf.read("findings/findings.json"))[0]["run"] == "job-1"
+
+
+def test_nothing_to_export_without_logs(env):
+    client, _ = env
+    r = client.post("/api/jobs/unassigned/package", json={})
+    assert r.status_code == 409 and "no imported logs" in r.json()["detail"]
+
+
+def test_collections_list_the_tools_each_run_used(env, tmp_path):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    rows = {c["job_id"]: c for c in client.get("/api/logs/collections").json()}
+    assert rows["job-1"]["tools"] == ["netshoot", "tshark"] and rows["unassigned"]["tools"] == []
+
+
+def test_system_manifest_lists_every_troubleshooting_file(env):
+    client, _ = env
+    export(client)
+    manifest = json.loads(open_zip(client).read("system/manifest.json"))
+    assert [m["key"] for m in manifest] == [k for k, _, _ in service.SYSTEM_ITEMS]
+    missing = [m for m in manifest if m["status"] == "missing"]
+    assert missing and all(m["needed"] for m in missing)     # each gap says what is needed
+
+
+def test_preview_lists_system_files_with_what_is_needed(env):
+    client, _ = env
+    sysf = {x["key"]: x for x in client.get("/api/jobs/job-1/package/preview").json()["system"]}
+    assert list(sysf) == [k for k, _, _ in service.SYSTEM_ITEMS]
+    assert sysf["wireshark_pcap"]["available"] is False or sysf["wireshark_pcap"]["needed"] is None
+    assert sysf["firewall"]["available"] is False and sysf["firewall"]["needed"]
+
+
+def test_each_export_step_records_when_it_started_and_finished(env):
+    client, _ = env
+    s = export(client)
+    assert all(x["started_at"] and x["finished_at"] and x["started_at"] <= x["finished_at"] for x in s["steps"])
+
+
+# --- export history, sets of runs, delete ------------------------------------------
+
+def test_a_failed_re_export_keeps_the_last_good_zip(env, monkeypatch):
+    client, _ = env
+    first = export(client)
+    good = client.get(f"/api/exports/{first['export_id']}/download").content
+    monkeypatch.setitem(service._STEP_FUNCS, "tools", lambda *_: None)
+    monkeypatch.setattr(service.zipfile, "ZipFile", lambda *a, **k: (_ for _ in ()).throw(OSError(28, "No space")))
+    assert client.post("/api/jobs/job-1/package", json={}).status_code == 202
+    assert client.get("/api/jobs/job-1/package").json()["state"] == "failed"      # the latest is the failed one
+    assert client.get(f"/api/exports/{first['export_id']}/download").content == good
+
+
+def test_every_export_is_kept_until_deleted(env):
+    client, seed = env
+    a, b = export(client), export(client)
+    assert a["export_id"] != b["export_id"]
+    listed = client.get("/api/exports").json()
+    assert [x["export_id"] for x in listed["exports"]] == [b["export_id"], a["export_id"]]   # newest first
+    assert listed["total_bytes"] == a["size_bytes"] + b["size_bytes"]
+    assert client.delete(f"/api/exports/{a['export_id']}").status_code == 200
+    assert [x["export_id"] for x in client.get("/api/exports").json()["exports"]] == [b["export_id"]]
+    assert client.get(f"/api/exports/{a['export_id']}").status_code == 404
+    assert seed.scalars(select(AuditLogEntry).where(AuditLogEntry.action == "package_delete")).one()
+
+
+def test_export_ids_from_the_url_cannot_reach_other_folders(env):
+    client, _ = env
+    for bad in ("..", "exp-..%2F..%2Fetc", "legacy-..", "legacy-a%2Fb", "nope"):
+        assert client.get(f"/api/exports/{bad}").status_code == 404
+        assert client.delete(f"/api/exports/{bad}").status_code == 404
+
+
+def test_exports_from_before_per_export_folders_are_still_listed(env):
+    client, _ = env
+    s = export(client)
+    legacy = service.package_dir("job-1")
+    shutil.copytree(service.export_dir(s["export_id"]), legacy)
+    raw = json.loads((legacy / "status.json").read_text())
+    raw["export_id"] = ""
+    (legacy / "status.json").write_text(json.dumps(raw))
+    ids = [x["export_id"] for x in client.get("/api/exports").json()["exports"]]
+    assert "legacy-job-1" in ids
+    assert client.get("/api/exports/legacy-job-1/download").status_code == 200
+    assert client.delete("/api/exports/legacy-job-1").status_code == 200 and not legacy.exists()
+
+
+def test_several_runs_go_in_one_zip_each_in_the_standard_layout(env):
+    client, seed = env
+    seed.add(Job(id="job-2", mode="live", status="partial", tools="[]"))
+    seed.commit()
+    r = client.post("/api/exports", json={"runs": ["job-1", "job-2"]})
+    assert r.status_code == 202, r.text
+    s = client.get(f"/api/exports/{r.json()['export_id']}").json()
+    assert s["state"] == "ready" and s["scope"] == "runs" and s["runs"] == ["job-1", "job-2"]
+    assert s["file_name"].startswith("portrait-iq-2-runs-")
+    zf = zipfile.ZipFile(io.BytesIO(client.get(f"/api/exports/{s['export_id']}/download").content))
+    meta = json.loads(zf.read("metadata.json"))
+    assert [x["id"] for x in meta["runs"]] == ["job-1", "job-2"]
+    for run in meta["runs"]:
+        assert {run["folder"] + p for p in LAYOUT} <= set(zf.namelist())
+    assert SSN not in zf.read(meta["runs"][0]["folder"] + "logs/events.jsonl").decode()     # masked by default
+    tools = next(x for x in s["steps"] if x["id"] == "run:job-1")
+    assert tools["status"] == "warn" and any("rti" in i["item"] for i in tools["issues"])     # each run's notes surface
+
+
+def test_a_set_refuses_unfinished_or_unknown_runs(env):
+    client, seed = env
+    seed.add(Job(id="job-3", mode="live", status="running", tools="[]"))
+    seed.commit()
+    assert client.post("/api/exports", json={"runs": ["job-1", "job-3"]}).status_code == 409
+    assert client.post("/api/exports", json={"runs": ["job-1", "nope"]}).status_code == 404
+    assert client.post("/api/exports", json={}).status_code == 422
+    assert client.post("/api/exports", json={"runs": ["job-1"], "scope": "all"}).status_code == 422
+    one = client.post("/api/exports", json={"runs": ["job-1"]})
+    assert one.status_code == 202 and one.json()["scope"] == "run"          # a single run is a normal run export
+# --- tool output is scanned like logs (S-3) ----------------------------------------------------------------
+
+def _report(client):
+    return json.loads(open_zip(client).read("privacy/report.json"))
+
+
+def test_report_counts_what_the_tools_collected_without_the_values(env):
+    client, _ = env
+    export(client)
+    zf = open_zip(client)
+    raw = zf.read("privacy/report.json").decode()
+    tools = json.loads(raw)["tools"]
+    assert tools["scanned"] is True and tools["files_scanned"] == 1
+    assert tools["flagged_files"] == 1 and tools["flagged_lines"] == 1 and tools["by_category"] == {"ssn": 1}
+    checks = next(f for f in tools["files"] if f["file"] == "checks.txt")
+    assert checks["tool"] == "netshoot" and checks["scanned"] and checks["included"] and checks["lines"] == 2
+    assert SSN not in raw                                    # counts only
+
+
+def test_a_masked_export_leaves_out_the_capture_and_the_report_says_why(env):
+    client, _ = env
+    export(client)
+    tools = _report(client)["tools"]
+    cap = next(f for f in tools["files"] if f["file"] == "capture.pcap")
+    assert cap["scanned"] is False and cap["included"] is False and "binary" in cap["not_scanned_reason"]
+    assert tools["files_not_scanned"] == 1 and tools["complete"] is True      # nothing unscanned is in the zip
+    assert tools["limits"]
+
+
+def test_an_unmasked_export_with_a_capture_says_the_report_is_not_complete(env):
+    client, _ = env
+    s = export(client, mask=False)
+    tools = _report(client)["tools"]
+    assert tools["complete"] is False
+    assert any("capture.pcap" in w and "could not be scanned" in w for w in s["warnings"])
+    assert any("diagnostic output" in w and "as is" in w for w in s["warnings"])
+    assert SSN in open_zip(client).read("tools/netshoot/checks.txt").decode()     # unmasked means as is
+
+
+def test_tool_files_are_scanned_even_when_masking_is_off(env):
+    client, _ = env
+    export(client, mask=False)
+    assert _report(client)["tools"]["flagged_lines"] == 1
+
+
+def test_network_identifiers_in_tool_files_are_counted_apart_and_not_flagged(env):
+    client, _ = env
+    (job_output_dir("job-1") / "netshoot" / "checks.txt").write_text("ping 10.1.2.3 ok\nmac aa:bb:cc:dd:ee:ff\n")
+    export(client)
+    tools = _report(client)["tools"]
+    assert tools["flagged_lines"] == 0 and tools["flagged_files"] == 0
+    assert tools["network_identifier_lines"] == 2
+    assert tools["network_by_category"] == {"ip_address": 1, "mac_address": 1}
+
+
+def test_the_summary_and_warnings_in_results_json_are_scanned_and_masked(env):
+    client, _ = env
+    out = job_output_dir("job-1")
+    (out / "results.json").write_text(json.dumps([
+        {"tool": "netshoot", "summary": f"checked host for ssn {SSN}", "warnings": [f"also {SSN}"],
+         "artifact_paths": []},
+    ]))
+    export(client)
+    zf = open_zip(client)
+    results = zf.read("tools/results.json").decode()
+    assert SSN not in results and "[REDACTED:ssn]" in results
+    assert _report(client)["tools"]["results_json"]["flagged_lines"] == 2
+
+
+def test_the_report_never_claims_a_tool_scan_when_the_tools_step_fails(env, monkeypatch):
+    client, _ = env
+    monkeypatch.setattr("app.packaging.service.read_results", lambda _id: (_ for _ in ()).throw(RuntimeError("x")))
+    export(client)
+    tools = _report(client)["tools"]
+    assert tools["scanned"] is False and "reason" in tools
+
+
+def test_the_tools_step_detail_mentions_the_scan(env):
+    client, _ = env
+    s = export(client)
+    tools = next(x for x in s["steps"] if x["id"] == "tools")
+    assert "text file scanned" in tools["detail"] and "1 with PHI / PII" in tools["detail"]
+
+
+# --- the system/ files are scanned too ---------------------------------------------------------------------
+
+def _pulled_csv(seed, tmp_path):
+    """A Log Export CSV already pulled from the API, as the system/ step finds it (imported and all-logs exports)."""
+    path = tmp_path / "pulled.csv"
+    path.write_text(f"{HEADER}\nline one\nbilling ssn {SSN}\n")
+    seed.add(AcquiredFileRecord(source="axone", remote_id="r1", name="pulled.csv", status="acquired",
+                                local_path=str(path)))
+    seed.commit()
+
+
+def _unassigned_report(client):
+    zf = zipfile.ZipFile(io.BytesIO(client.get("/api/jobs/unassigned/package/download").content))
+    return zf, json.loads(zf.read("privacy/report.json"))
+
+
+def test_pulled_log_export_csvs_are_scanned_and_masked_in_the_system_folder(env, tmp_path):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    _pulled_csv(seed, tmp_path)
+    assert client.post("/api/jobs/unassigned/package", json={}).status_code == 202
+    zf, report = _unassigned_report(client)
+    system = report["system"]
+    assert system["scanned"] is True and system["files_scanned"] == 1
+    assert system["flagged_lines"] == 1 and system["by_category"] == {"ssn": 1}
+    assert system["files"][0]["tool"] == "log_export_csv" and system["complete"] is True
+    assert SSN not in zf.read("system/log_export_csv/pulled.csv").decode()
+    assert SSN not in json.dumps(report)
+
+
+def test_an_unmasked_export_warns_about_flagged_lines_in_the_system_files(env, tmp_path):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    _pulled_csv(seed, tmp_path)
+    assert client.post("/api/jobs/unassigned/package", json={"mask": False}).status_code == 202
+    s = client.get("/api/jobs/unassigned/package").json()
+    assert any("troubleshooting files" in w and "as is" in w for w in s["warnings"])
+    zf, report = _unassigned_report(client)
+    assert SSN in zf.read("system/log_export_csv/pulled.csv").decode()
+    assert report["system"]["flagged_lines"] == 1
+
+
+def test_a_cms_snap_is_in_the_zip_but_reported_as_not_scanned(env, tmp_path, monkeypatch):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    monkeypatch.setattr("app.config.settings.cms_base_url", "http://cms.invalid")
+
+    class FakeCms:
+        def __init__(self, *_a, **_k): ...
+        def list_snaps(self): return ["snap-1.tar"]
+        def download(self, name, out):
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"tar-bytes")
+            return out
+
+    monkeypatch.setattr("app.sources.cms_client.CmsClient", FakeCms)
+    assert client.post("/api/jobs/unassigned/package", json={"mask": False}).status_code == 202
+    s = client.get("/api/jobs/unassigned/package").json()
+    zf, report = _unassigned_report(client)
+    assert "system/cms_logs/snap-1.tar" in zf.namelist()
+    snap = next(f for f in report["system"]["files"] if f["file"] == "snap-1.tar")
+    assert snap["included"] and not snap["scanned"] and "tar" in snap["not_scanned_reason"]
+    assert report["system"]["complete"] is False
+    assert any("snap-1.tar" in w and "could not be scanned" in w for w in s["warnings"])
+
+
+def test_no_system_files_means_an_empty_but_scanned_section(env):
+    client, _ = env
+    export(client)
+    system = _report(client)["system"]
+    assert system["scanned"] is True and system["files_scanned"] == 0 and system["complete"] is True

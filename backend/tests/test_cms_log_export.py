@@ -71,8 +71,12 @@ def test_cms_acquire_uses_configured_category_and_unified_ingestion(client, engi
         # A malicious/browser-supplied category cannot override CMS config.
         "options": {"event_category": "6"},
     })
-    assert response.status_code == 200, response.text
-    body = response.json()
+    # Acquisition follows the main branch's task contract. Tests run the
+    # worker inline, so the returned task already contains its final result.
+    assert response.status_code == 202, response.text
+    task = response.json()
+    assert task["status"] == "done"
+    body = task["result"]
     assert body["new_files"] == 1
     assert "configured Axone event category 1" in body["notes"][0]
     call = fake.calls("/getLogsByDateAndEventInCsv")[-1]

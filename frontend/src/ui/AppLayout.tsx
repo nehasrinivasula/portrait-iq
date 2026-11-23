@@ -8,6 +8,7 @@ const links = [
   { to: "/", label: "Home", end: true },
   { to: "/run", label: "Run diagnostics" },
   { to: "/logs", label: "Logs" },
+  { to: "/export", label: "Export" },
   { to: "/audit", label: "Audit log" },
 ];
 

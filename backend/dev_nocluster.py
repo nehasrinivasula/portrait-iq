@@ -96,7 +96,7 @@ class FakePodRunner:
         time.sleep(self.DELAY_S / 2)
 
 
-k8s.get_pod_runner = lambda: FakePodRunner()
+k8s.get_pod_runner = lambda *_a, **_k: FakePodRunner()   # callers pass a namespace
 
 def _seed_sample_events() -> None:
     """Synthetic events, only into an empty dev database, so the log page has
