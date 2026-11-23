@@ -50,6 +50,60 @@ def clear_job_files(folder: Path) -> None:
             entry.unlink()
 
 
+def _dir_size(path: Path) -> int:
+    """Every byte under a run folder, the export zip included (unlike
+    folder_stats, which skips the protected export): retention has to account
+    for the whole folder because the package zip holds the big artifacts too."""
+    total = 0
+    for root, _dirs, names in os.walk(path, followlinks=False):
+        for n in names:
+            fp = Path(root) / n
+            try:
+                if not fp.is_symlink():
+                    total += fp.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def job_dirs_newest_first() -> list[Path]:
+    """Every run's folder under the job output dir, newest first by mtime."""
+    base = Path(settings.job_output_dir)
+    if not base.is_dir():
+        return []
+    dirs = [p for p in base.iterdir() if p.is_dir() and not p.is_symlink()]
+    return sorted(dirs, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def prune_old_runs(keep: int, max_total_mb: int, protect: frozenset[str] = frozenset()) -> list[str]:
+    """Bound the data volume. Always keep the newest `keep` run folders; among
+    the rest, delete oldest-first until the total size of all run folders is
+    under max_total_mb. A protected id (e.g. the run in progress) is never
+    removed. Returns the ids removed. A full run folder -- export zip and all --
+    is deleted, so old exports age out; this is what keeps the multi-GB TSDB
+    export (SCRUM-105) from filling the PVC. Disabled when keep and the cap are
+    both 0."""
+    if keep <= 0 and max_total_mb <= 0:
+        return []
+    sized = [(p, _dir_size(p)) for p in job_dirs_newest_first()]   # newest first
+    newest = {p.name for p, _ in sized[:keep]} if keep > 0 else set()
+    total = sum(s for _, s in sized)
+    cap = max_total_mb * 1024 * 1024
+    removed: list[str] = []
+    for path, size in reversed(sized):                            # oldest first
+        if cap and total <= cap:
+            break
+        if path.name in newest or path.name in protect:
+            continue
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            continue
+        removed.append(path.name)
+        total -= size
+    return removed
+
+
 def human_size(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024 or unit == "GB":

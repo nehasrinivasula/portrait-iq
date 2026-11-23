@@ -22,6 +22,7 @@ from app.audit import log_action
 from app.collectors import k8s
 from app.collectors.base import Collector, CollectorResult, PluginError, ResourceLimits, reason_for
 from app.collectors.registry import PluginRegistry, get_registry
+from app.cleanup.files import prune_old_runs
 from app.config import allowed_tools_namespaces, settings
 from app.models import Job
 
@@ -106,6 +107,16 @@ def run_job(
     job.status = "running"
     db.commit()
     _audit_job(db, job, "job_status", "status=running")
+
+    # Bound the data volume before this run writes: old run folders age out so
+    # the multi-GB TSDB export (SCRUM-105) cannot fill the PVC. Never fails a run.
+    try:
+        removed = prune_old_runs(settings.job_retention_keep,
+                                 settings.job_retention_max_total_mb, protect=frozenset({job.id}))
+        if removed:
+            log.info("run retention removed %d old run folder(s)", len(removed))
+    except Exception:                       # noqa: BLE001  retention is best-effort
+        log.warning("run retention pass failed", exc_info=True)
 
     limits = ResourceLimits(job.cpu_limit_pct, job.mem_limit_mb, job.max_output_mb)
     tools = json.loads(job.tools or "[]")

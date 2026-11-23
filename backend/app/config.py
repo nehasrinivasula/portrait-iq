@@ -111,6 +111,14 @@ class Settings(BaseSettings):
     # Files a field engineer hands in (e.g. a hospital's .pcap).
     upload_dir: str = "./data/uploads"
     upload_max_mb: int = 500
+    # Run retention (SCRUM-105): a full Prometheus TSDB export is multi-GB, so
+    # old run folders are pruned at the start of each run. The newest
+    # job_retention_keep are always kept; beyond those, the oldest are deleted
+    # until the total size of all run folders is under the cap. The cap stays
+    # under the data PVC (40Gi) so the volume cannot fill. 0 keep / 0 cap
+    # disables pruning.
+    job_retention_keep: int = 5
+    job_retention_max_total_mb: int = 32000
     # SCRUM-105: Grafana / system-health collector. Read-only Grafana HTTP API,
     # reachable in-cluster with no internet (e.g. http://grafana.<ns>.svc:3000).
     # Empty base URL disables the tool. The token is a read-only Grafana
@@ -123,6 +131,34 @@ class Settings(BaseSettings):
     # Optional: pin the Prometheus data source by uid; empty auto-picks the
     # first Grafana data source of type "prometheus".
     grafana_datasource_uid: str = ""
+
+    # SCRUM-105: Prometheus TSDB export. A full copy of the Prometheus
+    # database can only be read from the node's filesystem (the admin
+    # snapshot API is off and does not serve files, and the PVC lives in
+    # another namespace). So a short-lived, privileged pod runs as root, reads
+    # the Prometheus data dir from the node over a read-only hostPath, and
+    # writes a compressed native-TSDB tar onto the backend's own data volume
+    # -- never through the base64-exec path, which is for small files.
+    # Empty hostPath leaves the collector off (like grafana_base_url).
+    prometheus_tsdb_hostpath: str = ""
+    # The backend's data PVC and its mount path: the pod mounts the same PVC
+    # so the artifact it writes lands where the backend already reads it
+    # (job_output_dir must live under this mount).
+    prometheus_tsdb_data_pvc: str = "portrait-iq-data"
+    prometheus_tsdb_data_mount: str = "/data"
+    # "full" exports the whole database; a duration like "7d" is reserved for
+    # a future windowed export and is rejected until implemented.
+    prometheus_tsdb_scope: str = "full"
+    # Compressor run inside the tool pod; must exist in the image.
+    prometheus_tsdb_compressor: str = "zstd"       # "zstd" or "gzip"
+    prometheus_tsdb_level: int = 3
+    # Image for the export pod; empty uses netshoot_image (has tar + zstd).
+    prometheus_tsdb_image: str = ""
+    # Refuse rather than fill the node disk / package. The pod also checks the
+    # data volume has room for the (uncompressed-sized) export before it runs.
+    prometheus_tsdb_max_output_mb: int = 30000
+    # tar + compress of a multi-GB TSDB can take many minutes.
+    prometheus_tsdb_timeout_seconds: int = 3600
 
     class Config:
         env_file = ".env"

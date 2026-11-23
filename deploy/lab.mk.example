@@ -46,5 +46,16 @@ NODE_PORT            = 30080
 # named GRAFANA_API_TOKEN (backend/SECRETS.md).
 # GRAFANA_BASE_URL     = http://axone-compute-monitoring-grafana.compute.svc:80
 
+# Full Prometheus TSDB export (SCRUM-105): the node path to the Prometheus
+# data directory (the local-path PVC dir that holds prometheus-db/). Empty
+# leaves the tool off. Find it on the node with:
+#   PV=$(kubectl -n compute get pvc -o jsonpath='{range .items[*]}{.spec.volumeName}:{.metadata.name}{"\n"}{end}' | grep -i prometheus | head -1 | cut -d: -f1)
+#   kubectl get pv "$PV" -o jsonpath='{.spec.hostPath.path}'
+# WARNING: when set, this runs a short-lived ROOT pod with a read-only hostPath
+# onto that dir -- the one privileged tool pod -- and writes a multi-GB archive
+# into every run (needs the 40Gi data PVC, and adds heavy disk I/O near etcd).
+# Have the bench owners sign off before enabling it.
+# PROMETHEUS_TSDB_HOSTPATH = /opt/local-path-provisioner/pvc-..._compute_prometheus-...-db-...-0
+
 # Absolute path to a folder outside the repo, e.g. $(HOME)/portrait-iq-secrets
 SECRETS_DIR          =

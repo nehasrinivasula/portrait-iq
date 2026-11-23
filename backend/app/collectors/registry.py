@@ -31,6 +31,7 @@ PLUGINS = [
     "app.collectors.grafana:GrafanaHealthCollector",
     "app.collectors.hub_import:HubImportCollector",
     "app.collectors.netshoot:NetshootCollector",
+    "app.collectors.prometheus_tsdb:PrometheusTsdbCollector",
     "app.collectors.rti:RtiCollector",
     "app.collectors.tshark:TsharkCollector",
 ]

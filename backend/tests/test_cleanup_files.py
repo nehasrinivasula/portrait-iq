@@ -1,8 +1,25 @@
 """Item ids and job folders for the cleanup choice. No database or cluster."""
+import os
+
 import pytest
 
-from app.cleanup.files import CleanupError, clear_job_files, folder_stats, human_size, parse_ids, safe_job_dir
+from app.cleanup.files import (
+    CleanupError, clear_job_files, folder_stats, human_size, parse_ids,
+    prune_old_runs, safe_job_dir,
+)
 from app.config import settings
+
+_MB = 1024 * 1024
+
+
+def _run(jobs_dir, name, *, size=0, mtime=0.0):
+    """A run folder with a known size and mtime (mtime set last, after the write)."""
+    d = jobs_dir / name
+    d.mkdir()
+    if size:
+        (d / "artifact.bin").write_bytes(b"x" * size)
+    os.utime(d, (mtime, mtime))
+    return d
 
 
 @pytest.fixture
@@ -83,3 +100,36 @@ def test_only_the_top_level_package_folder_is_protected(tmp_path):
     assert folder_stats(tmp_path) == (1, 1)
     clear_job_files(tmp_path)
     assert list(tmp_path.iterdir()) == []
+
+
+# --- run retention (SCRUM-105) -------------------------------------------
+
+def test_prune_disabled_when_keep_and_cap_both_zero(jobs_dir):
+    _run(jobs_dir, "a", size=10, mtime=1)
+    _run(jobs_dir, "b", size=10, mtime=2)
+    assert prune_old_runs(0, 0) == []
+    assert {p.name for p in jobs_dir.iterdir()} == {"a", "b"}
+
+
+def test_prune_under_cap_deletes_nothing(jobs_dir):
+    _run(jobs_dir, "a", size=100, mtime=1)
+    _run(jobs_dir, "b", size=100, mtime=2)
+    assert prune_old_runs(keep=1, max_total_mb=10) == []        # ~200 B << 10 MB
+    assert len(list(jobs_dir.iterdir())) == 2
+
+
+def test_prune_deletes_oldest_until_under_cap(jobs_dir):
+    for i, name in enumerate(["old", "mid", "new", "newest"]):
+        _run(jobs_dir, name, size=_MB, mtime=float(i))          # newest has the largest mtime
+    removed = prune_old_runs(keep=1, max_total_mb=2)            # 4 MB total, keep newest, trim to <=2 MB
+    assert set(removed) == {"old", "mid"}
+    assert {p.name for p in jobs_dir.iterdir()} == {"new", "newest"}
+
+
+def test_prune_keeps_the_newest_and_never_touches_protected(jobs_dir):
+    for i, name in enumerate(["old", "mid", "cur"]):
+        _run(jobs_dir, name, size=_MB, mtime=float(i))          # cur is newest
+    removed = prune_old_runs(keep=1, max_total_mb=1, protect=frozenset({"old"}))
+    assert "cur" not in removed and "old" not in removed        # newest + protected survive
+    assert removed == ["mid"]
+    assert (jobs_dir / "old").is_dir() and (jobs_dir / "cur").is_dir()

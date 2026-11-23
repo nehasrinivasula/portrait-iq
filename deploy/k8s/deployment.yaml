@@ -15,7 +15,10 @@ spec:
   # run `kubectl get storageclass` on the node: there may be none.
   resources:
     requests:
-      storage: 2Gi
+      # Holds every run's artifacts and the export zip being assembled. Sized
+      # for the full Prometheus TSDB export (SCRUM-105), which writes a
+      # multi-GB archive here; old run dirs are cleaned up so it does not fill.
+      storage: 40Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -86,6 +89,16 @@ spec:
               value: "__GRAFANA_BASE_URL__"
             - name: GRAFANA_API_TOKEN_FILE
               value: /run/secrets/portrait-iq/GRAFANA_API_TOKEN
+            # Full Prometheus TSDB export (SCRUM-105). The node path to the
+            # Prometheus data dir (the local-path PVC dir that holds
+            # prometheus-db/); find it with
+            #   kubectl -n <mon-ns> get pv <prometheus-pv> \
+            #     -o jsonpath='{.spec.hostPath.path}'
+            # Empty leaves the tool off. When set, this collector runs a
+            # short-lived ROOT pod with a read-only hostPath onto that dir --
+            # the one privileged tool pod; keep the value accurate.
+            - name: PROMETHEUS_TSDB_HOSTPATH
+              value: "__PROMETHEUS_TSDB_HOSTPATH__"
           # The pod shares the MiniEdge with the Portrait software and must
           # not starve it. Raise only after watching real usage.
           resources:
