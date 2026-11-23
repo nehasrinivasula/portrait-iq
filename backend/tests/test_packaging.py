@@ -19,7 +19,7 @@ from app.auth import User, get_current_user
 from app.db import Base, get_db
 from app.ingestion import pipeline
 from app.main import app
-from app.models import AuditLogEntry, Job, Signal
+from app.models import AcquiredFileRecord, AuditLogEntry, Job, Signal
 from app.orchestrator.jobs import job_output_dir
 from app.packaging import service
 
@@ -168,7 +168,7 @@ def test_each_step_explains_what_it_did_and_what_failed(env):
     assert [x["id"] for x in s["steps"]] == [i for i, _ in service.STEPS]
     assert all(x["detail"] for x in s["steps"])
     tools = steps["tools"]
-    assert tools["status"] == "warn" and tools["detail"] == "2 of 3 diagnostics ran; 1 file added."
+    assert tools["status"] == "warn" and tools["detail"] == "2 of 3 diagnostics ran; 1 file added. 1 text file scanned; 1 with PHI / PII."
     reasons = {i["item"]: i["reason"] for i in tools["issues"]}
     assert reasons["rti"] == "This diagnostic did not finish during the run: RTI is turned off on this server."
     assert "no longer on the server" in reasons["netshoot: gone.txt"]
@@ -409,3 +409,158 @@ def test_a_set_refuses_unfinished_or_unknown_runs(env):
     assert client.post("/api/exports", json={"runs": ["job-1"], "scope": "all"}).status_code == 422
     one = client.post("/api/exports", json={"runs": ["job-1"]})
     assert one.status_code == 202 and one.json()["scope"] == "run"          # a single run is a normal run export
+# --- tool output is scanned like logs (S-3) ----------------------------------------------------------------
+
+def _report(client):
+    return json.loads(open_zip(client).read("privacy/report.json"))
+
+
+def test_report_counts_what_the_tools_collected_without_the_values(env):
+    client, _ = env
+    export(client)
+    zf = open_zip(client)
+    raw = zf.read("privacy/report.json").decode()
+    tools = json.loads(raw)["tools"]
+    assert tools["scanned"] is True and tools["files_scanned"] == 1
+    assert tools["flagged_files"] == 1 and tools["flagged_lines"] == 1 and tools["by_category"] == {"ssn": 1}
+    checks = next(f for f in tools["files"] if f["file"] == "checks.txt")
+    assert checks["tool"] == "netshoot" and checks["scanned"] and checks["included"] and checks["lines"] == 2
+    assert SSN not in raw                                    # counts only
+
+
+def test_a_masked_export_leaves_out_the_capture_and_the_report_says_why(env):
+    client, _ = env
+    export(client)
+    tools = _report(client)["tools"]
+    cap = next(f for f in tools["files"] if f["file"] == "capture.pcap")
+    assert cap["scanned"] is False and cap["included"] is False and "binary" in cap["not_scanned_reason"]
+    assert tools["files_not_scanned"] == 1 and tools["complete"] is True      # nothing unscanned is in the zip
+    assert tools["limits"]
+
+
+def test_an_unmasked_export_with_a_capture_says_the_report_is_not_complete(env):
+    client, _ = env
+    s = export(client, mask=False)
+    tools = _report(client)["tools"]
+    assert tools["complete"] is False
+    assert any("capture.pcap" in w and "could not be scanned" in w for w in s["warnings"])
+    assert any("diagnostic output" in w and "as is" in w for w in s["warnings"])
+    assert SSN in open_zip(client).read("tools/netshoot/checks.txt").decode()     # unmasked means as is
+
+
+def test_tool_files_are_scanned_even_when_masking_is_off(env):
+    client, _ = env
+    export(client, mask=False)
+    assert _report(client)["tools"]["flagged_lines"] == 1
+
+
+def test_network_identifiers_in_tool_files_are_counted_apart_and_not_flagged(env):
+    client, _ = env
+    (job_output_dir("job-1") / "netshoot" / "checks.txt").write_text("ping 10.1.2.3 ok\nmac aa:bb:cc:dd:ee:ff\n")
+    export(client)
+    tools = _report(client)["tools"]
+    assert tools["flagged_lines"] == 0 and tools["flagged_files"] == 0
+    assert tools["network_identifier_lines"] == 2
+    assert tools["network_by_category"] == {"ip_address": 1, "mac_address": 1}
+
+
+def test_the_summary_and_warnings_in_results_json_are_scanned_and_masked(env):
+    client, _ = env
+    out = job_output_dir("job-1")
+    (out / "results.json").write_text(json.dumps([
+        {"tool": "netshoot", "summary": f"checked host for ssn {SSN}", "warnings": [f"also {SSN}"],
+         "artifact_paths": []},
+    ]))
+    export(client)
+    zf = open_zip(client)
+    results = zf.read("tools/results.json").decode()
+    assert SSN not in results and "[REDACTED:ssn]" in results
+    assert _report(client)["tools"]["results_json"]["flagged_lines"] == 2
+
+
+def test_the_report_never_claims_a_tool_scan_when_the_tools_step_fails(env, monkeypatch):
+    client, _ = env
+    monkeypatch.setattr("app.packaging.service.read_results", lambda _id: (_ for _ in ()).throw(RuntimeError("x")))
+    export(client)
+    tools = _report(client)["tools"]
+    assert tools["scanned"] is False and "reason" in tools
+
+
+def test_the_tools_step_detail_mentions_the_scan(env):
+    client, _ = env
+    s = export(client)
+    tools = next(x for x in s["steps"] if x["id"] == "tools")
+    assert "text file scanned" in tools["detail"] and "1 with PHI / PII" in tools["detail"]
+
+
+# --- the system/ files are scanned too ---------------------------------------------------------------------
+
+def _pulled_csv(seed, tmp_path):
+    """A Log Export CSV already pulled from the API, as the system/ step finds it (imported and all-logs exports)."""
+    path = tmp_path / "pulled.csv"
+    path.write_text(f"{HEADER}\nline one\nbilling ssn {SSN}\n")
+    seed.add(AcquiredFileRecord(source="axone", remote_id="r1", name="pulled.csv", status="acquired",
+                                local_path=str(path)))
+    seed.commit()
+
+
+def _unassigned_report(client):
+    zf = zipfile.ZipFile(io.BytesIO(client.get("/api/jobs/unassigned/package/download").content))
+    return zf, json.loads(zf.read("privacy/report.json"))
+
+
+def test_pulled_log_export_csvs_are_scanned_and_masked_in_the_system_folder(env, tmp_path):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    _pulled_csv(seed, tmp_path)
+    assert client.post("/api/jobs/unassigned/package", json={}).status_code == 202
+    zf, report = _unassigned_report(client)
+    system = report["system"]
+    assert system["scanned"] is True and system["files_scanned"] == 1
+    assert system["flagged_lines"] == 1 and system["by_category"] == {"ssn": 1}
+    assert system["files"][0]["tool"] == "log_export_csv" and system["complete"] is True
+    assert SSN not in zf.read("system/log_export_csv/pulled.csv").decode()
+    assert SSN not in json.dumps(report)
+
+
+def test_an_unmasked_export_warns_about_flagged_lines_in_the_system_files(env, tmp_path):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    _pulled_csv(seed, tmp_path)
+    assert client.post("/api/jobs/unassigned/package", json={"mask": False}).status_code == 202
+    s = client.get("/api/jobs/unassigned/package").json()
+    assert any("troubleshooting files" in w and "as is" in w for w in s["warnings"])
+    zf, report = _unassigned_report(client)
+    assert SSN in zf.read("system/log_export_csv/pulled.csv").decode()
+    assert report["system"]["flagged_lines"] == 1
+
+
+def test_a_cms_snap_is_in_the_zip_but_reported_as_not_scanned(env, tmp_path, monkeypatch):
+    client, seed = env
+    _import_unassigned(seed, tmp_path)
+    monkeypatch.setattr("app.config.settings.cms_base_url", "http://cms.invalid")
+
+    class FakeCms:
+        def __init__(self, *_a, **_k): ...
+        def list_snaps(self): return ["snap-1.tar"]
+        def download(self, name, out):
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"tar-bytes")
+            return out
+
+    monkeypatch.setattr("app.sources.cms_client.CmsClient", FakeCms)
+    assert client.post("/api/jobs/unassigned/package", json={"mask": False}).status_code == 202
+    s = client.get("/api/jobs/unassigned/package").json()
+    zf, report = _unassigned_report(client)
+    assert "system/cms_logs/snap-1.tar" in zf.namelist()
+    snap = next(f for f in report["system"]["files"] if f["file"] == "snap-1.tar")
+    assert snap["included"] and not snap["scanned"] and "tar" in snap["not_scanned_reason"]
+    assert report["system"]["complete"] is False
+    assert any("snap-1.tar" in w and "could not be scanned" in w for w in s["warnings"])
+
+
+def test_no_system_files_means_an_empty_but_scanned_section(env):
+    client, _ = env
+    export(client)
+    system = _report(client)["system"]
+    assert system["scanned"] is True and system["files_scanned"] == 0 and system["complete"] is True
