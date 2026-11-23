@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     tools_namespace: str = "portrait-iq"
     # Comma-separated namespaces explicitly provisioned for diagnostic pods.
     tools_allowed_namespaces: str = ""
+    # Namespaces the Kubernetes diagnostics tool reads (pods, events), comma-separated.
+    # Empty: ours (tools_namespace) and Portrait's pm. Read-only RBAC for each is in
+    # deploy/k8s/tool-rbac.yaml and deploy/k8s-portrait/.
+    k8s_diagnostics_namespaces: str = ""
     kubeconfig_path: str | None = None
     # The lab has no internet: images are imported into containerd by hand,
     # so IfNotPresent never pulls there. Pin exact tags.
@@ -141,6 +145,12 @@ def load_login_secret_files(s: Settings) -> None:
 
 settings = Settings()
 load_login_secret_files(settings)
+
+
+def diagnostics_namespaces() -> list[str]:
+    """Namespaces the Kubernetes diagnostics tool reads, in order, without repeats."""
+    raw = settings.k8s_diagnostics_namespaces.strip() or f"{settings.tools_namespace},pm"
+    return list(dict.fromkeys(name.strip() for name in raw.split(",") if name.strip()))
 
 
 def allowed_tools_namespaces() -> set[str]:

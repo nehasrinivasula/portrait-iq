@@ -1,7 +1,13 @@
 # What the backend may do in the cluster (SCRUM-39): start, watch, exec into
 # and delete its own tool pods (Netshoot, tshark live capture), in its own
-# namespace and nowhere else. No ClusterRole: it cannot touch Portrait's pm
-# namespace or GE's compute namespace. Tool pods themselves get no token.
+# namespace and nowhere else. Tool pods themselves get no token.
+#
+# Kubernetes diagnostics (app/collectors/k8s_diagnostics.py) also needs to
+# READ, never change: pods and events in its own namespace (below), the same
+# in Portrait's namespace (deploy/k8s-portrait/, applied there), and node
+# status, which is cluster-wide in Kubernetes, hence the one read-only
+# ClusterRole limited to get/list on nodes. It still cannot change anything
+# outside its own namespace, and it never reads Secrets or ConfigMaps.
 #
 # Applied by `make deploy` with the rest of deploy/k8s/, which fills in
 # __NAMESPACE__.
@@ -36,6 +42,61 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: portrait-iq-tools
+subjects:
+  - kind: ServiceAccount
+    name: portrait-iq
+    namespace: __NAMESPACE__
+---
+# Kubernetes diagnostics, read-only: events (pods are already readable above).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: portrait-iq-diagnostics-reader
+  labels:
+    app.kubernetes.io/name: portrait-iq
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: portrait-iq-diagnostics-reader
+  labels:
+    app.kubernetes.io/name: portrait-iq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: portrait-iq-diagnostics-reader
+subjects:
+  - kind: ServiceAccount
+    name: portrait-iq
+    namespace: __NAMESPACE__
+---
+# Node status for Kubernetes diagnostics. Nodes are cluster-scoped, so this
+# is a ClusterRole, limited to reading nodes and nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: portrait-iq-node-reader
+  labels:
+    app.kubernetes.io/name: portrait-iq
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: portrait-iq-node-reader
+  labels:
+    app.kubernetes.io/name: portrait-iq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: portrait-iq-node-reader
 subjects:
   - kind: ServiceAccount
     name: portrait-iq
