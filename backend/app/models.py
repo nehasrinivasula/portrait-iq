@@ -8,6 +8,7 @@ SessionActivity (server-side idle lock).
 import json
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import relationship
@@ -42,6 +43,8 @@ class Job(Base):
     mode = Column(String, nullable=False, default="live")     # "live" | "pre_install"
     status = Column(String, nullable=False, default="queued")  # queued|running|done|partial|failed|cleanup_failed|interrupted
     current_step = Column(String, nullable=True)
+    # {step: [started, finished]} as naive-UTC ISO strings, so the UI can show how long each step took.
+    step_times_json = Column(Text, nullable=True)
     cpu_limit_pct = Column(Integer, nullable=True)
     mem_limit_mb = Column(Integer, nullable=True)
     max_output_mb = Column(Integer, nullable=True)
@@ -50,6 +53,13 @@ class Job(Base):
     # The request that started this background job. The job can finish after
     # the browser request ends, so these fields preserve its audit ownership.
     requested_by = Column(String, nullable=True)
+
+    @property
+    def step_times(self) -> dict[str, list[Optional[str]]]:
+        try:
+            return json.loads(self.step_times_json or "{}")
+        except ValueError:   # a display hint must never break job reads
+            return {}
 
     @property
     def skipped_steps(self) -> list[str]:

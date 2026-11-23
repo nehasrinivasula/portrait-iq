@@ -20,7 +20,7 @@ export default function PrivacyPanel({ jobId, options, onOptions, reloadKey, onS
   const [view, setView] = useState<PrivacyView | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [scan, setScan] = useState<"idle" | "running" | "error">("idle");
-  const [scanText, setScanText] = useState<string | null>(null);
+  const [scanText, setScanText] = useState<string | null>(null);   // "Scanning events: x of y"
   const [localKey, setLocalKey] = useState(0);
   const busy = useRef(false);   // a scan is already being followed here
 
@@ -79,71 +79,73 @@ export default function PrivacyPanel({ jobId, options, onOptions, reloadKey, onS
 
   const kind = state === "error" ? "error" : !report ? "info" : privacyKind(report);
 
+  const headline = state === "error" ? "Couldn't read the scan report, so flagging and masking are unavailable."
+    : report ? privacyHeadline(report) : "Checking…";
+
+  // One line with the two switches always in reach; counts, the scan button and limits open below.
   return (
     <section className="privacy" aria-label="PHI and PII scan">
-      <div className={`alert ${kind}`} role={state === "error" ? "alert" : "status"}>
-        <strong>PHI / PII scan{jobId ? "" : " (all logs)"}</strong>
-        {state === "error" && (
-          <>Couldn't read the scan report, so flagging and masking are unavailable.{" "}
-            <button type="button" className="btn ghost" onClick={() => setLocalKey((k) => k + 1)}>Try again</button></>
-        )}
-        {state !== "error" && !report && "Checking…"}
-        {state !== "error" && report && privacyHeadline(report)}
-      </div>
-
-      {shown && shown.events > 0 && (
-        <>
-          <ul className="privacy-stats" aria-label="Scan counts">
-            <li><strong>{shown.events.toLocaleString()}</strong> events</li>
-            <li><strong>{shown.flagged_events.toLocaleString()}</strong> flagged</li>
-            <li title="IP and MAC addresses identify equipment. They are listed apart and are not counted as flagged.">
-              <strong>{shown.network_identifier_events.toLocaleString()}</strong> with IP / MAC addresses
-            </li>
-          </ul>
-
-          {shown.by_category.length > 0 && (
-            <ul className="privacy-cats" aria-label="What was flagged">
-              {shown.by_category.map((c) => (
-                <li key={c.value} className="privacy-cat">{categoryLabel(c.value)} <span className="muted">{c.count}</span></li>
-              ))}
-            </ul>
+      <details className="strip">
+        <summary>
+          <span className={`dot ${kind}`} aria-hidden="true" />
+          <span className="strip-title">PHI / PII</span>
+          <span className="muted" role={state === "error" ? "alert" : "status"}>{headline}</span>
+        </summary>
+        <div className="strip-body">
+          {shown && shown.events > 0 && (
+            <>
+              <ul className="privacy-stats" aria-label="Scan counts">
+                <li><strong>{shown.events.toLocaleString()}</strong> events</li>
+                <li><strong>{shown.flagged_events.toLocaleString()}</strong> flagged</li>
+                <li title="IP and MAC addresses identify equipment. They are listed apart and are not counted as flagged.">
+                  <strong>{shown.network_identifier_events.toLocaleString()}</strong> with IP / MAC addresses
+                </li>
+              </ul>
+              {shown.by_category.length > 0 && (
+                <ul className="privacy-cats" aria-label="What was flagged">
+                  {shown.by_category.map((c) => (
+                    <li key={c.value} className="privacy-cat">{categoryLabel(c.value)} <span className="muted">{c.count}</span></li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
-
-          {!shown.all_scanned && (
-            <p>
-              <button type="button" className="btn" disabled={scan === "running"} onClick={runScan}>
-                {scan === "running" ? (scanText ?? "Scanning…") : `Scan ${shown.unscanned_events.toLocaleString()} events now`}
-              </button>
-            </p>
-          )}
-          {scan === "error" && (
-            <div className="alert error" role="alert">
-              <strong>The scan didn't finish</strong>
-              Some events are still unscanned.{" "}
-              <button type="button" className="btn ghost" onClick={runScan}>Try again</button>
+          {shown && shown.limits.length > 0 && (
+            <div>
+              <strong>What this scan can and can't find</strong>
+              <ul className="privacy-limits">{shown.limits.map((l) => <li key={l}>{l}</li>)}</ul>
             </div>
           )}
-        </>
-      )}
+        </div>
+      </details>
 
-      <div className="privacy-switches">
+      <div className="privacy-actions">
+        {state === "error" && (
+          <button type="button" className="btn ghost" onClick={() => setLocalKey((k) => k + 1)}>Try again</button>
+        )}
+        {shown && shown.events > 0 && !shown.all_scanned && (
+          <button type="button" className="btn ghost" disabled={scan === "running"} onClick={runScan}>
+            {scan === "running" ? (scanText ?? "Scanning…") : `Scan ${shown.unscanned_events.toLocaleString()} events`}
+          </button>
+        )}
         <label>
           <input type="checkbox" checked={options.flaggedOnly} disabled={!ready && !options.flaggedOnly}
             onChange={(e) => onOptions({ ...options, flaggedOnly: e.target.checked })} />
-          Show flagged events only
+          Flagged only
         </label>
         <label>
           <input type="checkbox" checked={options.mask} disabled={!ready && !options.mask}
             onChange={(e) => onOptions({ ...options, mask: e.target.checked })} />
-          Hide flagged text (mask)
+          Mask flagged text
         </label>
       </div>
 
-      {shown && shown.limits.length > 0 && (
-        <details className="privacy-limits">
-          <summary>What this scan can and can't find</summary>
-          <ul>{shown.limits.map((l) => <li key={l}>{l}</li>)}</ul>
-        </details>
+      {scan === "error" && (
+        <div className="alert error" role="alert">
+          <strong>The scan didn't finish</strong>
+          Some events are still unscanned.{" "}
+          <button type="button" className="btn ghost" onClick={runScan}>Try again</button>
+        </div>
       )}
     </section>
   );
