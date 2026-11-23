@@ -251,6 +251,7 @@ GET  /api/sources                  sources + whether each is usable (and why not
 POST /api/sources/{id}/test        connection check with a specific reason
 GET  /api/sources/{id}/files       preview, flags files already pulled
 POST /api/sources/{id}/acquire     {"since", "until", "options": {...}, "ingest": true}
+POST /api/sources/axone/cms/acquire  CMS CSV pull using the GE-confirmed category
 POST /api/sources/local/upload     multipart files / ZIPs
 ```
 
@@ -264,6 +265,23 @@ same CSV format as the "all device log" exports. It only answers from inside
 the Kubernetes cluster. Optional `options`:
 `{"device_uuid": "...", "event_category": "3"}` (category is the API's
 integer code; the name mapping is not confirmed yet).
+
+#### CMS logs (SCRUM-124)
+
+CMS retrieval deliberately reuses the Axone CSV export path rather than
+creating a second ingestion format. GE must first confirm that CMS is an
+`eventCategory` on this API and provide its integer code. Set that code only
+on the server with `AXONE_CMS_EVENT_CATEGORY`; leaving it unset keeps CMS
+collection unavailable and returns a clear `409` from the API. The browser
+cannot choose or relabel a category.
+
+Once configured, call `POST /api/sources/axone/cms/acquire` with the same
+`since`, `until`, optional `device_uuids`, `job_id`, and `ingest` fields as a
+normal acquisition. The response is CSV-derived and follows the existing
+hour-window limits, settle time, deduplication and audit behavior. Rows enter
+`normalized_events`, the unified Logs page, and the automatic PHI/PII scan
+with every other acquired file. No credential, endpoint URL, or category code
+is included in audit details beyond the configured integer category.
 
 Time-frame selection (SCRUM-44): a pull covers exactly `[since, until)` and
 nothing outside it. Times are ISO 8601; a time without an offset is read as

@@ -136,7 +136,12 @@ class AxoneLogExportSource(LogSource):
     def options(self) -> SourceOptions:
         # Free-form; empty means all devices / all categories. device_uuids is
         # a comma-separated list (the acquire request's device_uuids field).
-        return SourceOptions(fields={"device_uuids": [], "event_category": []})
+        fields = {"device_uuids": [], "event_category": []}
+        # Expose the configured CMS category to the UI without making it an
+        # arbitrary user input. CMS category naming/numbering is owned by GE.
+        if settings.axone_cms_event_category is not None:
+            fields["cms_event_category"] = [str(settings.axone_cms_event_category)]
+        return SourceOptions(fields=fields)
 
     @staticmethod
     def _parse_options(options: dict[str, str]) -> tuple[list[str], int | None]:

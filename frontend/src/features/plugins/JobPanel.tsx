@@ -63,7 +63,7 @@ export default function JobPanel() {
       {logPull && (
         <div className={`alert ${logPull.state === "error" ? "error" : logPull.state === "done" ? (logPull.skipped ? "warn" : "ok") : "info"}`}
           role={logPull.state === "error" ? "alert" : "status"}>
-          <strong>System logs</strong>
+          <strong>{logPull.state === "done" && logPull.sources > 1 ? "System and CMS logs" : "System logs"}</strong>
           {logPull.state === "running" && "Collecting…"}
           {logPull.state === "error" && logPull.message}
           {logPull.state === "done" && (

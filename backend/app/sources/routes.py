@@ -163,6 +163,47 @@ def _run(db: Session, source: LogSource, user: User, req: AcquireRequest,
     return _to_out(result)
 
 
+def _cms_event_category() -> int:
+    """Return GE-confirmed CMS category, never a caller-supplied guess."""
+    category = settings.axone_cms_event_category
+    if category is None:
+        raise HTTPException(
+            409,
+            "CMS collection is not configured. Ask GE to confirm the CMS event-category code, then set AXONE_CMS_EVENT_CATEGORY.",
+        )
+    return category
+
+
+@router.post("/axone/cms/acquire", response_model=AcquisitionOut)
+def acquire_cms_logs(
+    req: AcquireRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_active_user),
+):
+    """Acquire GE-confirmed CMS rows through the established Axone CSV path.
+
+    The setting is intentionally server-side. It prevents a browser request
+    from relabelling an arbitrary event category as CMS, and sends CMS rows
+    through the same bounded windows, deduplication, normalization, privacy
+    scan and audit trail as the normal Axone export.
+    """
+    category = _cms_event_category()
+    options = dict(req.options)
+    options["event_category"] = str(category)
+    cms_request = req.model_copy(update={"options": options})
+    out = _run(db, _source("axone"), user, cms_request, background)
+    out.notes.insert(0, f"CMS collection used configured Axone event category {category}.")
+    log_action(
+        db,
+        user.id,
+        "acquire_cms_logs",
+        detail=f"source=axone category={category} files={out.new_files} failed={out.failed}",
+        session_id=user.session_id,
+    )
+    return out
+
+
 @router.post("/{source_id}/acquire", response_model=AcquisitionOut)
 def acquire_logs(source_id: str, req: AcquireRequest, background: BackgroundTasks, db: Session = Depends(get_db),
                  user: User = Depends(get_active_user)):
