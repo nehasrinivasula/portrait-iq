@@ -76,6 +76,10 @@ class EventFilter:
     message_kinds: tuple[str, ...] = ()       # request | reply | response | publish | timeout
     components: tuple[str, ...] = ()          # e.g. ConfigMessageProcessor
     correlation_id: Optional[str] = None      # one whole exchange: request + reply
+    # "Hide the noise": events matching any of these are left out.
+    not_categories: tuple[str, ...] = ()
+    not_processes: tuple[str, ...] = ()
+    not_messages: tuple[str, ...] = ()        # messages that start with one of these
 
     @property
     def effective_severities(self) -> Optional[tuple[str, ...]]:
@@ -99,6 +103,7 @@ class EventFilter:
             "flagged": self.flagged is not None, "flag_category": self.flag_categories,
             "message_kind": self.message_kinds, "component": self.components,
             "correlation_id": self.correlation_id,
+            "not_category": self.not_categories, "not_process": self.not_processes, "not_message": self.not_messages,
         }
         return [name for name, value in names.items() if value]
 
@@ -121,6 +126,9 @@ def build_filter(
     message_kinds: Optional[Iterable[str]] = None,
     components: Optional[Iterable[str]] = None,
     correlation_id: Optional[str] = None,
+    not_categories: Optional[Iterable[str]] = None,
+    not_processes: Optional[Iterable[str]] = None,
+    not_messages: Optional[Iterable[str]] = None,
 ) -> EventFilter:
     """Validate and normalise raw search parameters. Raises FilterError."""
     since = to_naive_utc(since) if since else None
@@ -170,6 +178,10 @@ def build_filter(
         message_kinds=message_kind_list,
         components=_checked_list(components, "component"),
         correlation_id=(_checked(correlation_id, "correlation id") or "").lower() or None,
+        not_categories=_checked_list(not_categories, "hidden category"),
+        not_processes=_checked_list(not_processes, "hidden process"),
+        not_messages=tuple(dict.fromkeys(
+            v for v in (_checked(x, "hidden message", fold_whitespace=True) for x in (not_messages or ())[:20]) if v)),
     )
 
 

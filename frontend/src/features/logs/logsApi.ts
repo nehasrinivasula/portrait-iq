@@ -40,24 +40,30 @@ export interface Facets {
   categories: FacetValue[];
   devices: FacetValue[];
   distinct_devices: number;
+  processes?: FacetValue[];
+  repeated_messages?: FacetValue[];   // most repeated messages, cut to 200 characters; empty while masking
 }
-
-/** Column the field-value filter applies to. */
-export type FieldColumn = "device" | "category" | "process";
 
 export interface LogFilter {
   since: string | null;
   until: string | null;
   sources: string[];
   severities: Severity[];
-  column: FieldColumn;
-  value: string;
+  device: string;          // the machine that wrote the entry; "" for any
+  category: string;        // the kind of event, as the system labels it; "" for any
+  process: string;         // the program that wrote it; "" for any
+  sourceFile: string;      // one log file; "" for any
+  hideCategories: string[];   // noise switched off: events in these categories are left out
+  hideProcesses: string[];
+  hideMessages: string[];     // events whose message starts with one of these
   q: string;
-  jobId: string | null;
+  jobId: string | null;    // a run, "unassigned" for imported logs, or null for all
 }
 
 export const emptyFilter = (): LogFilter => ({
-  since: null, until: null, sources: [], severities: [], column: "device", value: "", q: "", jobId: null,
+  since: null, until: null, sources: [], severities: [], device: "", category: "", process: "", sourceFile: "",
+  hideCategories: [], hideProcesses: [], hideMessages: [],
+  q: "", jobId: null,
 });
 
 /** Query string for the filters. Empty values are left out. */
@@ -67,27 +73,31 @@ export function filterParams(f: LogFilter): URLSearchParams {
   if (f.until) p.set("until", f.until);
   f.sources.forEach((s) => p.append("source", s));
   f.severities.forEach((s) => p.append("severity", s));
-  // A value that fails validation is not sent (the field shows why), so the table keeps its last good result.
-  const v = f.value.trim();
-  if (v && !validateFilterValue(v, "value")) p.set(f.column === "process" ? "process" : f.column, v);
+  if (f.device.trim()) p.set("device", f.device.trim());
+  if (f.category.trim()) p.set("category", f.category.trim());
+  if (f.process.trim() && !validateFilterValue(f.process, "process")) p.set("process", f.process.trim());
+  if (f.sourceFile) p.set("source_file", f.sourceFile);
   if (f.q.trim() && !validateSearchText(f.q)) p.set("q", f.q.trim());
+  f.hideCategories.forEach((v) => p.append("not_category", v));
+  f.hideProcesses.forEach((v) => p.append("not_process", v));
+  f.hideMessages.forEach((v) => p.append("not_message", v));
   if (f.jobId) p.set("job_id", f.jobId);
   return p;
 }
 
-export function searchEvents(f: LogFilter, cursor: string | null, limit = 100, privacy?: PrivacyOptions): Promise<LogPage> {
+export function searchEvents(f: LogFilter, cursor: string | null, limit = 100, privacy?: PrivacyOptions, signal?: AbortSignal): Promise<LogPage> {
   const p = filterParams(f);
   privacyParams(privacy).forEach((v, k) => p.set(k, v));
   p.set("limit", String(limit));
   if (cursor) p.set("cursor", cursor);
-  return apiFetch<LogPage>(`/api/logs/events?${p}`);
+  return apiFetch<LogPage>(`/api/logs/events?${p}`, { signal });
 }
 
 /** With mask on, the server leaves out device and category values that were flagged. */
-export function getFacets(f: LogFilter, mask = false) {
+export function getFacets(f: LogFilter, mask = false, signal?: AbortSignal) {
   const p = filterParams(f);
   if (mask) p.set("mask", "true");
-  return apiFetch<Facets>(`/api/logs/facets?${p}`);
+  return apiFetch<Facets>(`/api/logs/facets?${p}`, { signal });
 }
 
 export interface AcquisitionResult {
@@ -115,3 +125,26 @@ export const acquireForJob = (sourceId: string, jobId: string, since: string, un
     method: "POST",
     body: JSON.stringify({ since, until, job_id: jobId, ingest: true }),
   });
+
+// --- Log sets: what runs and imports exist on this machine ---------------------
+
+/** "unassigned" in the API: logs imported without a run. */
+export const IMPORTED = "unassigned";
+
+export interface LogSet {
+  job_id: string;            // a run id, or IMPORTED
+  status: string | null;
+  mode: string | null;
+  created_at: string | null;
+  finished_at: string | null;
+  events: number;
+  first_timestamp: string | null;
+  last_timestamp: string | null;
+  tools: string[];
+}
+
+export interface LogSetFile { source_file: string; parser: string | null; events_in_store: number }
+
+export const listLogSets = () => apiFetch<LogSet[]>("/api/logs/collections?limit=200");
+export const getLogSetFiles = (id: string) =>
+  apiFetch<{ files: LogSetFile[] }>(`/api/logs/collections/${encodeURIComponent(id)}`).then((s) => s.files);

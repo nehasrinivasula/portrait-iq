@@ -64,6 +64,9 @@ def _filter(
     message_kind: list[str] = Query([], description="request, reply, response, publish or timeout; repeat for several."),
     component: list[str] = Query([], description="Class from sourceInfo, e.g. ConfigMessageProcessor; repeat for several."),
     correlation_id: Optional[str] = Query(None, description="Show one whole exchange: the request and its reply."),
+    not_category: list[str] = Query([], description="Hide events in this category; repeat for several."),
+    not_process: list[str] = Query([], description="Hide events from this process; repeat for several."),
+    not_message: list[str] = Query([], description="Hide events whose message starts with this text; repeat for several."),
 ) -> EventFilter:
     try:
         return build_filter(
@@ -71,6 +74,7 @@ def _filter(
             severities=severity, min_severity=min_severity, process=process,
             source_file=source_file, text=q, flagged=flagged, flag_categories=flag_category,
             message_kinds=message_kind, components=component, correlation_id=correlation_id,
+            not_categories=not_category, not_processes=not_process, not_messages=not_message,
         )
     except FilterError as e:
         raise HTTPException(422, str(e))
@@ -224,6 +228,8 @@ def get_facets(
         sources=_facet_values(r.sources), severities=_facet_values(r.severities),
         categories=[] if mask else _facet_values(r.categories), devices=[] if mask else _facet_values(r.devices),
         distinct_devices=r.distinct_devices, message_kinds=_facet_values(r.message_kinds),
+        processes=[] if mask else _facet_values(r.processes),
+        repeated_messages=[] if mask else _facet_values(r.repeated_messages),   # raw text can hold PHI/PII
     )
 
 
@@ -294,7 +300,7 @@ def list_collections(limit: int = Query(50, ge=1, le=200), db: Session = Depends
         CollectionOut(
             job_id=c.job_id, status=c.status, mode=c.mode, created_at=_utc(c.created_at),
             finished_at=_utc(c.finished_at), events=c.events,
-            first_timestamp=_utc(c.first_timestamp), last_timestamp=_utc(c.last_timestamp),
+            first_timestamp=_utc(c.first_timestamp), last_timestamp=_utc(c.last_timestamp), tools=c.tools,
         )
         for c in store.list_collections(db, limit)
     ]

@@ -58,7 +58,12 @@ export default function PluginPicker({ onStarted, locked }: {
   const [uploadName, setUploadName] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
-  const feedback = useRef<HTMLDivElement>(null);
+  const [touched, setTouched] = useState<Set<string>>(new Set());   // fields left once: their errors show from then on
+  const [limitsOpen, setLimitsOpen] = useState(false);
+  const [attempt, setAttempt] = useState(0);                         // bumps on each Start press, to focus the first bad field
+  const form = useRef<HTMLFormElement>(null);
+  const leave = (key: string) => setTouched((t) => (t.has(key) ? t : new Set(t).add(key)));
+  const shows = (key: string) => submitted || touched.has(key);
 
   useEffect(() => {
     getJobConfiguration().then((config) => {
@@ -86,15 +91,20 @@ export default function PluginPicker({ onStarted, locked }: {
       .catch(() => { setLogsReason("Couldn't check the log sources."); setLogsOn(false); });
   }, []);
 
-  // The start button is at the bottom of a long form: bring a failure into view.
+  // Start pressed with problems: put the cursor in the first field that needs fixing.
   useEffect(() => {
-    if (startError) feedback.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [startError]);
+    if (attempt) form.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [attempt]);
 
   const ipError = validateTargetIp(targetIp);
-  const limitError = !!defaults && (!defaults.allowed_namespaces.includes(namespace) ||
-    ![[cpu, 100], [memory, 65536], [output, 65536]].every(([value, max]) =>
-      /^\d+$/.test(String(value)) && Number(value) >= 1 && Number(value) <= Number(max)));
+  const LIMITS = [
+    { key: "cpu_limit_pct", label: "CPU limit", unit: "%", value: cpu, set: setCpu, max: 100 },
+    { key: "mem_limit_mb", label: "Memory limit", unit: "MB", value: memory, set: setMemory, max: 65536 },
+    { key: "max_output_mb", label: "Output limit", unit: "MB", value: output, set: setOutput, max: 65536 },
+  ] as const;
+  const limitErrors: Record<string, string> = Object.fromEntries(LIMITS.flatMap(({ key, value, max }) =>
+    /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= max ? [] : [[key, `Enter a whole number from 1 to ${max.toLocaleString()}.`]]));
+  const limitError = !!defaults && (!defaults.allowed_namespaces.includes(namespace) || Object.keys(limitErrors).length > 0);
   const overridden = defaults ? [
     ...(targetIp !== initialTarget.current ? ["target_ip"] : []),
     ...(namespace !== defaults.namespace ? ["namespace"] : []),
@@ -141,7 +151,11 @@ export default function PluginPicker({ onStarted, locked }: {
     e.preventDefault();
     setSubmitted(true);
     setStartError(null);
-    if (!valid || locked) return;
+    if (!valid || locked) {
+      if (limitError) setLimitsOpen(true);
+      setAttempt((n) => n + 1);
+      return;
+    }
     setBusy(true);
     try {
       const configuration = defaults ? {
@@ -165,68 +179,39 @@ export default function PluginPicker({ onStarted, locked }: {
     : logsOn ? "Collect logs"
     : "Run diagnostics";
 
+  const configChanged = overridden.filter((k) => ["namespace", "cpu_limit_pct", "mem_limit_mb", "max_output_mb"].includes(k)).length;
+  const toolNames = (plugins ?? []).filter((p) => selected.has(p.name)).map((p) => p.display_name);
+  // One line above Start: what will happen, or the one thing stopping it.
+  const problem = locked ? "A run is in progress. You can start another when it finishes."
+    : startError ? `Couldn't start the run. ${startError}`
+    : submitted && nothingToDo ? "Choose at least one diagnostic, or include logs."
+    : submitted && !valid ? "Fix the fields marked in red."
+    : null;
+  const summary = [
+    targetIp.trim() && !ipError ? targetIp.trim() : "No target yet",
+    toolNames.length ? toolNames.join(", ") : "No diagnostics",
+    logsOn ? "with logs" : null,
+  ].filter(Boolean).join(" · ");
+  const changed = <span className="override-badge">Changed</span>;
+
   return (
-    <form className="picker" onSubmit={onSubmit} noValidate>
+    <form className="picker" onSubmit={onSubmit} noValidate ref={form}>
       <section aria-labelledby={`${uid}-target`}>
         <h2 id={`${uid}-target`}>Where to run it</h2>
         <div className="field">
-          <Label.Root htmlFor={`${uid}-ip`}>Portrait Mobile server IP address</Label.Root>
-          <input id={`${uid}-ip`} inputMode="decimal" autoComplete="off" value={targetIp} aria-invalid={submitted && !!ipError}
-            aria-describedby={submitted && ipError ? `${uid}-ip-err` : `${uid}-ip-hint`}
-            onChange={(e) => setTargetIp(e.target.value)} />
-          {submitted && ipError ? <div className="error-text" id={`${uid}-ip-err`} role="alert">{ipError}</div>
+          <Label.Root htmlFor={`${uid}-ip`}>Portrait Mobile server IP address {overridden.includes("target_ip") && changed}</Label.Root>
+          <input id={`${uid}-ip`} inputMode="decimal" autoComplete="off" value={targetIp} aria-invalid={shows("ip") && !!ipError}
+            aria-describedby={shows("ip") && ipError ? `${uid}-ip-err` : `${uid}-ip-hint`}
+            onChange={(e) => setTargetIp(e.target.value)} onBlur={() => targetIp && leave("ip")} />
+          {shows("ip") && ipError ? <div className="error-text" id={`${uid}-ip-err`} role="alert">{ipError}</div>
             : <div className="hint" id={`${uid}-ip-hint`}>For example 192.168.0.3, or pick a device below.</div>}
         </div>
         <DeviceFinder selectedIp={targetIp} onUse={setTargetIp} />
-        {overridden.includes("target_ip") && <span className="override-badge">Manually changed</span>}
-      </section>
-
-      {configError && <div className="alert warn" role="status"><strong>Run configuration unavailable</strong>
-        {configError} Default settings will be used for this run.</div>}
-      {defaults && <section aria-label="Run configuration">
-        <h2>Review run configuration</h2>
-        <p className="muted">Generated values can be changed for this run. Changed fields are marked below.</p>
-        <div className="field">
-          <Label.Root htmlFor={`${uid}-namespace`}>Diagnostic pod namespace</Label.Root>
-          <select id={`${uid}-namespace`} value={namespace} onChange={(e) => setNamespace(e.target.value)}>
-            {defaults?.allowed_namespaces.map((name) => <option key={name} value={name}>{name}</option>)}
-          </select>
-          {overridden.includes("namespace") && <span className="override-badge">Manually changed</span>}
-        </div>
-        {([
-          ["CPU limit (%)", cpu, setCpu, "cpu_limit_pct"],
-          ["Memory limit (MB)", memory, setMemory, "mem_limit_mb"],
-          ["Output limit (MB)", output, setOutput, "max_output_mb"],
-        ] as const).map(([label, value, setter, key]) => (
-          <div className="field" key={key}>
-            <Label.Root htmlFor={`${uid}-${key}`}>{label}</Label.Root>
-            <input id={`${uid}-${key}`} type="number" min="1" max={key === "cpu_limit_pct" ? 100 : 65536}
-              value={value} onChange={(e) => setter(e.target.value)} aria-invalid={submitted && limitError} />
-            {overridden.includes(key) && <span className="override-badge">Manually changed</span>}
-          </div>
-        ))}
-        {submitted && limitError && <div className="error-text" role="alert">Choose an enabled namespace and valid positive limits.</div>}
-        {overridden.length > 0 && <p className="muted" role="status">Overrides: {overridden.join(", ")}</p>}
-      </section>}
-
-      <section aria-labelledby={`${uid}-logs`}>
-        <h2 id={`${uid}-logs`}>Logs to include</h2>
-        <div className="plugin-head">
-          <Checkbox.Root id={`${uid}-logs-on`} className="check" checked={logsOn} disabled={!!logsReason}
-            onCheckedChange={(v) => setLogsOn(v === true)}>
-            <Checkbox.Indicator><Check /></Checkbox.Indicator>
-          </Checkbox.Root>
-          <Label.Root htmlFor={`${uid}-logs-on`} className="plugin-label">
-            <span className="plugin-name">Collect system logs with this run</span>
-            <span className="muted">{logsReason ?? "Pulled from the log export API and added to the log table automatically."}</span>
-          </Label.Root>
-        </div>
-        {logsOn && <div style={{ marginLeft: 42, marginTop: 10 }}><TimeFramePicker value={frame} onChange={setFrame} legend="Time frame" /></div>}
       </section>
 
       <section aria-labelledby={`${uid}-tools`}>
         <div className="section-head">
-          <h2 id={`${uid}-tools`}>Choose what to run</h2>
+          <h2 id={`${uid}-tools`}>What to run</h2>
           {plugins && plugins.length > 0 && <button type="button" className="btn ghost" onClick={selectAll}>{allOn ? "Clear all" : "Select all"}</button>}
         </div>
         <p className="muted">Each diagnostic is removed from the system when it finishes.</p>
@@ -273,16 +258,62 @@ export default function PluginPicker({ onStarted, locked }: {
         {Object.entries(skipped).map(([name, why]) => (
           <div key={name} className="alert warn" role="status"><strong>{name} is unavailable</strong>{why}</div>
         ))}
-        {submitted && nothingToDo && <div className="error-text" role="alert">Choose at least one diagnostic, or include logs.</div>}
       </section>
 
-      <div ref={feedback} />
-      {submitted && !valid && !nothingToDo && (
-        <div className="alert warn" role="alert"><strong>Some settings need attention</strong>Check the fields marked in red above.</div>
+      <section aria-labelledby={`${uid}-logs`}>
+        <h2 id={`${uid}-logs`}>Logs to include</h2>
+        <div className="plugin-head">
+          <Checkbox.Root id={`${uid}-logs-on`} className="check" checked={logsOn} disabled={!!logsReason}
+            onCheckedChange={(v) => setLogsOn(v === true)}>
+            <Checkbox.Indicator><Check /></Checkbox.Indicator>
+          </Checkbox.Root>
+          <Label.Root htmlFor={`${uid}-logs-on`} className="plugin-label" data-disabled={logsReason ? "" : undefined}>
+            <span className="plugin-name">Collect system logs with this run</span>
+            <span className="muted">{logsReason ?? "Pulled from the log export API and added to the log table automatically."}</span>
+          </Label.Root>
+        </div>
+        {logsOn && <div className="plugin-options"><TimeFramePicker value={frame} onChange={setFrame} legend="Time frame" /></div>}
+      </section>
+
+      {configError && <div className="alert warn" role="status"><strong>Run configuration unavailable</strong>
+        {configError} Default settings will be used for this run.</div>}
+      {/* Generated defaults are safe, so the overrides (D-7) stay one click away instead of in the path. */}
+      {defaults && (
+        <details className="strip limits" open={limitsOpen} onToggle={(e) => setLimitsOpen(e.currentTarget.open)}>
+          <summary>
+            <span className="strip-title">Limits and namespace</span>
+            <span className={configChanged ? "override-badge" : "muted"}>{configChanged ? `${configChanged} changed` : "Defaults"}</span>
+          </summary>
+          <div className="strip-body">
+            <div className="field">
+              <Label.Root htmlFor={`${uid}-namespace`}>Diagnostic pod namespace {overridden.includes("namespace") && changed}</Label.Root>
+              <select id={`${uid}-namespace`} value={namespace} onChange={(e) => setNamespace(e.target.value)}>
+                {defaults.allowed_namespaces.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </div>
+            <div className="limit-row">
+              {LIMITS.map(({ key, label, unit, value, set, max }) => {
+                const err = shows(key) ? limitErrors[key] : undefined;
+                return (
+                  <div className="field" key={key}>
+                    <Label.Root htmlFor={`${uid}-${key}`}>{label} ({unit}) {overridden.includes(key) && changed}</Label.Root>
+                    <input id={`${uid}-${key}`} type="number" min="1" max={max} value={value}
+                      onChange={(e) => set(e.target.value)} onBlur={() => leave(key)}
+                      aria-invalid={!!err} aria-describedby={err ? `${uid}-${key}-err` : undefined} />
+                    {err && <div className="error-text" id={`${uid}-${key}-err`} role="alert">{err}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </details>
       )}
-      {startError && <div className="alert error" role="alert"><strong>Couldn't start the run</strong>{startError}</div>}
-      <button className="btn" type="submit" disabled={busy || uploading || locked}>{label}</button>
-      {locked && <p className="muted" role="status">A run is in progress. You can start another when it finishes.</p>}
+
+      {/* Start stays in view at the bottom of the screen, with what it will do or what is stopping it. */}
+      <div className="action-bar">
+        <span className={problem ? "text-error action-bar-text" : "action-bar-text"} role={problem ? "alert" : "status"}>{problem ?? summary}</span>
+        <button className="btn" type="submit" disabled={busy || uploading || locked}>{label}</button>
+      </div>
     </form>
   );
 }

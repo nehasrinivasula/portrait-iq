@@ -26,7 +26,7 @@ export default function TimeFramePicker({ value, onChange, now = new Date(), all
     <fieldset className="tf" data-compact={compact || undefined} style={{ border: 0, padding: 0, margin: 0 }}>
       <legend style={{ fontWeight: 600, marginBottom: 8 }}>{legend}</legend>
       <div className="tf-select">
-        <Label.Root htmlFor={`${uid}-preset`}>Choose a time frame</Label.Root>
+        <Label.Root htmlFor={`${uid}-preset`} className={compact ? "visually-hidden" : undefined}>Choose a time frame</Label.Root>
         <select id={`${uid}-preset`} value={value.preset}
           onChange={(e) => onChange({ ...value, preset: e.target.value as PresetId })}>
           {allowAny && <option value="any">Any time</option>}
