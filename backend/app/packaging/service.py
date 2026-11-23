@@ -91,7 +91,7 @@ STEPS: list[tuple[str, str]] = [
 
 SECTIONS = ["logs", "privacy", "tools", "system", "findings", "audit"]
 TEXT_LIMIT = 50 * 1024 * 1024      # larger tool files are copied, not scanned line by line
-BINARY_SUFFIXES = {".pcap", ".pcapng", ".gz", ".zip", ".tar", ".bin", ".png", ".jpg"}
+BINARY_SUFFIXES = {".pcap", ".pcapng", ".gz", ".tgz", ".zst", ".xz", ".bz2", ".7z", ".zip", ".tar", ".bin", ".png", ".jpg"}
 
 _building: set[str] = set()        # job ids being packaged by this process
 _lock = threading.Lock()
