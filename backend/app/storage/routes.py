@@ -252,7 +252,7 @@ def get_sequences(
     newest first. Uses the same time/device/component filters as /events."""
     bad = [s for s in state if s not in sequences.STATES]
     if bad:
-        raise HTTPException(400, f"Unknown state '{bad[0]}'. Use one of: {', '.join(sequences.STATES)}.")
+        raise HTTPException(422, f"Unknown state '{bad[0]}'. Use one of: {', '.join(sequences.STATES)}.")
     f = _with_job(f, job_id)
     window_end = f.until or datetime.now(timezone.utc).replace(tzinfo=None)
     try:

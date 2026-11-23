@@ -89,7 +89,9 @@ def test_remove_carries_out_the_choice_and_audits_it(client, headers, runner, en
     assert runner.deleted == ["piq-tshark-aaaa"]
     with sessionmaker(bind=engine)() as db:
         entry = db.query(AuditLogEntry).filter_by(action="cleanup_choice").one()
-        assert "context=restart action=remove removed=pod:piq-tshark-aaaa" in entry.detail
+        assert "context=restart action=remove items=1 removed=1" in entry.detail
+        item = db.query(AuditLogEntry).filter_by(action="cleanup_item").one()      # one row per item
+        assert "item=pod:piq-tshark-aaaa result=removed" in item.detail
         assert "state=clean" in entry.detail and entry.session_id
 
 
