@@ -107,6 +107,16 @@ class Settings(BaseSettings):
     # to remove or keep them at the next sign-in (app/cleanup). Pods stop on
     # their own at activeDeadlineSeconds either way.
     sweep_tool_pods_on_startup: bool = False
+
+    # Heavy work (log pull + ingest, PHI/PII scan) runs in a separate low-priority process, so Python's GIL and
+    # long regex calls in it cannot stall /health. "inline" runs it inside the request, for tests and debugging.
+    background_task_mode: str = "process"        # process | inline
+    background_task_concurrency: int = 1         # tasks running at once; others wait as "queued"
+    background_task_nice: int = 10               # worker CPU priority; higher = yields to the API
+    # SQLite: wait this long for another process's write lock instead of failing at once, and let readers
+    # and one writer work together (WAL). Turn WAL off only if the data volume cannot do shared memory.
+    sqlite_busy_timeout_ms: int = 30000
+    sqlite_wal: bool = True
     # Raw output of each job, one folder per job and plugin. Gitignored:
     # captures can contain PHI/PII.
     job_output_dir: str = "./data/jobs"

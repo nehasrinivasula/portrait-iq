@@ -100,6 +100,9 @@ spec:
             httpGet: {path: /health, port: 8000}
             initialDelaySeconds: 20
             periodSeconds: 30
+            # A busy backend can be slow to answer for a while; tolerate ~3 minutes of that before restarting.
+            timeoutSeconds: 5
+            failureThreshold: 6
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: tmp, mountPath: /tmp}

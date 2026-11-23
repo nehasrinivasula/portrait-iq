@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ALL_LOGS, categoryLabel, loadPrivacy, privacyHeadline, privacyKind, scanScope,
+  ALL_LOGS, categoryLabel, followScan, loadPrivacy, privacyHeadline, privacyKind, scanScope,
   type PrivacyOptions, type PrivacyView,
 } from "./privacyApi";
+import { activeTasks, progressText } from "../tasks/tasksApi";
 import "./privacy.css";
 
 interface Props {
@@ -19,7 +20,9 @@ export default function PrivacyPanel({ jobId, options, onOptions, reloadKey, onS
   const [view, setView] = useState<PrivacyView | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [scan, setScan] = useState<"idle" | "running" | "error">("idle");
+  const [scanText, setScanText] = useState<string | null>(null);   // "Scanning events: x of y"
   const [localKey, setLocalKey] = useState(0);
+  const busy = useRef(false);   // a scan is already being followed here
 
   // A scan error belongs to the run it happened on.
   useEffect(() => { setScan("idle"); }, [jobId]);
@@ -39,20 +42,40 @@ export default function PrivacyPanel({ jobId, options, onOptions, reloadKey, onS
   const shown = state === "ready" ? report : null;   // only a report that loaded without error is shown in detail
   const ready = shown !== null;
 
-  const runScan = useCallback(async () => {
-    if (!current) return;
+  // Run a scan (or follow one the server is already running) and refresh the counts and rows afterwards.
+  const finishWith = useCallback(async (work: () => Promise<unknown>) => {
+    busy.current = true;
     setScan("running");
+    setScanText(null);
     let failed = false;
     try {
-      await scanScope(jobId);
+      await work();
     } catch {
       failed = true;
     }
     // Even a partial scan changed the counts and the rows, so read both again.
+    busy.current = false;
     setScan(failed ? "error" : "idle");
+    setScanText(null);
     setLocalKey((k) => k + 1);
     onScanned();
-  }, [current, jobId, onScanned]);
+  }, [onScanned]);
+
+  const runScan = useCallback(() => {
+    if (!current) return Promise.resolve();
+    return finishWith(() => scanScope(jobId, (t) => setScanText(progressText(t))));
+  }, [current, jobId, finishWith]);
+
+  // A scan started before a reload (or by someone else) is still running on the server: pick it up.
+  useEffect(() => {
+    let live = true;
+    activeTasks("privacy_scan").then((tasks) => {
+      const mine = tasks[0];
+      if (!live || !mine || busy.current) return;
+      void finishWith(() => followScan(mine.id, (t) => live && setScanText(progressText(t))));
+    }).catch(() => { /* no resume; the button still works */ });
+    return () => { live = false; };
+  }, [jobId, finishWith]);
 
   const kind = state === "error" ? "error" : !report ? "info" : privacyKind(report);
 
@@ -102,7 +125,7 @@ export default function PrivacyPanel({ jobId, options, onOptions, reloadKey, onS
         )}
         {shown && shown.events > 0 && !shown.all_scanned && (
           <button type="button" className="btn ghost" disabled={scan === "running"} onClick={runScan}>
-            {scan === "running" ? "Scanning…" : `Scan ${shown.unscanned_events.toLocaleString()} events`}
+            {scan === "running" ? (scanText ?? "Scanning…") : `Scan ${shown.unscanned_events.toLocaleString()} events`}
           </button>
         )}
         <label>

@@ -56,7 +56,7 @@ describe("ACTION_OPTIONS", () => {
     const codes = ["collection_view", "collections_view", "device_add", "device_update", "devices_view", "discover",
       "findings_view", "job_interrupted", "job_results_view", "job_view", "logs_facets_view", "logs_view",
       "logs_privacy_scan_start", "plugin_cleanup_failed", "source_devices_view", "sources_view", "tool_pods_swept", "session_lock", "summary_view", "logs_sequences_view",
-      "source_preview"];
+      "source_preview", "background_task_start", "background_task_done", "background_task_failed"];
     const offered = ACTION_OPTIONS.map(([code]) => code);
     codes.forEach((c) => expect(offered).toContain(c));
   });

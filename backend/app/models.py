@@ -295,3 +295,31 @@ class CleanupDecision(Base):
     decided_by = Column(String, nullable=False)
     session_id = Column(String, nullable=True)
     decided_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BackgroundTask(Base):
+    """Heavy work that runs outside the request: a log pull with ingest, or a PHI/PII scan.
+
+    The request creates the row and returns its id at once; a separate worker process does the work and
+    updates progress here, and the UI polls GET /api/tasks/{id}. A task that was queued or running when the
+    backend stopped is marked interrupted at the next start (app/tasks/service.py).
+    kind: acquire | privacy_scan | noop.   status: queued | running | done | failed | interrupted."""
+    __tablename__ = "background_tasks"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    kind = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="queued", index=True)
+    requested_by = Column(String, nullable=False)
+    session_id = Column(String, nullable=True)
+    scope = Column(String, nullable=True)            # what it works on (a collection id, "all", a source), for de-duplicating
+    params = Column(Text, nullable=True)             # JSON the worker needs; never secrets
+    stage = Column(String, nullable=True)            # short plain-language line, e.g. "Scanning events"
+    done = Column(Integer, nullable=False, default=0)
+    total = Column(Integer, nullable=True)           # None while the amount of work is not known yet
+    result = Column(Text, nullable=True)             # JSON, set when done
+    error = Column(String, nullable=True)            # safe to show; set when failed or interrupted
+    pid = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow)

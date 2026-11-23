@@ -25,6 +25,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.tasks import service as tasks
 from app.audit import log_action
 from app.auth import User, get_active_user
 from app.db import get_db
@@ -33,6 +34,7 @@ from app.privacy import service as privacy
 from app.privacy.scanner import (
     CATEGORY_LABELS, SCANNER_VERSION, category_group, decode_flags, mask_text, scan_columns, scan_text,
 )
+from app.tasks.routes import TaskOut, task_out
 from app.storage.completeness import PROBLEM
 from app.storage import events as store
 from app.storage import sequences
@@ -40,7 +42,7 @@ from app.validation import ValidationFailure, clean_text
 from app.storage.filters import DEFAULT_LIMIT, MAX_LIMIT, MAX_TEXT_LENGTH, UNASSIGNED, EventFilter, FilterError, build_filter
 from app.storage.schemas import (
     CollectionOut, CollectionSummaryOut, CommandStatsOut, FacetsOut, FacetValueOut, FileSummaryOut, IssueOut,
-    FlagCountOut, LogEventOut, LogPageOut, PrivacyCategoryOut, PrivacyFileOut, PrivacyReportOut, RescanOut,
+    FlagCountOut, LogEventOut, LogPageOut, PrivacyCategoryOut, PrivacyFileOut, PrivacyReportOut,
     SensitiveFlagOut, SequenceOut, SequencePageOut,
 )
 
@@ -431,22 +433,20 @@ def _report(db: Session, user: User, scope: Optional[str]) -> PrivacyReportOut:
     return _privacy_out(r, complete)
 
 
-def _scan(db: Session, user: User, scope: Optional[str]) -> RescanOut:
+def _scan(db: Session, user: User, scope: Optional[str]) -> TaskOut:
+    """Start a PHI/PII scan in the background and return its task at once.
+
+    A big scan is CPU-bound Python; running it in the request would starve the API (including /health) for as
+    long as it takes. The worker runs it, records start and end in the audit log, and reports progress on the
+    task. Asking again while a scan of the same scope is running returns that scan instead of starting a second."""
     label = scope or "all"
     if scope not in (None, UNASSIGNED) and db.get(Job, scope) is None:
         raise HTTPException(404, "collection not found")
-    # Each batch is committed as it goes, so a scan that stops partway has already changed events.
-    # Record that it started, and how it ended.
-    log_action(db, user.id, "logs_privacy_scan_start", detail=f"job={label}", session_id=user.session_id)
-    try:
-        n = privacy.rescan(db, scope)
-    except Exception as e:
-        db.rollback()
-        log_action(db, user.id, "logs_privacy_scan", detail=f"job={label} failed error={type(e).__name__}",
-                   session_id=user.session_id)
-        raise
-    log_action(db, user.id, "logs_privacy_scan", detail=f"job={label} scanned={n}", session_id=user.session_id)
-    return RescanOut(scanned=n)
+    task, created = tasks.create_task(
+        db, kind="privacy_scan", actor=user.id, session_id=user.session_id, scope=label,
+        params={"scope": scope}, reuse_active=True,
+    )
+    return task_out(tasks.submit(db, task) if created else task)
 
 
 @router.get("/privacy", response_model=PrivacyReportOut)
@@ -455,9 +455,9 @@ def all_privacy(db: Session = Depends(get_db), user: User = Depends(get_active_u
     return _report(db, user, None)
 
 
-@router.post("/privacy/scan", response_model=RescanOut)
+@router.post("/privacy/scan", response_model=TaskOut, status_code=202)
 def scan_all(db: Session = Depends(get_db), user: User = Depends(get_active_user)):
-    """Scan every event the current scanner has not judged yet. Safe to repeat."""
+    """Start scanning every event the current scanner has not judged yet. Returns a task; safe to repeat."""
     return _scan(db, user, None)
 
 
@@ -468,9 +468,9 @@ def collection_privacy(job_id: str, db: Session = Depends(get_db), user: User = 
     return _report(db, user, job_id)
 
 
-@router.post("/collections/{job_id}/privacy/scan", response_model=RescanOut)
+@router.post("/collections/{job_id}/privacy/scan", response_model=TaskOut, status_code=202)
 def scan_collection(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
-    """Scan the events of this collection that the current scanner has not
+    """Start scanning the events of this collection that the current scanner has not
     judged yet (logs stored before PHI/PII flagging existed, or scanned by an
     older rule set). Safe to repeat."""
     return _scan(db, user, job_id)

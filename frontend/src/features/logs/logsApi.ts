@@ -1,5 +1,6 @@
 import { apiFetch } from "../../api";
 import { validateFilterValue, validateSearchText } from "../../validation";
+import { runTask, type TaskProgress, type TaskStatus } from "../tasks/tasksApi";
 import { privacyParams, type PrivacyOptions, type SensitiveFlag } from "../privacy/privacyApi";
 
 // Log search (PR #10): GET /api/logs/events, /facets. Times are UTC ISO.
@@ -110,21 +111,28 @@ export interface AcquisitionResult {
   files: { name: string; status: string; events?: number | null; rows_rejected?: number | null; error?: string | null }[];
 }
 
-export function importLogFiles(files: File[]) {
+/** Upload and import files. The server imports them in the background; this resolves when that is done. */
+export function importLogFiles(files: File[], onProgress?: TaskProgress) {
   const body = new FormData();
   files.forEach((f) => body.append("files", f));
-  return apiFetch<AcquisitionResult>("/api/sources/local/upload", { method: "POST", body });
+  return runTask<AcquisitionResult>(
+    () => apiFetch<TaskStatus<AcquisitionResult>>("/api/sources/local/upload", { method: "POST", body }),
+    onProgress,
+  );
 }
 
 export interface Source { id: string; display_name: string; configured: boolean; reason: string }
 export const listSources = () => apiFetch<Source[]>("/api/sources");
 
 /** Pull a window from a source and ingest it under a job, so the logs belong to that run. */
-export const acquireForJob = (sourceId: string, jobId: string, since: string, until: string) =>
-  apiFetch<AcquisitionResult>(`/api/sources/${sourceId}/acquire`, {
-    method: "POST",
-    body: JSON.stringify({ since, until, job_id: jobId, ingest: true }),
-  });
+export const acquireForJob = (sourceId: string, jobId: string, since: string, until: string, onProgress?: TaskProgress) =>
+  runTask<AcquisitionResult>(
+    () => apiFetch<TaskStatus<AcquisitionResult>>(`/api/sources/${sourceId}/acquire`, {
+      method: "POST",
+      body: JSON.stringify({ since, until, job_id: jobId, ingest: true }),
+    }),
+    onProgress,
+  );
 
 // --- Log sets: what runs and imports exist on this machine ---------------------
 

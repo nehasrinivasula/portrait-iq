@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "rea
 import * as Checkbox from "@radix-ui/react-checkbox";
 import * as Label from "@radix-ui/react-label";
 import { ApiError } from "../../api";
+import type { TaskProgress } from "../tasks/tasksApi";
 import { acquireForJob, listSources, type AcquisitionResult } from "../logs/logsApi";
 import TimeFramePicker from "../logs/TimeFramePicker";
 import { defaultTimeFrame, resolveTimeFrame, toApi } from "../logs/timeframe";
@@ -31,7 +32,7 @@ const messageFor = (err: unknown) =>
     : "Something went wrong. Try again.";
 
 export default function PluginPicker({ onStarted, locked }: {
-  onStarted: (job: Job, pullLogs?: () => Promise<AcquisitionResult>) => void;
+  onStarted: (job: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult>) => void;
   /** A run is in progress: the form stays visible but can't start another. */
   locked: boolean;
 }) {
@@ -164,7 +165,7 @@ export default function PluginPicker({ onStarted, locked }: {
       } : undefined;
       const job = await startJob(targetIp.trim(), [...selected], buildOptions(selected, choices), configuration);
       const w = logsOn && window.ok ? toApi(window) : null;
-      onStarted(job, w ? () => acquireForJob(LOG_SOURCE, job.id, w.since, w.until) : undefined);
+      onStarted(job, w ? (onProgress) => acquireForJob(LOG_SOURCE, job.id, w.since, w.until, onProgress) : undefined);
     } catch (err) {
       setStartError(messageFor(err));
     } finally {
