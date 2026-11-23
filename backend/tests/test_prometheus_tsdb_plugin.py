@@ -8,7 +8,7 @@ import pytest
 
 from app.collectors import k8s
 from app.collectors.base import PluginConfigError, PluginError, ResourceLimits
-from app.collectors.prometheus_tsdb import PrometheusTsdbCollector
+from app.collectors.prometheus_tsdb import PrometheusTsdbCollector, _window_minutes
 from app.config import settings
 
 LIMITS = ResourceLimits(cpu_pct=50, mem_mb=1024, max_output_mb=30000)
@@ -48,10 +48,10 @@ class FakeRunner:
         self.deleted.append(name)
 
 
-def configured(tmp_path, monkeypatch, runner) -> PrometheusTsdbCollector:
+def configured(tmp_path, monkeypatch, runner, **options) -> PrometheusTsdbCollector:
     monkeypatch.setattr(k8s, "get_pod_runner", lambda: runner)
     c = PrometheusTsdbCollector(LIMITS)
-    c.configure({})
+    c.configure(options)
     c.bind_job("job-1", tmp_path)
     return c
 
@@ -64,15 +64,34 @@ def test_off_unless_hostpath_set(monkeypatch):
         PrometheusTsdbCollector(LIMITS).configure({})
 
 
-def test_takes_no_options(enabled):
-    with pytest.raises(PluginConfigError, match="takes no options"):
-        PrometheusTsdbCollector(LIMITS).configure({"scope": "7d"})
+def test_rejects_unknown_option(enabled):
+    with pytest.raises(PluginConfigError, match="unexpected options"):
+        PrometheusTsdbCollector(LIMITS).configure({"window": "7d"})
 
 
-def test_rejects_unimplemented_scope(enabled, monkeypatch):
-    monkeypatch.setattr(settings, "prometheus_tsdb_scope", "7d")
-    with pytest.raises(PluginConfigError, match="only 'full' is implemented"):
-        PrometheusTsdbCollector(LIMITS).configure({})
+def test_scope_defaults_to_the_setting(enabled):
+    c = PrometheusTsdbCollector(LIMITS)
+    c.configure({})
+    assert c.options == {"scope": "full"}
+
+
+@pytest.mark.parametrize("scope", ["full", "7d", "30d", "24h", "1h"])
+def test_accepts_full_and_window_scopes(enabled, scope):
+    c = PrometheusTsdbCollector(LIMITS)
+    c.configure({"scope": scope})
+    assert c.options["scope"] == scope
+
+
+@pytest.mark.parametrize("scope", ["week", "7", "7m", "-3d", "0x", "full "])
+def test_rejects_bad_scope(enabled, scope):
+    with pytest.raises(PluginConfigError, match="must be 'full' or a window"):
+        PrometheusTsdbCollector(LIMITS).configure({"scope": scope})
+
+
+def test_window_minutes():
+    assert _window_minutes("full") == 0
+    assert _window_minutes("7d") == 7 * 1440
+    assert _window_minutes("24h") == 24 * 60
 
 
 def test_rejects_bad_compressor(enabled, monkeypatch):
@@ -86,25 +105,30 @@ def test_rejects_bad_compressor(enabled, monkeypatch):
 def test_exports_and_returns_a_native_archive(tmp_path, monkeypatch, enabled):
     artifact = tmp_path / "prometheus_tsdb.tar.zst"
     runner = FakeRunner(write_to=artifact)
-    c = configured(tmp_path, monkeypatch, runner)
-
-    result = c.run("192.0.2.3")
+    result = configured(tmp_path, monkeypatch, runner).run("192.0.2.3")
 
     assert result.tool == "prometheus_tsdb"
     assert result.artifact_paths == [str(artifact)]
     assert artifact.read_bytes() == b"PROM-TSDB-ARCHIVE"
-    assert "exported" in result.summary.lower()
-    # The unmasked nature is surfaced as a warning (pairs with Neha/Hudson).
+    assert "exported" in result.summary.lower() and "full database" in result.summary
     assert any("unmasked" in w for w in result.warnings)
 
 
-def test_pod_is_root_with_hostpath_read_and_pvc_write(tmp_path, monkeypatch, enabled):
+def test_window_scope_in_summary(tmp_path, monkeypatch, enabled):
+    artifact = tmp_path / "prometheus_tsdb.tar.zst"
+    runner = FakeRunner(write_to=artifact)
+    result = configured(tmp_path, monkeypatch, runner, scope="7d").run("192.0.2.3")
+    assert "last 7d" in result.summary
+
+
+def test_pod_is_root_with_dac_override_hostpath_read_and_pvc_write(tmp_path, monkeypatch, enabled):
     artifact = tmp_path / "prometheus_tsdb.tar.zst"
     runner = FakeRunner(write_to=artifact)
     configured(tmp_path, monkeypatch, runner).run("192.0.2.3")
 
     kw = runner.created[0]
     assert kw["run_as_user"] == 0
+    assert kw["add_capabilities"] == ("DAC_OVERRIDE",)    # write into the backend-owned dir
     vols = {v["name"]: v for v in kw["extra_volumes"]}
     assert vols["tsdb-src"]["hostPath"]["path"] == HOSTPATH
     assert vols["tsdb-out"]["persistentVolumeClaim"]["claimName"] == "portrait-iq-data"
@@ -113,7 +137,7 @@ def test_pod_is_root_with_hostpath_read_and_pvc_write(tmp_path, monkeypatch, ena
     assert mounts["tsdb-out"]["mountPath"] == "/data"
 
 
-def test_export_script_tars_throttled_with_guards(tmp_path, monkeypatch, enabled):
+def test_full_export_script(tmp_path, monkeypatch, enabled):
     artifact = tmp_path / "prometheus_tsdb.tar.zst"
     runner = FakeRunner(write_to=artifact)
     configured(tmp_path, monkeypatch, runner).run("192.0.2.3")
@@ -121,10 +145,22 @@ def test_export_script_tars_throttled_with_guards(tmp_path, monkeypatch, enabled
     argv = runner.execs[0]
     assert argv[0] == "sh" and argv[1] == "-c"
     script = argv[2]
-    assert "ionice -c3" in script and "nice -n 19" in script          # throttled for etcd
-    assert "tar -C \"$SRC\" -cf - ." in script and "zstd -T0 -3 -q" in script
-    assert "disk guard" in script and "over cap" in script            # refuses, never fills disk
-    assert str(artifact) in script                                    # writes to the PVC path
+    assert "WIN=0" in script                                      # full: no window
+    assert 'SEL="$DB"' in script
+    assert "ionice -c3" in script and "nice -n 19" in script      # throttled for etcd
+    assert "zstd -T0 -3 -q" in script and "disk guard" in script and "over cap" in script
+    assert str(artifact) in script
+
+
+def test_windowed_export_script_selects_recent_blocks(tmp_path, monkeypatch, enabled):
+    artifact = tmp_path / "prometheus_tsdb.tar.zst"
+    runner = FakeRunner(write_to=artifact)
+    configured(tmp_path, monkeypatch, runner, scope="7d").run("192.0.2.3")
+
+    script = runner.execs[0][2]
+    assert "WIN=10080" in script                                  # 7 * 1440 minutes
+    assert "find \"$DB\" -maxdepth 1 -type d -name '01*' -mmin -\"$WIN\"" in script
+    assert 'SEL="$DB/wal $DB/chunks_head $BLOCKS"' in script
 
 
 def test_gzip_changes_the_extension(tmp_path, monkeypatch, enabled):
@@ -143,9 +179,8 @@ def test_disk_guard_failure_is_a_safe_error(tmp_path, monkeypatch, enabled):
     c = configured(tmp_path, monkeypatch, runner)
     with pytest.raises(PluginError) as ei:
         c.run("192.0.2.3")
-    # The raw stderr stays out of the UI-facing reason (SCRUM-68).
     assert "did not have room" in (ei.value.safe_reason or "")
-    assert "KB" not in (ei.value.safe_reason or "")
+    assert "KB" not in (ei.value.safe_reason or "")               # raw stderr stays out of the UI
     assert not (tmp_path / "prometheus_tsdb.tar.zst").exists()
 
 
@@ -157,7 +192,7 @@ def test_over_cap_failure_is_a_safe_error(tmp_path, monkeypatch, enabled):
 
 
 def test_zero_exit_but_no_file_fails(tmp_path, monkeypatch, enabled):
-    runner = FakeRunner(exit_code=0, write_to=None)      # exec "succeeds" but writes nothing
+    runner = FakeRunner(exit_code=0, write_to=None)
     with pytest.raises(PluginError) as ei:
         configured(tmp_path, monkeypatch, runner).run("192.0.2.3")
     assert "produced no file" in (ei.value.safe_reason or "")
@@ -170,18 +205,18 @@ def test_cleanup_deletes_the_pod(tmp_path, monkeypatch, enabled):
     runner = FakeRunner(write_to=artifact)
     c = configured(tmp_path, monkeypatch, runner)
     c.run("192.0.2.3")
-    pod = c._pod                      # set during run(), cleared by cleanup()
+    pod = c._pod
     c.cleanup()
     assert runner.deleted == [pod]
     assert c._pod is None
 
 
 def test_cleanup_safe_before_run(enabled):
-    PrometheusTsdbCollector(LIMITS).cleanup()      # must not raise
+    PrometheusTsdbCollector(LIMITS).cleanup()
 
 
-def test_audit_records_the_privileged_read(enabled):
+def test_audit_records_scope_and_read(enabled):
     c = PrometheusTsdbCollector(LIMITS)
-    c.configure({})
-    assert c.audit_fields() == {"prometheus_tsdb_scope": "full",
+    c.configure({"scope": "24h"})
+    assert c.audit_fields() == {"prometheus_tsdb_scope": "24h",
                                 "prometheus_tsdb_hostpath": HOSTPATH}

@@ -225,6 +225,7 @@ def job_configuration(user: User = Depends(get_active_user)):
         "netshoot": {"ports": list(NetshootCollector.DEFAULT_PORTS),
                      "dns_names": list(NetshootCollector.DEFAULT_DNS_NAMES),
                      "extra_targets": []},
+        "prometheus_tsdb": {"scope": settings.prometheus_tsdb_scope},
     }
 
 

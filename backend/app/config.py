@@ -149,8 +149,10 @@ class Settings(BaseSettings):
     # "full" exports the whole database; a duration like "7d" is reserved for
     # a future windowed export and is rejected until implemented.
     prometheus_tsdb_scope: str = "full"
-    # Compressor run inside the tool pod; must exist in the image.
-    prometheus_tsdb_compressor: str = "zstd"       # "zstd" or "gzip"
+    # Compressor run inside the tool pod; must exist in the image. gzip ships
+    # in the netshoot image; zstd does not, so it's the reliable default (the
+    # TSDB is already compressed, so the ratio difference is small anyway).
+    prometheus_tsdb_compressor: str = "gzip"       # "zstd" or "gzip"
     prometheus_tsdb_level: int = 3
     # Image for the export pod; empty uses netshoot_image (has tar + zstd).
     prometheus_tsdb_image: str = ""
