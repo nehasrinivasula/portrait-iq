@@ -37,7 +37,15 @@ SECRETS_DIR   ?=#   folder OUTSIDE the repo, one file per secret (backend/SECRET
 API_CHECK_HOUR ?=#  optional, YYYY-MM-DDTHH; default is the last full hour on the node
 
 IMAGE_NAME    ?= portrait-iq
-TAG           := $(shell git rev-parse --short HEAD 2>/dev/null)$(shell git diff --quiet HEAD -- 2>/dev/null || echo -dirty)
+# Unique per build so a rebuilt image gets a new tag and `kubectl apply` rolls
+# the pod on its own. The old constant "-dirty" suffix stayed identical across
+# uncommitted edits, so rebuilding dirty kept the same tag and the pod never
+# restarted (you had to `kubectl rollout restart` by hand). `git stash create`
+# hashes the tracked working tree without touching the stash stack and prints
+# nothing when the tree is clean, so each distinct change gets a distinct tag
+# while an unchanged rebuild keeps the same one (no needless image churn).
+WORK_HASH     := $(shell git stash create 2>/dev/null | cut -c1-8)
+TAG           := $(shell git rev-parse --short HEAD 2>/dev/null)$(if $(WORK_HASH),-dirty-$(WORK_HASH))
 BUILD_DIR     := dist
 BUNDLE_DIR    := $(BUILD_DIR)/remote
 
