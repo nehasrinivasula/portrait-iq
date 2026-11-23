@@ -127,6 +127,22 @@ def test_export_builds_the_standard_layout(env):
     assert json.loads(zf.read("findings/findings.json"))[0]["title"] == "Timeouts"
 
 
+def test_firewall_text_artifact_is_downloaded_in_run_zip(env):
+    client, _ = env
+    out = job_output_dir("job-1") / "firewall"
+    out.mkdir(parents=True, exist_ok=True)
+    artifact = out / "firewall-info.txt"
+    artifact.write_text("external (active)\n  services: ssh\n")
+    results_path = job_output_dir("job-1") / "results.json"
+    results = json.loads(results_path.read_text())
+    results.append({"tool": "firewall", "summary": "External-zone firewall settings captured.",
+                    "warnings": [], "artifact_paths": [str(artifact)]})
+    results_path.write_text(json.dumps(results))
+
+    export(client)
+    assert open_zip(client).read("tools/firewall/firewall-info.txt").decode() == artifact.read_text()
+
+
 def test_masked_by_default_in_logs_and_text_tool_files(env):
     client, _ = env
     export(client)

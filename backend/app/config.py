@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     tools_namespace: str = "portrait-iq"
     # Comma-separated namespaces explicitly provisioned for diagnostic pods.
     tools_allowed_namespaces: str = ""
+    # Optional private key mounted on the backend for read-only node diagnostics.
+    # When unset, SSH uses the backend process's agent/default identities.
+    firewall_ssh_identity_file: str | None = None
     kubeconfig_path: str | None = None
     # The lab has no internet: images are imported into containerd by hand,
     # so IfNotPresent never pulls there. Pin exact tags.
