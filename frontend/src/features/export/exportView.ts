@@ -18,6 +18,7 @@ export const STEP_STATUS_TEXT: Record<StepStatus, string> = {
   running: "in progress",
   done: "done",
   warn: "done, with notes",
+  partial: "partially complete",
   failed: "failed",
 };
 
@@ -27,6 +28,7 @@ export const STEP_MARK: Record<StepStatus, string> = {
   running: "●",
   done: "✓",
   warn: "!",
+  partial: "!",
   failed: "✗",
 };
 
@@ -48,6 +50,10 @@ export function headline(p: Package): [AlertKind, string, string] {
   if (failed) {
     return ["warn", "Export ready, but something is missing",
       `${failed} part${failed === 1 ? "" : "s"} could not be added. Open the steps below to see why.`];
+  }
+  if (p.partial) {
+    return ["warn", "Export ready with partial results",
+      "The run did not finish every diagnostic. Available results are in the zip; open the steps below for the failure reason."];
   }
   // Notes on a step (a diagnostic that did not run, a file left out) mean the zip is not
   // "everything", even when nothing failed.

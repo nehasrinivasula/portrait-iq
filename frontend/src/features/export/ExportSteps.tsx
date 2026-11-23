@@ -17,15 +17,15 @@ export default function ExportSteps({ steps, live }: { steps: ExportStep[]; live
                 {s.label}
                 <span className="visually-hidden">: {STEP_STATUS_TEXT[s.status]}</span>
               </span>
-              {(s.status === "warn" || s.status === "failed") && (
-                <span className={`export-tag ${s.status}`}>{s.status === "failed" ? "Failed" : "Notes"}</span>
+              {(s.status === "warn" || s.status === "partial" || s.status === "failed") && (
+                <span className={`export-tag ${s.status}`}>{s.status === "failed" ? "Failed" : s.status === "partial" ? "Partial" : "Notes"}</span>
               )}
             </div>
             {s.detail && <p className="export-step-detail">{s.detail}</p>}
             {s.issues.length > 0 && (
-              <details className="export-issues" open={s.status === "failed"}>
+              <details className="export-issues" open={s.status === "failed" || s.status === "partial"}>
                 <summary>
-                  {s.status === "failed" ? "What went wrong" : `${s.issues.length} note${s.issues.length === 1 ? "" : "s"}`}
+                  {s.status === "failed" || s.status === "partial" ? "What went wrong" : `${s.issues.length} note${s.issues.length === 1 ? "" : "s"}`}
                 </summary>
                 <ul>
                   {s.issues.map((i, n) => (

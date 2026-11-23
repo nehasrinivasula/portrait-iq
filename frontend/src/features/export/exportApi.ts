@@ -2,7 +2,7 @@ import { apiDownload, apiFetch } from "../../api";
 
 // Contract: backend/app/packaging/routes.py (SCRUM-61).
 
-export type StepStatus = "pending" | "running" | "done" | "warn" | "failed";
+export type StepStatus = "pending" | "running" | "done" | "warn" | "partial" | "failed";
 export type PackageState = "preparing" | "ready" | "failed" | "interrupted";
 
 export interface ExportIssue { item: string; reason: string }

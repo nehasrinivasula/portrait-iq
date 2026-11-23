@@ -3,7 +3,9 @@ the fixed layout, errors that explain themselves, and the audit trail.
 Same setup as test_privacy_routes.py: real routes, in-memory database."""
 import io
 import json
+import os
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -19,7 +21,12 @@ from app.db import Base, get_db
 from app.ingestion import pipeline
 from app.main import app
 from app.models import AuditLogEntry, Job, Signal
-from app.orchestrator.jobs import job_output_dir
+from app.collectors.base import Collector, CollectorResult, PluginError
+from app.collectors import k8s
+from app.collectors.registry import PluginRegistry
+from app.collectors.tshark import TsharkCollector
+from app.config import settings
+from app.orchestrator.jobs import job_output_dir, read_results, run_job
 from app.packaging import service
 
 HEADER = (
@@ -33,6 +40,7 @@ LAYOUT = {"metadata.json", "logs/", "logs/events.jsonl", "logs/summary.json", "p
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "job_output_dir", str(tmp_path / "runs"))
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
@@ -144,6 +152,34 @@ def test_unmasked_export_includes_binary_tool_files(env):
     assert "tools/tshark/capture.pcap" in open_zip(client).namelist()
 
 
+def test_failed_tool_binary_stays_out_of_masked_export(env):
+    client, db = env
+    out = job_output_dir("job-1")
+    results = json.loads((out / "results.json").read_text())
+    results[1]["error"] = "Capture interrupted."
+    (out / "results.json").write_text(json.dumps(results))
+    db.get(Job, "job-1").status = "partial"
+    db.commit()
+    status = export(client)
+    assert status["partial"]
+    tools = next(step for step in status["steps"] if step["id"] == "tools")
+    assert tools["status"] == "partial"
+    assert any("Capture interrupted" in issue["reason"] for issue in tools["issues"])
+    assert "tools/tshark/capture.pcap" not in open_zip(client).namelist()
+
+
+def test_export_resolves_backend_relative_artifact_paths(env):
+    client, _ = env
+    out = job_output_dir("job-1")
+    results = json.loads((out / "results.json").read_text())
+    # The normal backend setting is a relative data/jobs path. A stored path
+    # rooted there must not be prefixed with the job folder a second time.
+    results[0]["artifact_paths"] = [os.path.relpath(out / "netshoot" / "checks.txt", Path.cwd())]
+    (out / "results.json").write_text(json.dumps(results))
+    export(client)
+    assert "tools/netshoot/checks.txt" in open_zip(client).namelist()
+
+
 def test_findings_in_the_zip_carry_their_evidence_fields(env):
     client, _ = env
     export(client)
@@ -179,13 +215,117 @@ def test_each_step_explains_what_it_did_and_what_failed(env):
     assert [x["id"] for x in s["steps"]] == [i for i, _ in service.STEPS]
     assert all(x["detail"] for x in s["steps"])
     tools = steps["tools"]
-    assert tools["status"] == "warn" and tools["detail"] == "2 of 3 diagnostics ran; 1 file added."
+    assert tools["status"] == "partial" and tools["detail"] == "2 of 3 diagnostics completed; 1 file added."
     reasons = {i["item"]: i["reason"] for i in tools["issues"]}
     assert reasons["rti"] == "This diagnostic did not finish during the run: RTI is turned off on this server."
     assert "no longer on the server" in reasons["netshoot: gone.txt"]
     assert "Left out: only text files can be masked" in reasons["tshark: capture.pcap"]
     assert any("capture.pcap was left out" in w for w in s["warnings"])
-    assert not s["partial"]
+    assert s["partial"]
+
+
+def test_tool_stopped_mid_capture_keeps_partial_file_and_reason_in_export(env):
+    client, db = env
+
+    class InterruptedCapture(Collector):
+        name = "partial_capture"
+
+        def run(self, target_ip):
+            (self.require_output_dir() / "capture.txt").write_text(f"first packet\npatient ssn {SSN}\n")
+            raise PluginError("Capture stopped after one packet.")
+
+        def cleanup(self):
+            pass
+
+    class CompletedCapture(Collector):
+        name = "good_capture"
+
+        def run(self, target_ip):
+            path = self.require_output_dir() / "checks.txt"
+            path.write_text("network check complete\n")
+            return CollectorResult(tool=self.name, artifact_paths=[str(path)], summary="1 check")
+
+        def cleanup(self):
+            pass
+
+    registry = PluginRegistry()
+    registry.register(InterruptedCapture)
+    registry.register(CompletedCapture)
+    job = db.get(Job, "job-1")
+    job.tools = json.dumps(["partial_capture", "good_capture"])
+    job.cpu_limit_pct, job.mem_limit_mb, job.max_output_mb = 50, 512, 100
+    db.commit()
+
+    run_job(db, job, "192.0.2.10", registry=registry)
+    assert job.status == "partial"
+    results = read_results(job.id)
+    assert results[0]["error"] == "Capture stopped after one packet."
+    assert len(results[0]["artifact_paths"]) == 1
+    assert results[1]["summary"] == "1 check"
+
+    status = export(client)
+    assert status["state"] == "ready" and status["partial"]
+    tools = next(step for step in status["steps"] if step["id"] == "tools")
+    assert tools["status"] == "partial"
+    assert tools["issues"][0]["reason"].endswith("Capture stopped after one packet.")
+    with open_zip(client) as package:
+        assert "tools/partial_capture/capture.txt" in package.namelist()
+        assert "tools/good_capture/checks.txt" in package.namelist()
+        assert SSN not in package.read("tools/partial_capture/capture.txt").decode()
+        metadata = json.loads(package.read("metadata.json"))
+        tools_step = next(step for step in metadata["export"]["steps"] if step["id"] == "tools")
+        assert tools_step["status"] == "partial"
+        assert tools_step["issues"][0]["reason"].endswith("Capture stopped after one packet.")
+
+
+def test_tshark_interrupted_mid_capture_exports_partial_pcap_when_unmasked(env, monkeypatch):
+    client, db = env
+    monkeypatch.setattr(settings, "tshark_live_capture_enabled", True)
+
+    class InterruptedRunner:
+        def __init__(self):
+            self.deleted = []
+
+        def create(self, **kwargs):
+            pass
+
+        def wait_running(self, name, timeout_s):
+            return "192.0.2.10"
+
+        def exec(self, name, argv, timeout_s):
+            return k8s.ExecResult(137, "", "capture process stopped")
+
+        def read_file(self, name, path, dest, max_bytes):
+            dest.write_bytes(b"\x0a\x0d\x0d\x0a" + b"partial synthetic capture")
+            return dest.stat().st_size
+
+        def delete(self, name):
+            self.deleted.append(name)
+
+    runner = InterruptedRunner()
+    monkeypatch.setattr(k8s, "get_pod_runner", lambda: runner)
+    job = db.get(Job, "job-1")
+    job.tools = '["tshark"]'
+    job.cpu_limit_pct, job.mem_limit_mb, job.max_output_mb = 50, 512, 100
+    db.commit()
+
+    run_job(db, job, "192.0.2.10", plugin_options={"tshark": {"filter_preset": "rti_all"}})
+    assert job.status == "failed" and runner.deleted
+    assert read_results(job.id)[0]["artifact_paths"]
+    assert read_results(job.id)[0]["error"] == "The network capture could not be completed."
+
+    masked = export(client)
+    assert masked["partial"] and masked["state"] == "ready"
+    tools = next(step for step in masked["steps"] if step["id"] == "tools")
+    assert tools["status"] == "failed"
+    assert "tools/tshark/capture.pcapng" not in open_zip(client).namelist()
+
+    unmasked = export(client, mask=False)
+    assert unmasked["partial"] and unmasked["state"] == "ready"
+    tools = next(step for step in unmasked["steps"] if step["id"] == "tools")
+    assert tools["status"] == "partial"
+    assert tools["issues"][0]["reason"].endswith("The network capture could not be completed.")
+    assert "tools/tshark/capture.pcapng" in open_zip(client).namelist()
 
 
 def test_a_failed_step_still_exports_the_rest(env, monkeypatch):

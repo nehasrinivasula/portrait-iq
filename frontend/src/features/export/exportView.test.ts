@@ -49,6 +49,11 @@ describe("headline", () => {
     expect([kind, title]).toEqual(["warn", "Export ready, but something is missing"]);
     expect(body).toContain("1 part could not be added");
   });
+  it("calls out a partial diagnostic run even when the export itself succeeded", () => {
+    const [kind, title, body] = headline(pkg({ partial: true, steps: [step("tools", "partial", 1), step("zip", "done")] }));
+    expect([kind, title]).toEqual(["warn", "Export ready with partial results"]);
+    expect(body).toContain("Available results are in the zip");
+  });
   it("shows the server's reason when the export failed", () => {
     expect(headline(pkg({ state: "failed", error: "No space left." }))).toEqual(["error", "The export failed", "No space left."]);
     expect(headline(pkg({ state: "interrupted", error: null }))[0]).toBe("warn");

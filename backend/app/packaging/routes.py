@@ -51,7 +51,7 @@ class PackageOut(BaseModel):
     job_id: str
     state: str                       # preparing | ready | failed | interrupted
     masked: bool
-    partial: bool                    # ready, but a step failed: the zip is missing something
+    partial: bool                    # the run or an export step was incomplete
     requested_by: str
     started_at: str
     finished_at: Optional[str] = None

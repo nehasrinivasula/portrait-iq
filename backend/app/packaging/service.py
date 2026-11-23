@@ -15,7 +15,8 @@ has anything in it:
     audit/audit.jsonl        the audit entries that mention this run
 
 Progress lives in <job dir>/package/status.json. Each step ends as done,
-warn (finished, with something the engineer should know) or failed (with a
+warn (finished, with something the engineer should know), partial (some
+diagnostics failed but their available files are kept) or failed (with a
 reason safe to show). One failed step does not stop the others (R-2: keep
 partial results); only failing to write the zip itself fails the export.
 
@@ -87,7 +88,7 @@ class Issue:
 class Step:
     id: str
     label: str
-    status: str = "pending"            # pending | running | done | warn | failed
+    status: str = "pending"            # pending | running | done | warn | partial | failed
     detail: Optional[str] = None       # one line: what this step did
     issues: list[Issue] = field(default_factory=list)
 
@@ -108,6 +109,7 @@ class PackageStatus:
     masked: bool
     requested_by: str
     started_at: str
+    run_status: Optional[str] = None
     finished_at: Optional[str] = None
     steps: list[Step] = field(default_factory=list)
     file_name: Optional[str] = None
@@ -119,7 +121,9 @@ class PackageStatus:
 
     @property
     def partial(self) -> bool:
-        return any(s.status == "failed" for s in self.steps)
+        return self.run_status in ("partial", "failed", "cleanup_failed", "interrupted") or any(
+            s.status in ("partial", "failed") for s in self.steps
+        )
 
 
 # --- reading state --------------------------------------------------------------
@@ -221,7 +225,8 @@ def start(db: Session, job_id: str, *, masked: bool, requested_by: str) -> Packa
             raise PackageError("An export of this run is already being prepared.")
         _building.add(job_id)
     status = PackageStatus(job_id=job_id, state="preparing", masked=masked, requested_by=requested_by,
-                           started_at=_now(), steps=[Step(i, label) for i, label in STEPS])
+                           started_at=_now(), run_status=job.status,
+                           steps=[Step(i, label) for i, label in STEPS])
     _save(status)
     return status
 
@@ -287,7 +292,8 @@ def _run_step(ctx: _Ctx, step: Step, func, *, fatal: bool = False) -> None:
     _save(ctx.status)
     try:
         func(ctx, step)
-        step.status = "warn" if step.issues else "done"
+        if step.status == "running":
+            step.status = "warn" if step.issues else "done"
     except PackageError as e:
         step.status = "failed"
         step.issues.append(Issue(step.label, str(e)))
@@ -400,11 +406,14 @@ def _step_tools(ctx: _Ctx, step: Step) -> None:
         tool = str(r.get("tool", "unknown"))
         if "error" in r:
             step.issues.append(Issue(tool, f"This diagnostic did not finish during the run: {r['error']}"))
-            continue
         for raw in r.get("artifact_paths", []):
             src = Path(raw)
             if not src.is_absolute():
-                src = job_root / src
+                # Collectors may save a path rooted at the backend's relative
+                # job directory (e.g. data/jobs/id/tool/file), or a path
+                # relative to this job. Accept either, then enforce containment.
+                if not _inside(src, job_root):
+                    src = job_root / src
             name = src.name
             if not _inside(src, job_root):
                 step.issues.append(Issue(f"{tool}: {name}", "Left out: the file is outside this run's folder."))
@@ -422,10 +431,13 @@ def _step_tools(ctx: _Ctx, step: Step) -> None:
                                             files=copied + 1, masked=ctx.status.masked))
     ran = len(results)
     failed = sum(1 for r in results if "error" in r)
+    if failed:
+        step.status = "failed" if failed == ran and copied == 0 else "partial"
     if not ran:
         step.detail = "This run used no diagnostics."
     else:
-        step.detail = f"{ran - failed} of {ran} diagnostic{'s' if ran != 1 else ''} ran; {copied} file{'s' if copied != 1 else ''} added."
+        step.detail = (f"{ran - failed} of {ran} diagnostic{'s' if ran != 1 else ''} completed; "
+                       f"{copied} file{'s' if copied != 1 else ''} added.")
 
 
 def _step_findings(ctx: _Ctx, step: Step) -> None:
