@@ -168,7 +168,7 @@ def test_each_step_explains_what_it_did_and_what_failed(env):
     assert [x["id"] for x in s["steps"]] == [i for i, _ in service.STEPS]
     assert all(x["detail"] for x in s["steps"])
     tools = steps["tools"]
-    assert tools["status"] == "warn" and tools["detail"] == "2 of 3 diagnostics ran; 1 file added."
+    assert tools["status"] == "warn" and tools["detail"] == "2 of 3 diagnostics ran; 1 file added. 1 text file scanned; 1 with PHI / PII."
     reasons = {i["item"]: i["reason"] for i in tools["issues"]}
     assert reasons["rti"] == "This diagnostic did not finish during the run: RTI is turned off on this server."
     assert "no longer on the server" in reasons["netshoot: gone.txt"]
