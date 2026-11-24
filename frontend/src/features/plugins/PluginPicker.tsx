@@ -5,9 +5,9 @@ import { ApiError } from "../../api";
 import { acquireForJob, listSources, type AcquisitionResult } from "../logs/logsApi";
 import TimeFramePicker from "../logs/TimeFramePicker";
 import { defaultTimeFrame, resolveTimeFrame, toApi } from "../logs/timeframe";
-import { listPlugins, startJob, uploadPcap, type Job, type Plugin } from "./api";
+import { listPlugins, startJob, uploadFile, type Job, type Plugin } from "./api";
 import { RtiOptions, TsharkOptions } from "./ToolOptions";
-import { buildOptions, defaultChoices, validateChoices, validateTargetIp } from "./options";
+import { buildOptions, defaultChoices, rtiArtifact, validateChoices, validateTargetIp } from "./options";
 import { useJobs } from "../jobs/JobsContext";
 import DeviceFinder from "../devices/DeviceFinder";
 import "./plugins.css";
@@ -47,9 +47,12 @@ export default function PluginPicker({ onStarted, locked }: {
   const [frame, setFrame] = useState(defaultTimeFrame);
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadName, setUploadName] = useState<string | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
+  // Per-tool upload state: tshark and rti can each import a file independently.
+  type UploadState = { name: string | null; busy: boolean; error: string | null };
+  const [uploads, setUploads] = useState<Record<"tshark" | "rti", UploadState>>({
+    tshark: { name: null, busy: false, error: null },
+    rti: { name: null, busy: false, error: null },
+  });
   const [startError, setStartError] = useState<string | null>(null);
   const feedback = useRef<HTMLDivElement>(null);
 
@@ -74,29 +77,34 @@ export default function PluginPicker({ onStarted, locked }: {
   const fieldErrors = useMemo(() => validateChoices(selected, choices), [selected, choices]);
   const window = useMemo(() => resolveTimeFrame(frame), [frame]);
   const nothingToDo = selected.size === 0 && !logsOn;
-  const valid = !ipError && !nothingToDo && Object.keys(fieldErrors).length === 0 && !uploading && (!logsOn || window.ok);
+  const anyUploading = uploads.tshark.busy || uploads.rti.busy;
+  const valid = !ipError && !nothingToDo && Object.keys(fieldErrors).length === 0 && !anyUploading && (!logsOn || window.ok);
 
   const toggle = (name: string, on: boolean) =>
     setSelected((s) => { const n = new Set(s); on ? n.add(name) : n.delete(name); return n; });
   const allOn = !!plugins?.length && plugins.every((p) => selected.has(p.name));
   const selectAll = () => setSelected(allOn ? new Set() : new Set(plugins?.map((p) => p.name)));
 
-  async function onFile(file: File | undefined) {
+  async function uploadInto(
+    tool: "tshark" | "rti", kind: string, file: File | undefined, apply: (id: string | null) => void,
+  ) {
     if (!file) return;
-    setUploadError(null);
-    setUploading(true);
+    setUploads((u) => ({ ...u, [tool]: { name: u[tool].name, busy: true, error: null } }));
     try {
-      const res = await uploadPcap(file);
-      setUploadName(file.name);
-      setChoices((c) => ({ ...c, tshark: { ...c.tshark, uploadId: res.upload_id } }));
+      const res = await uploadFile(file, kind);
+      setUploads((u) => ({ ...u, [tool]: { name: file.name, busy: false, error: null } }));
+      apply(res.upload_id);
     } catch (e) {
-      setUploadName(null);
-      setChoices((c) => ({ ...c, tshark: { ...c.tshark, uploadId: null } }));
-      setUploadError(messageFor(e));
-    } finally {
-      setUploading(false);
+      setUploads((u) => ({ ...u, [tool]: { name: null, busy: false, error: messageFor(e) } }));
+      apply(null);
     }
   }
+
+  const onTsharkFile = (file: File | undefined) =>
+    uploadInto("tshark", "pcap", file, (id) => setChoices((c) => ({ ...c, tshark: { ...c.tshark, uploadId: id } })));
+  const onRtiFile = (file: File | undefined) =>
+    uploadInto("rti", rtiArtifact(choices.rti.artifact).kind, file,
+      (id) => setChoices((c) => ({ ...c, rti: { ...c.rti, uploadId: id } })));
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -178,9 +186,12 @@ export default function PluginPicker({ onStarted, locked }: {
                 </div>
                 {on && p.name === "tshark" && (
                   <TsharkOptions uid={uid} choices={choices} onChoices={setChoices} errors={fieldErrors}
-                    upload={{ name: uploadName, busy: uploading, error: uploadError, onFile }} />
+                    upload={{ ...uploads.tshark, onFile: onTsharkFile }} />
                 )}
-                {on && p.name === "rti" && <RtiOptions uid={uid} choices={choices} onChoices={setChoices} errors={fieldErrors} />}
+                {on && p.name === "rti" && (
+                  <RtiOptions uid={uid} choices={choices} onChoices={setChoices} errors={fieldErrors}
+                    upload={{ ...uploads.rti, onFile: onRtiFile }} />
+                )}
               </li>
             );
           })}
@@ -197,7 +208,7 @@ export default function PluginPicker({ onStarted, locked }: {
         <div className="alert warn" role="alert"><strong>Some settings need attention</strong>Check the fields marked in red above.</div>
       )}
       {startError && <div className="alert error" role="alert"><strong>Couldn't start the run</strong>{startError}</div>}
-      <button className="btn" type="submit" disabled={busy || uploading || locked}>{label}</button>
+      <button className="btn" type="submit" disabled={busy || anyUploading || locked}>{label}</button>
       {locked && <p className="muted" role="status">A run is in progress. You can start another when it finishes.</p>}
     </form>
   );

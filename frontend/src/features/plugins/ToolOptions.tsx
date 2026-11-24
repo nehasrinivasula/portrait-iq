@@ -1,7 +1,11 @@
 import * as Label from "@radix-ui/react-label";
 import * as RadioGroup from "@radix-ui/react-radio-group";
 import DurationField from "./DurationField";
-import { RTI_DOMAINS, RTI_DURATION, TSHARK_DURATION, TSHARK_PRESETS, type Choices, type TsharkChoice } from "./options";
+import RtiExportGuide from "./RtiExportGuide";
+import {
+  RTI_ARTIFACTS, RTI_DOMAINS, RTI_DURATION, TSHARK_DURATION, TSHARK_PRESETS, rtiArtifact,
+  type Choices, type RtiArtifactId, type RtiChoice, type TsharkChoice,
+} from "./options";
 
 interface Props {
   uid: string;
@@ -79,20 +83,64 @@ export function TsharkOptions({ uid, choices, onChoices, errors, upload }: Props
   );
 }
 
-export function RtiOptions({ uid, choices, onChoices, errors }: Omit<Props, "upload">) {
+export function RtiOptions({ uid, choices, onChoices, errors, upload }: Props) {
   const r = choices.rti;
+  const set = (patch: Partial<RtiChoice>) => onChoices({ ...choices, rti: { ...r, ...patch } });
+  const art = rtiArtifact(r.artifact);
+
   return (
     <div className="plugin-options">
-      <div className="field">
-        <span className="filter-label" id={`${uid}-r-dom`}>DDS domain</span>
-        <RadioGroup.Root className="segmented" aria-labelledby={`${uid}-r-dom`} value={String(r.domain)}
-          onValueChange={(v) => onChoices({ ...choices, rti: { ...r, domain: Number(v) } })}>
-          {RTI_DOMAINS.map((d) => <RadioGroup.Item key={d} value={String(d)} className="seg"><span>Domain {d}</span></RadioGroup.Item>)}
-        </RadioGroup.Root>
-      </div>
-      <DurationField id={`${uid}-r-dur`} label="Listen time" value={r.durationS}
-        onChange={(v) => onChoices({ ...choices, rti: { ...r, durationS: v } })} limits={RTI_DURATION} error={errors["rti.duration"]}
-        hint="Reports which hosts and topics are active, never message contents." />
+      <RadioGroup.Root className="segmented" aria-label="UMF RTI mode" value={r.mode}
+        onValueChange={(v) => set({ mode: v as RtiChoice["mode"] })}>
+        <RadioGroup.Item value="run" className="seg"><span>Listen live</span></RadioGroup.Item>
+        <RadioGroup.Item value="import" className="seg"><span>Import a GUI export</span></RadioGroup.Item>
+      </RadioGroup.Root>
+
+      {r.mode === "run" ? (
+        <>
+          <div className="field">
+            <span className="filter-label" id={`${uid}-r-dom`}>DDS domain</span>
+            <RadioGroup.Root className="segmented" aria-labelledby={`${uid}-r-dom`} value={String(r.domain)}
+              onValueChange={(v) => set({ domain: Number(v) })}>
+              {RTI_DOMAINS.map((d) => <RadioGroup.Item key={d} value={String(d)} className="seg"><span>Domain {d}</span></RadioGroup.Item>)}
+            </RadioGroup.Root>
+          </div>
+          <DurationField id={`${uid}-r-dur`} label="Listen time" value={r.durationS}
+            onChange={(v) => set({ durationS: v })} limits={RTI_DURATION} error={errors["rti.duration"]}
+            hint="Reports which hosts and topics are active, never message contents." />
+        </>
+      ) : (
+        <>
+          <RtiExportGuide />
+
+          <div className="field">
+            <span className="filter-label" id={`${uid}-r-art`}>Which export</span>
+            <RadioGroup.Root className="option-list" aria-labelledby={`${uid}-r-art`} value={r.artifact}
+              onValueChange={(v) => set({ artifact: v as RtiArtifactId, uploadId: null })}>
+              {RTI_ARTIFACTS.map((a) => (
+                <RadioGroup.Item key={a.id} value={a.id} className="seg option">
+                  <span>{a.label}</span> <span className="opt-hint">{a.hint}</span>
+                </RadioGroup.Item>
+              ))}
+            </RadioGroup.Root>
+          </div>
+
+          <div className="field">
+            <Label.Root htmlFor={`${uid}-r-file`}>Export file ({art.accept})</Label.Root>
+            <input id={`${uid}-r-file`} type="file" accept={art.accept} aria-invalid={!!(upload.error ?? errors["rti.upload"])}
+              onChange={(e) => upload.onFile(e.target.files?.[0])} />
+            {upload.error || errors["rti.upload"]
+              ? <div className="error-text" role="alert">{upload.error ?? errors["rti.upload"]}</div>
+              : <div className="hint">{upload.busy ? "Uploading…" : upload.name ? `Uploaded: ${upload.name}` : "Up to 500 MB."}</div>}
+          </div>
+
+          <p className="muted">
+            {r.artifact === "monitor"
+              ? "Save it in RTI Monitor first (File ▸ Save), then upload the .ser here."
+              : "Export it from RTI Admin Console first (File ▸ Export Discovery Data, with the obfuscation options unchecked), then upload the .xml here."}
+          </p>
+        </>
+      )}
     </div>
   );
 }

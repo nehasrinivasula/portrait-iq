@@ -30,6 +30,18 @@ export const TSHARK_PRESETS = [
 ] as const;
 export type TsharkPresetId = (typeof TSHARK_PRESETS)[number]["id"];
 
+/** RTI import mode (SCRUM-123): which GUI export the operator uploaded, and the
+ * upload kind each one is saved under (POST /api/uploads?kind=...). */
+export const RTI_ARTIFACTS = [
+  { id: "admin_console", kind: "rti_admin", accept: ".xml",
+    label: "Admin Console discovery export", hint: "A .xml from RTI Admin Console (File ▸ Export Discovery Data)" },
+  { id: "monitor", kind: "rti_monitor", accept: ".ser",
+    label: "Monitor saved session", hint: "A .ser saved from RTI Monitor (File ▸ Save)" },
+] as const;
+export type RtiArtifactId = (typeof RTI_ARTIFACTS)[number]["id"];
+export const rtiArtifact = (id: RtiArtifactId) =>
+  RTI_ARTIFACTS.find((a) => a.id === id) ?? RTI_ARTIFACTS[0];
+
 export interface TsharkChoice {
   mode: "run" | "import";
   durationS: string;
@@ -41,8 +53,12 @@ export interface TsharkChoice {
   proto: "any" | "tcp" | "udp";
 }
 export interface RtiChoice {
+  /** run = live rtiddsspy; import = ingest an uploaded RTI GUI export. */
+  mode: "run" | "import";
   domain: number;
   durationS: string;
+  artifact: RtiArtifactId;
+  uploadId: string | null;
 }
 export interface Choices {
   tshark: TsharkChoice;
@@ -54,7 +70,10 @@ export const defaultChoices = (): Choices => ({
     mode: "run", durationS: String(TSHARK_DEFAULT_S), uploadId: null,
     filterKind: "quick", preset: "rti_all", port: "", proto: "any",
   },
-  rti: { domain: RTI_DOMAINS[0], durationS: String(RTI_DEFAULT_S) },
+  rti: {
+    mode: "run", domain: RTI_DOMAINS[0], durationS: String(RTI_DEFAULT_S),
+    artifact: "admin_console", uploadId: null,
+  },
 });
 
 const wholeSeconds = (v: string, lim: DurationLimits): string | null => {
@@ -83,8 +102,12 @@ export function validateChoices(selected: Set<string>, c: Choices): Record<strin
     }
   }
   if (selected.has("rti")) {
-    const e = wholeSeconds(c.rti.durationS, RTI_DURATION);
-    if (e) errs["rti.duration"] = e;
+    if (c.rti.mode === "run") {
+      const e = wholeSeconds(c.rti.durationS, RTI_DURATION);
+      if (e) errs["rti.duration"] = e;
+    } else if (!c.rti.uploadId) {
+      errs["rti.upload"] = `Choose a ${rtiArtifact(c.rti.artifact).accept} file to import.`;
+    }
   }
   return errs;
 }
@@ -103,6 +126,10 @@ export function buildOptions(selected: Set<string>, c: Choices): Record<string, 
       out.tshark = { mode: "run", duration_s: Number(t.durationS), ...filter };
     }
   }
-  if (selected.has("rti")) out.rti = { domain: c.rti.domain, duration_s: Number(c.rti.durationS) };
+  if (selected.has("rti")) {
+    const r = c.rti;
+    if (r.mode === "import") out.rti = { mode: "import", artifact: r.artifact, upload_id: r.uploadId };
+    else out.rti = { domain: r.domain, duration_s: Number(r.durationS) };
+  }
   return out;
 }

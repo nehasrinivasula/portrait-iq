@@ -23,17 +23,38 @@ being permitted to subscribe (the SvcAxRtiTools cert is): seeing nothing
 becomes a warning, not an empty success. The rtiddsspy table format the parser
 reads was confirmed on the bench 2026-11-08; a long type name can be truncated
 to its column width, and the full output is kept in rti.txt.
+
+Import mode (SCRUM-123): the live spy sees the DDS *system* (participants,
+topics, types), but RTI's Monitor performance data and the Admin Console's own
+saved files exist only as GUI exports -- there is no file to pull off the node
+and no headless way to produce them. So the GUI route instead has the operator
+save those files from the RTI tools and upload them, and this collector ingests
+an upload in place of running the spy: it stores the raw file as a job artifact
+and, for the Admin Console XML export, summarizes its topology. The Monitor
+".ser" is a Java-serialized session that only RTI Monitor can read, so it is
+kept as-is. Import mode needs no image, no pod and no network.
 """
+import hashlib
 import json
 import re
 import shlex
 import threading
+import xml.etree.ElementTree as ET
 
-from app.collectors import k8s
+from app import uploads
+from app.collectors import javaser, k8s
 from app.collectors.base import Collector, CollectorResult, PluginConfigError, PluginError
 from app.collectors.netshoot import is_host
 from app.config import settings
 from app.secrets_loader import redact
+
+# Import mode: the RTI GUI exports we ingest, as artifact key ->
+# (upload kind, stored file extension, label). The upload kind's accepted
+# first bytes are enforced in uploads.py.
+ARTIFACTS = {
+    "admin_console": ("rti_admin", "xml", "RTI Admin Console discovery export"),
+    "monitor": ("rti_monitor", "ser", "RTI Monitor saved session"),
+}
 
 # 7 logging, 12 source pod ("umfgeneral"), 13 view pod (GE's rtitools README).
 DOMAINS = (7, 12, 13)
@@ -90,18 +111,34 @@ class RtiCollector(Collector):
 
     def __init__(self, limits):
         super().__init__(limits)
+        self.mode = "run"
         self.domain = self.DEFAULT_DOMAIN
         self.duration_s = self.DEFAULT_DURATION_S
+        self.artifact: str | None = None
+        self.upload_id: str | None = None
         self._runner = None
         self._pod: str | None = None
         self._claimed_domain: int | None = None
 
     def configure(self, options):
-        """Options: domain (7, 12 or 13; default 12) and duration_s
-        (10 to 300 seconds of listening; default 30)."""
-        unknown = sorted(set(options) - {"domain", "duration_s"})
+        """Run mode (default): domain (7, 12 or 13; default 12) and duration_s
+        (10 to 300 s; default 30) -- runs the live spy.
+        Import mode (mode="import"): artifact ("admin_console" or "monitor")
+        and the upload_id of the matching POST /api/uploads file -- ingests a
+        saved RTI GUI export instead of running anything."""
+        mode = options.get("mode", "run")
+        if mode not in ("run", "import"):
+            raise PluginConfigError("rti mode must be 'run' or 'import'")
+        if mode == "import":
+            self._configure_import(options)
+        else:
+            self._configure_run(options)
+        self.mode = mode
+
+    def _configure_run(self, options):
+        unknown = sorted(set(options) - {"mode", "domain", "duration_s"})
         if unknown:
-            raise PluginConfigError(f"rti does not accept options: {unknown}")
+            raise PluginConfigError(f"rti run mode does not accept options: {unknown}")
         if not settings.rti_enabled:
             raise PluginConfigError("UMF RTI can't run: GE's rtitools image is missing.")
         domain = options.get("domain", self.DEFAULT_DOMAIN)
@@ -112,7 +149,28 @@ class RtiCollector(Collector):
                 or not 10 <= duration_s <= self.MAX_DURATION_S):
             raise PluginConfigError(f"rti duration_s must be a whole number from 10 to {self.MAX_DURATION_S}")
         self.domain, self.duration_s = domain, duration_s
+        self.artifact = self.upload_id = None
         self.options = {"domain": domain, "duration_s": duration_s}
+
+    def _configure_import(self, options):
+        # No image, pod or network: we only read an uploaded file, so this is
+        # allowed even when the rtitools image is absent (rti_enabled is False).
+        unknown = sorted(set(options) - {"mode", "artifact", "upload_id"})
+        if unknown:
+            raise PluginConfigError(f"rti import mode does not accept options: {unknown}")
+        artifact = options.get("artifact")
+        if artifact not in ARTIFACTS:
+            raise PluginConfigError(f"rti import needs artifact one of {sorted(ARTIFACTS)}")
+        kind, _ext, label = ARTIFACTS[artifact]
+        upload_id = options.get("upload_id")
+        if not uploads.is_valid_id(upload_id):
+            raise PluginConfigError(
+                f"rti import mode needs the upload_id returned by POST /api/uploads?kind={kind}"
+            )
+        if not uploads.exists(upload_id, kind):
+            raise PluginConfigError(f"rti: no uploaded {label} with that upload_id")
+        self.artifact, self.upload_id = artifact, upload_id
+        self.options = {"mode": "import", "artifact": artifact, "upload_id": upload_id}
 
     def audit_fields(self):
         return dict(self.options)
@@ -156,9 +214,11 @@ class RtiCollector(Collector):
         return argv
 
     def run(self, target_ip: str) -> CollectorResult:
+        out_dir = self.require_output_dir()
+        if self.mode == "import":   # ingest an uploaded GUI export; no target, pod or network
+            return self._import(out_dir)
         if not is_host(target_ip):
             raise PluginError(f"rti: target {target_ip!r} is not an IP address or host name")
-        out_dir = self.require_output_dir()
         if self._pod:            # run() again after a partial failure: start clean
             self.cleanup()
 
@@ -231,6 +291,80 @@ class RtiCollector(Collector):
             warnings=warnings,
         )
 
+    def _import(self, out_dir) -> CollectorResult:
+        """Ingest an uploaded RTI GUI export: store the raw file as a job
+        artifact and summarize it -- the Admin Console XML's topology, or the
+        Monitor .ser's entities and whether it holds any statistics."""
+        kind, ext, label = ARTIFACTS[self.artifact]
+        src = uploads.path_for(self.upload_id, kind)
+        if not src.is_file():
+            raise PluginError(f"rti: the uploaded {label} is gone; upload it again")
+        size_mb = src.stat().st_size / (1024 * 1024)
+        if size_mb > self.limits.max_output_mb:
+            raise PluginError(
+                f"rti: the file is {size_mb:.0f} MB, over this job's {self.limits.max_output_mb} MB limit"
+            )
+        data = src.read_bytes()
+        raw = out_dir / f"rti_{self.artifact}.{ext}"
+        raw.write_bytes(data)   # keep the original, downloadable and packaged with the job
+
+        warnings = []
+        if self.artifact == "admin_console":
+            found = summarize_admin_console(data)   # may raise PluginError on a bad file
+            info = {"source": "admin_console_export", **found}
+            domains = ", ".join(str(d) for d in found["domains"]) or "none"
+            summary = (f"Admin Console export: {len(found['participants'])} participants "
+                       f"on domains {domains}, {len(found['topic_names'])} topics, "
+                       f"{found['writers']} writers, {found['readers']} readers")
+            if not found["is_discovery_export"]:
+                warnings.append(
+                    "This XML is not an Admin Console discovery export (File > Export "
+                    "Discovery Data); it was stored but may not be the right file."
+                )
+            if not found["participants"]:
+                warnings.append(
+                    "The export was stored but no participants were recognized in it; "
+                    "only the raw file is available."
+                )
+        else:   # monitor: RTI Monitor saved session (Java-serialized)
+            found = summarize_monitor_session(data)   # may raise PluginError on a bad file
+            info = {
+                "source": "monitor_session",
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size_bytes": len(data),
+                **found,
+            }
+            e = found["entities"]
+            domains = ", ".join(str(d) for d in found["domains"]) or "none"
+            stats = "with statistics" if found["has_statistics"] else "no statistics"
+            summary = (f"RTI Monitor session: {e.get('DomainParticipantModel', 0)} participants "
+                       f"on domains {domains}, {len(found['topic_names'])} topics, "
+                       f"{e.get('DataWriterModel', 0)} writers, {e.get('DataReaderModel', 0)} readers; {stats}")
+            if not found["is_monitor_session"]:
+                warnings.append(
+                    "This file is a Java object stream but not an RTI Monitor saved session "
+                    "(File > Save); it was stored but may not be the right file."
+                )
+            elif found["declared_entities"] != sum(e.values()):
+                warnings.append(
+                    f"The session lists {found['declared_entities']} entities but "
+                    f"{sum(e.values())} were read; it may be incomplete."
+                )
+            if found["is_monitor_session"] and not found["has_statistics"]:
+                warnings.append(
+                    "The session holds the system's structure but no Monitor statistics: RTI "
+                    "marks every entity as having no monitoring data. That is expected while "
+                    "the RTI tools cannot reach the monitoring domain."
+                )
+
+        (out_dir / "rti.json").write_text(json.dumps(info, indent=2))
+        return CollectorResult(
+            tool=self.name,
+            artifact_paths=[str(raw), str(out_dir / "rti.json")],
+            summary=summary,
+            warnings=warnings,
+        )
+
     def cleanup(self) -> None:
         # Release the per-domain claim only once the pod is actually gone. A pod
         # that is still running holds this domain's fixed local WAN port, so a new
@@ -246,6 +380,213 @@ class RtiCollector(Collector):
             with _active_lock:
                 _active_domains.discard(self._claimed_domain)
             self._claimed_domain = None
+
+
+# Refused anywhere in an uploaded export: a DTD or entity declaration could
+# drive entity expansion or an external fetch in the XML parser.
+_XML_DTD = re.compile(rb"<!\s*(doctype|entity)", re.IGNORECASE)
+
+
+def _text(el, path: str) -> str | None:
+    """Stripped text at path under el, or None when missing or empty."""
+    v = el.findtext(path) if el is not None else None
+    v = v.strip() if v else ""
+    return v or None
+
+
+def _int(el, path: str) -> int | None:
+    v = _text(el, path)
+    try:
+        return int(v) if v is not None else None
+    except ValueError:
+        return None
+
+
+def _version(el) -> str | None:
+    """RTI product_version struct (major/minor/release/revision) as "6.1.2.31"."""
+    if el is None:
+        return None
+    parts = [_text(el, k) for k in ("major", "minor", "release", "revision")]
+    return ".".join(parts) if all(parts) else None
+
+
+def summarize_admin_console(xml_bytes: bytes) -> dict:
+    """Topology from an RTI Admin Console discovery data export -- File >
+    Export Discovery Data (SCRUM-123). Schema confirmed on a real export from
+    the bench (Admin Console 6.1.2.23, 2026-11-24):
+
+        <system>
+          <product_version>major/minor/release/revision</product_version>
+          <serialization_date>...</serialization_date>
+          <processes><value><element>                       one per process
+            <domain_participants><value><element>             one per participant
+              <domain_id/>
+              <participant_data> participant_name/name, product_version,
+                                 property/value/element (name, value) </participant_data>
+              <publications><value><element><publication_data>
+                  topic_name, type_name, publication_name/name, reliability/kind, durability/kind
+              <subscriptions>... subscription_data, same fields (subscription_name)
+
+    Values are XML element text, not attributes. The names found go only into
+    the stored rti.json, never the UI summary (SCRUM-68). Any DTD or entity
+    declaration is refused before parsing, so an uploaded file cannot drive
+    entity expansion or external fetches."""
+    if _XML_DTD.search(xml_bytes):
+        raise PluginError(
+            "rti: the uploaded XML declares a DTD or entities, which are not processed",
+            safe_reason="The uploaded Admin Console file could not be read.",
+        )
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        raise PluginError(
+            "rti: the uploaded file is not valid XML",
+            safe_reason="The uploaded Admin Console file is not valid XML.",
+        ) from None
+
+    participants: list[dict] = []
+    # (domain_id, topic) -> {"type", "writers", "readers"}
+    topics: dict[tuple, dict] = {}
+    processes = root.findall("processes/value/element")
+    for proc in processes:
+        for dp in proc.iterfind("domain_participants/value/element"):
+            pdata = dp.find("participant_data")
+            domain = _int(dp, "domain_id")
+            if domain is None:
+                domain = _int(pdata, "domain_id")
+            props = {}
+            if pdata is not None:
+                for prop in pdata.iterfind("property/value/element"):
+                    k = _text(prop, "name")
+                    if k:
+                        props[k] = _text(prop, "value") or ""
+            counts = {"writers": 0, "readers": 0}
+            for section, sample, role in (("publications", "publication_data", "writers"),
+                                          ("subscriptions", "subscription_data", "readers")):
+                for ep in dp.iterfind(f"{section}/value/element/{sample}"):
+                    counts[role] += 1
+                    name = _text(ep, "topic_name")
+                    if not name:
+                        continue
+                    t = topics.setdefault((domain, name), {"type": None, "writers": 0, "readers": 0})
+                    t["type"] = t["type"] or _text(ep, "type_name")
+                    t[role] += 1
+            participants.append({
+                "domain_id": domain,
+                "name": _text(pdata, "participant_name/name"),
+                "product_version": _version(pdata.find("product_version") if pdata is not None else None),
+                "process_id": props.get("dds.sys_info.process_id"),
+                "service": props.get("axone_service_friendlyname"),
+                # The RTI Monitoring Library sets these when it is loaded in the
+                # participant's process -- a hint that Monitor statistics exist.
+                "monitoring_library": "rti/dds/monitor/version" in props,
+                **counts,
+            })
+
+    topic_list = [
+        {"domain_id": d, "topic": n, **v}
+        for (d, n), v in sorted(topics.items(), key=lambda kv: (kv[0][0] is None, kv[0]))
+    ]
+    domains = sorted({p["domain_id"] for p in participants if p["domain_id"] is not None})
+    return {
+        "is_discovery_export": root.tag == "system",
+        "export_version": _version(root.find("product_version")),
+        "exported_at": _text(root, "serialization_date"),
+        "processes": len(processes),
+        "domains": domains,
+        "participants": participants,
+        "topics": topic_list,
+        "topic_names": sorted({t["topic"] for t in topic_list}),
+        "types": sorted({t["type"] for t in topic_list if t["type"]}),
+        "writers": sum(p["writers"] for p in participants),
+        "readers": sum(p["readers"] for p in participants),
+    }
+
+
+# RTI Monitor session models (com.rti.dds.monitor.system.*): the entity kinds a
+# saved session holds, one serialized object each.
+_MONITOR_MODELS = (
+    "SystemModel", "HostModel", "ProcessModel", "DomainModel", "DomainParticipantModel",
+    "PublisherModel", "SubscriberModel", "DataWriterModel", "DataReaderModel", "DomainTopicModel",
+)
+# Statuses RTI gives an entity that has no statistics of its own. Aggregates
+# (host, topic, domain...) report THROUGH_AGGREGATION and carry no data either.
+_NO_STATS = ("MONITORING_SUPPORTED_NO_DATA_AVAILABLE", "MONITORING_SUPPORTED_THROUGH_AGGREGATION",
+             "MONITORING_NOT_SUPPORTED")
+
+
+def summarize_monitor_session(ser_bytes: bytes) -> dict:
+    """Entities and monitoring status from an RTI Monitor saved session (File >
+    Save) -- SCRUM-123. Read with the pure parser in javaser.py, which never
+    loads or runs Java code. Layout confirmed on a real session from the bench
+    (Monitor 6.1.2.23, 2026-11-24): a version string, an int count, then that
+    many Externalizable com.rti.dds.monitor.system.*Model objects. Each model
+    writes an ordered list of values -- its 16-byte entity id (+1 byte), its
+    MonitoringStatus enum, statistics queues, property names, and for topics,
+    writers and readers the topic and type names. We read only values we can
+    recognize by type and shape, never by fixed position, and skip RTI's data
+    type descriptions (most of the file) so memory stays small. Names go only
+    into rti.json, never the UI summary (SCRUM-68)."""
+    try:
+        items = javaser.read_stream(ser_bytes, skip_prefixes=("com.rti.dds.typecode.",))
+    except javaser.JavaSerError as e:
+        raise PluginError(
+            f"rti: the uploaded Monitor session could not be read: {e}",
+            safe_reason="The uploaded RTI Monitor file could not be read.",
+        ) from None
+
+    version = items[0] if items and isinstance(items[0], str) else None
+    declared = (int.from_bytes(items[1], "big")
+                if len(items) > 1 and isinstance(items[1], bytes) and len(items[1]) == 4 else None)
+    entities: dict[str, int] = {}
+    statuses: dict[str, int] = {}
+    domains: set[int] = set()
+    topics: set[tuple] = set()
+    participants: list[str] = []
+    hosts: list[str] = []
+    for obj in items[2:]:
+        if not (isinstance(obj, javaser.JavaObject)
+                and obj.class_name.startswith("com.rti.dds.monitor.system.")
+                and obj.simple_name in _MONITOR_MODELS):
+            continue
+        kind = obj.simple_name
+        entities[kind] = entities.get(kind, 0) + 1
+        values = [v for vals in obj.annotations.values() for v in vals]
+        entity_id = next((v for v in values if isinstance(v, bytes) and len(v) == 17), None)
+        status = next((v.constant for v in values if isinstance(v, javaser.JavaEnum)
+                       and v.class_name.endswith(".MonitoringStatus")), None)
+        if status:
+            statuses[status] = statuses.get(status, 0) + 1
+        # Plain names: strings that are not RTI property keys ("a/b/...").
+        names = [v for v in values if isinstance(v, str) and v and "/" not in v]
+        # Domain-scoped aggregates have ids "ffffffff.<domain>.…".
+        if kind in ("DomainModel", "DomainTopicModel") and entity_id and entity_id[:4] == b"\xff" * 4:
+            domain = int.from_bytes(entity_id[4:8], "big")
+            domains.add(domain)
+            if kind == "DomainTopicModel":
+                typ = next((n for n in names if "::" in n), None)
+                topic = names[names.index(typ) - 1] if typ and names.index(typ) > 0 else None
+                if topic:
+                    topics.add((domain, topic, typ))
+        elif kind == "DomainParticipantModel" and names:
+            participants.append(names[0])
+        elif kind == "HostModel" and names:
+            hosts.append(names[-1])
+
+    with_stats = sum(n for s, n in statuses.items() if s not in _NO_STATS)
+    return {
+        "is_monitor_session": bool(version) and declared is not None and bool(entities),
+        "monitor_version": version,
+        "declared_entities": declared,
+        "entities": dict(sorted(entities.items())),
+        "domains": sorted(domains),
+        "participants": sorted(participants),
+        "hosts": sorted(set(hosts)),
+        "topics": [{"domain_id": d, "topic": t, "type": ty} for d, t, ty in sorted(topics)],
+        "topic_names": sorted({t for _, t, _ in topics}),
+        "monitoring_status": dict(sorted(statuses.items())),
+        "has_statistics": with_stats > 0,
+    }
 
 
 def summarize(spy_output: str) -> dict:

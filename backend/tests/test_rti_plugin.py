@@ -2,14 +2,20 @@
 SCRUM-39: the UMF RTI plugin. The cluster and rtiddsspy are faked; the spy
 output below is synthetic (documentation addresses, made-up topics).
 """
+import hashlib
+import io
 import json
+
+import struct
 
 import pytest
 
+from app import uploads
 from app.collectors import k8s, rti
 from app.collectors.base import PluginConfigError, PluginError, ResourceLimits
-from app.collectors.rti import RtiCollector, summarize
+from app.collectors.rti import RtiCollector, summarize, summarize_admin_console, summarize_monitor_session
 from app.config import settings
+from tests.test_javaser import SC_BLOCK_DATA, SC_EXTERNALIZABLE, W
 
 LIMITS = ResourceLimits(cpu_pct=50, mem_mb=512, max_output_mb=100)
 
@@ -257,3 +263,251 @@ def test_summary_drops_topics_that_end_with_no_participants():
         "1.1  W -D  0A000215  gone  gone::T\n"
     )
     assert out["topics"] == {} and out["hosts"] == []
+
+
+# SCRUM-123: the GUI route. The operator saves an RTI tool's export and uploads
+# it; import mode ingests that file instead of running the spy. The export
+# bytes below are synthetic (documentation topic names, not a real system).
+
+def _ep(kind: str, topic: str, rel: str = "RELIABLE_RELIABILITY_QOS") -> str:
+    """One publication/subscription in Admin Console's export layout."""
+    return (f"<element><{kind}_data><topic_name>{topic}</topic_name>"
+            f"<type_name>{topic}::T</type_name><{kind}_name><name>ep</name></{kind}_name>"
+            f"<reliability><kind>{rel}</kind></reliability></{kind}_data>"
+            f"<sample_info><valid_data>true</valid_data></sample_info></element>")
+
+
+def _participant(domain: int, name: str, pubs=(), subs=(), monitored=True) -> str:
+    props = [("dds.sys_info.process_id", "8"), ("axone_service_friendlyname", "router-x")]
+    if monitored:
+        props += [("rti/dds/monitor/version", "6.1.2")]
+    prop_xml = "".join(f"<element><name>{k}</name><value>{v}</value><propagate>true</propagate></element>"
+                       for k, v in props)
+    return (f"<element><domain_id>{domain}</domain_id><participant_data>"
+            f"<domain_id>{domain}</domain_id><participant_name><name>{name}</name></participant_name>"
+            "<product_version><major>6</major><minor>1</minor><release>2</release><revision>31</revision>"
+            f"</product_version><property><value>{prop_xml}</value></property></participant_data>"
+            f"<publications><value>{''.join(_ep('publication', t) for t in pubs)}</value></publications>"
+            f"<subscriptions><value>{''.join(_ep('subscription', t) for t in subs)}</value></subscriptions>"
+            "</element>")
+
+
+# Same layout as a real Admin Console 6.1.2 "Export Discovery Data" file from
+# the bench (2026-11-24) -- leading comment, no XML declaration, values as
+# element text -- with synthetic names.
+ADMIN_XML = (
+    "<!-- This is a discovery data file written by Admin Console version 6.1.2.23 -->\n"
+    "<system><product_version><major>6</major><minor>1</minor><release>2</release>"
+    "<revision>23</revision></product_version>"
+    "<serialization_date>2026-11-24 20:17:30.406 UTC</serialization_date>"
+    "<processes><value><element><domain_participants><value>"
+    + _participant(12, "router#source", pubs=["umfvitals", "umfalarm"], subs=["umfvitals", "umfcmd"])
+    + _participant(13, "router#view", pubs=["umfvitals"], subs=[], monitored=False)
+    + "</value></domain_participants><log_messages/><security_log_messages/></element></value></processes>"
+    "</system>"
+).encode()
+def _model(w: W, kind: str, entity_id: bytes, status: str, *strings):
+    """One RTI Monitor model as Monitor 6.1.2 writes it: Externalizable, an
+    ordered list of values -- 17-byte id, MonitoringStatus, then names."""
+    w.obj(f"com.rti.dds.monitor.system.{kind}", SC_EXTERNALIZABLE | SC_BLOCK_DATA)
+    w.block(entity_id + b"\x00")
+    w.enum("com.rti.dds.monitor.system.MonitoringStatus", status)
+    w.string(f"rti/dds/monitoring/entityStatus/{kind}/{len(w.b)}")   # property keys are skipped
+    for s in strings:
+        w.string(s)
+    w.end()
+
+
+def monitor_session(statuses=("MONITORING_SUPPORTED_NO_DATA_AVAILABLE",) * 3) -> bytes:
+    """Same layout as a real RTI Monitor 6.1.2.23 saved session from the bench
+    (2026-11-24): version string, entity count, then one model per entity.
+    Synthetic names."""
+    agg = "MONITORING_SUPPORTED_THROUGH_AGGREGATION"
+    dom12 = b"\xff" * 4 + struct.pack(">i", 12) + b"\xff" * 4 + b"\x00\x00\x00\x01"
+    dom13 = b"\xff" * 4 + struct.pack(">i", 13) + b"\xff" * 4 + b"\x00\x00\x00\x02"
+    part, writer, reader = (bytes([i]) * 16 for i in (1, 2, 3))
+    w = W()
+    w.string("6.1.2.23")
+    w.block(struct.pack(">i", 8))
+    _model(w, "SystemModel", b"\x00" * 16, agg)
+    _model(w, "HostModel", b"\x09" * 16, agg, "host-a")
+    _model(w, "DomainModel", dom12, agg)
+    _model(w, "DomainParticipantModel", part, statuses[0], "router#source")
+    _model(w, "DataWriterModel", writer, statuses[1], "umfvitals", "umfvitals::T")
+    _model(w, "DataReaderModel", reader, statuses[2], "umfcmd", "umfcmd::T")
+    _model(w, "DomainTopicModel", dom12, agg, "umfvitals", "umfvitals::T")
+    _model(w, "DomainTopicModel", dom13, agg, "umfvitals", "umfvitals::T")
+    return w.data()
+
+
+MONITOR_SER = monitor_session()
+
+
+def rti_upload(data: bytes, kind: str) -> str:
+    return uploads.save(io.BytesIO(data), kind)[0]
+
+
+def import_collector(tmp_path, artifact: str, upload_id: str) -> RtiCollector:
+    r = RtiCollector(LIMITS)
+    r.configure({"mode": "import", "artifact": artifact, "upload_id": upload_id})
+    r.bind_job("job-1", tmp_path)
+    return r
+
+
+def test_import_admin_console_summarizes_topology(tmp_path):
+    r = import_collector(tmp_path, "admin_console", rti_upload(ADMIN_XML, "rti_admin"))
+    result = r.run("")   # import mode ignores the target
+
+    assert result.summary == ("Admin Console export: 2 participants on domains 12, 13, "
+                              "3 topics, 3 writers, 2 readers")
+    assert result.warnings == []
+    assert r.audit_fields() == {"mode": "import", "artifact": "admin_console", "upload_id": r.upload_id}
+
+    saved = json.loads((tmp_path / "rti.json").read_text())
+    assert saved["source"] == "admin_console_export" and saved["is_discovery_export"]
+    assert saved["export_version"] == "6.1.2.23"
+    assert saved["exported_at"] == "2026-11-24 20:17:30.406 UTC"
+    assert saved["processes"] == 1 and saved["domains"] == [12, 13]
+    assert saved["topic_names"] == ["umfalarm", "umfcmd", "umfvitals"]
+    assert saved["types"] == ["umfalarm::T", "umfcmd::T", "umfvitals::T"]
+    assert (tmp_path / "rti_admin_console.xml").read_bytes() == ADMIN_XML   # raw export kept
+
+
+def test_admin_console_export_participants_and_per_domain_topics():
+    found = summarize_admin_console(ADMIN_XML)
+    src, view = found["participants"]
+    assert src == {"domain_id": 12, "name": "router#source", "product_version": "6.1.2.31",
+                   "process_id": "8", "service": "router-x", "monitoring_library": True,
+                   "writers": 2, "readers": 2}
+    assert view["domain_id"] == 13 and view["monitoring_library"] is False
+    assert (view["writers"], view["readers"]) == (1, 0)
+    # A topic is counted per domain: umfvitals is on both 12 and 13.
+    assert found["topics"] == [
+        {"domain_id": 12, "topic": "umfalarm", "type": "umfalarm::T", "writers": 1, "readers": 0},
+        {"domain_id": 12, "topic": "umfcmd", "type": "umfcmd::T", "writers": 0, "readers": 1},
+        {"domain_id": 12, "topic": "umfvitals", "type": "umfvitals::T", "writers": 1, "readers": 1},
+        {"domain_id": 13, "topic": "umfvitals", "type": "umfvitals::T", "writers": 1, "readers": 0},
+    ]
+    assert (found["writers"], found["readers"]) == (3, 2)
+
+
+def test_admin_console_export_other_xml_is_flagged(tmp_path):
+    other = b"<?xml version='1.0'?><dds><qos_library name='x'/></dds>"   # e.g. a QoS file
+    r = import_collector(tmp_path, "admin_console", rti_upload(other, "rti_admin"))
+    result = r.run("")
+    assert any("not an Admin Console discovery export" in w for w in result.warnings)
+    assert any("no participants were recognized" in w for w in result.warnings)
+
+
+def test_import_monitor_session_is_summarized(tmp_path):
+    r = import_collector(tmp_path, "monitor", rti_upload(MONITOR_SER, "rti_monitor"))
+    result = r.run("")
+
+    assert result.summary == ("RTI Monitor session: 1 participants on domains 12, 13, "
+                              "1 topics, 1 writers, 1 readers; no statistics")
+    assert len(result.warnings) == 1 and "no Monitor statistics" in result.warnings[0]
+    saved = json.loads((tmp_path / "rti.json").read_text())
+    assert saved["source"] == "monitor_session" and saved["is_monitor_session"]
+    assert saved["sha256"] == hashlib.sha256(MONITOR_SER).hexdigest()
+    assert saved["monitor_version"] == "6.1.2.23" and saved["declared_entities"] == 8
+    assert saved["participants"] == ["router#source"] and saved["hosts"] == ["host-a"]
+    assert saved["topics"] == [
+        {"domain_id": 12, "topic": "umfvitals", "type": "umfvitals::T"},
+        {"domain_id": 13, "topic": "umfvitals", "type": "umfvitals::T"},
+    ]
+    assert saved["monitoring_status"] == {"MONITORING_SUPPORTED_NO_DATA_AVAILABLE": 3,
+                                          "MONITORING_SUPPORTED_THROUGH_AGGREGATION": 5}
+    assert saved["has_statistics"] is False
+    assert (tmp_path / "rti_monitor.ser").read_bytes() == MONITOR_SER   # raw session kept
+
+
+def test_monitor_session_with_statistics_is_flagged():
+    # Any entity status other than "no data" / "through aggregation" means RTI
+    # recorded statistics for it. (The bench has none yet; the name is RTI's
+    # pattern for a status with data.)
+    found = summarize_monitor_session(monitor_session(
+        ("MONITORING_SUPPORTED_DATA_AVAILABLE",) + ("MONITORING_SUPPORTED_NO_DATA_AVAILABLE",) * 2))
+    assert found["has_statistics"] is True
+
+
+def test_monitor_session_count_mismatch_warns(tmp_path):
+    data = bytearray(MONITOR_SER)
+    i = data.index(struct.pack(">i", 8))     # the declared entity count
+    data[i:i + 4] = struct.pack(">i", 9)
+    r = import_collector(tmp_path, "monitor", rti_upload(bytes(data), "rti_monitor"))
+    assert any("lists 9 entities but 8 were read" in w for w in r.run("").warnings)
+
+
+def test_other_java_stream_is_flagged(tmp_path):
+    w = W()
+    w.string("just a string")
+    r = import_collector(tmp_path, "monitor", rti_upload(w.data(), "rti_monitor"))
+    result = r.run("")
+    assert any("not an RTI Monitor saved session" in m for m in result.warnings)
+
+
+def test_unreadable_monitor_session_fails_cleanly(tmp_path):
+    bad = MONITOR_SER[:len(MONITOR_SER) // 2]           # truncated mid-stream
+    r = import_collector(tmp_path, "monitor", rti_upload(bad, "rti_monitor"))
+    with pytest.raises(PluginError, match="could not be read"):
+        r.run("")
+    assert (tmp_path / "rti_monitor.ser").read_bytes() == bad   # raw file still kept
+
+
+def test_import_mode_works_without_the_image(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "rti_enabled", False)   # no rtitools image needed to read a file
+    r = import_collector(tmp_path, "admin_console", rti_upload(ADMIN_XML, "rti_admin"))
+    assert r.mode == "import"
+
+
+def test_import_needs_a_known_artifact_and_a_real_upload(tmp_path):
+    good = rti_upload(ADMIN_XML, "rti_admin")
+    for bad in ({"mode": "import"},                                                # no artifact
+                {"mode": "import", "artifact": "nope", "upload_id": good},         # unknown artifact
+                {"mode": "import", "artifact": "admin_console"},                   # no upload_id
+                {"mode": "import", "artifact": "admin_console", "upload_id": "../x"},     # bad id
+                {"mode": "import", "artifact": "admin_console", "upload_id": "0" * 32},   # not on disk
+                {"mode": "import", "artifact": "admin_console", "upload_id": good, "domain": 7}):  # stray
+        with pytest.raises(PluginConfigError):
+            RtiCollector(LIMITS).configure(bad)
+    RtiCollector(LIMITS).configure({"mode": "import", "artifact": "admin_console", "upload_id": good})
+
+
+def test_mode_must_be_run_or_import():
+    with pytest.raises(PluginConfigError, match="mode must be"):
+        RtiCollector(LIMITS).configure({"mode": "sideways"})
+
+
+def test_run_mode_rejects_import_only_options(enabled):
+    for bad in ({"artifact": "monitor"}, {"upload_id": "0" * 32}):
+        with pytest.raises(PluginConfigError, match="run mode does not accept"):
+            RtiCollector(LIMITS).configure(bad)
+
+
+def test_admin_console_export_refuses_dtd_and_bad_xml():
+    with pytest.raises(PluginError, match="DTD or entities"):
+        summarize_admin_console(b'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]><x/>')
+    # refused even past the first few KB (e.g. after a long leading comment)
+    late = b"<!--" + b"x" * 8192 + b'--><!DOCTYPE x [<!ENTITY a "b">]><x/>'
+    with pytest.raises(PluginError, match="DTD or entities"):
+        summarize_admin_console(late)
+    with pytest.raises(PluginError, match="not valid XML"):
+        summarize_admin_console(b"<?xml version='1.0'?><unclosed>")
+
+
+def test_admin_console_export_with_no_topology_warns(tmp_path):
+    r = import_collector(tmp_path, "admin_console", rti_upload(b"<?xml version='1.0'?><empty/>", "rti_admin"))
+    result = r.run("")
+    assert result.summary == ("Admin Console export: 0 participants on domains none, "
+                              "0 topics, 0 writers, 0 readers")
+    assert any("no participants were recognized" in w for w in result.warnings)
+
+
+def test_rti_uploads_enforce_magic_bytes():
+    rti_upload(ADMIN_XML, "rti_admin")                        # accepted: starts with <!--
+    rti_upload(b"<?xml version='1.0'?><system/>", "rti_admin")   # accepted: XML declaration
+    rti_upload(MONITOR_SER, "rti_monitor")                    # accepted
+    with pytest.raises(uploads.UploadError, match="not a rti_admin file"):
+        uploads.save(io.BytesIO(b"not xml at all"), "rti_admin")
+    with pytest.raises(uploads.UploadError, match="not a rti_monitor file"):
+        uploads.save(io.BytesIO(b"<?xml version='1.0'?><dds/>"), "rti_monitor")

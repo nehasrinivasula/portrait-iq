@@ -45,6 +45,20 @@ describe("validateChoices / buildOptions", () => {
     });
   });
 
+  it("requires an uploaded export for RTI import and sends artifact + upload_id", () => {
+    const c = defaultChoices();
+    c.rti.mode = "import";
+    expect(validateChoices(new Set(["rti"]), c)["rti.upload"]).toMatch(/\.xml/);   // admin_console default
+    c.rti.artifact = "monitor";
+    expect(validateChoices(new Set(["rti"]), c)["rti.upload"]).toMatch(/\.ser/);
+    c.rti.durationS = "1";   // ignored in import mode, so no duration error
+    c.rti.uploadId = "deadbeef";
+    expect(validateChoices(new Set(["rti"]), c)).toEqual({});
+    expect(buildOptions(new Set(["rti"]), c)).toEqual({
+      rti: { mode: "import", artifact: "monitor", upload_id: "deadbeef" },
+    });
+  });
+
   it("sends exactly one live filter: a quick preset or a typed port", () => {
     const c = defaultChoices();
     c.tshark.preset = "rti_view_pod";
@@ -61,5 +75,23 @@ describe("validateChoices / buildOptions", () => {
     expect(buildOptions(new Set(["tshark"]), c).tshark).toEqual({ mode: "run", duration_s: 60, capture_filter: "port 7400" });
     c.tshark.proto = "udp";
     expect(buildOptions(new Set(["tshark"]), c).tshark).toMatchObject({ capture_filter: "udp port 7400" });
+  });
+});
+
+describe("RTI export guide (SCRUM-123)", () => {
+  it("walks through both exports and links a setup script that ships with the app", async () => {
+    const { RTI_GUIDE_STEPS, RTI_SETUP_SCRIPT, RTI_EXPORT_DIR } = await import("./RtiExportGuide");
+    const text = RTI_GUIDE_STEPS.flatMap((s) => s.items).join("\n");
+    expect(text).toMatch(/File ▸ Export Discovery Data/);
+    expect(text).toMatch(/obfuscation option unchecked/);
+    expect(text).toMatch(/File ▸ Save/);
+    expect(text).toContain(`${RTI_EXPORT_DIR}/discovery-data.xml`);
+    expect(text).toContain(`${RTI_EXPORT_DIR}/monitor-session.ser`);
+    // The script ships in public/ at the path the guide links, and agrees on
+    // the desktop's export folder.
+    expect(RTI_SETUP_SCRIPT).toBe("/rti/start-rti-tools.sh");
+    const { default: script } = await import("../../../public/rti/start-rti-tools.sh?raw");
+    expect(script).toMatch(/^#!\/usr\/bin\/env bash/);
+    expect(script).toContain(RTI_EXPORT_DIR);
   });
 });
