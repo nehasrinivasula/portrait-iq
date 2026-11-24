@@ -79,19 +79,15 @@ describe("validateChoices / buildOptions", () => {
 });
 
 describe("RTI export guide (SCRUM-123)", () => {
-  it("walks through both exports and links a setup script that ships with the app", async () => {
-    const { RTI_GUIDE_STEPS, RTI_SETUP_SCRIPT, RTI_EXPORT_DIR } = await import("./RtiExportGuide");
+  it("walks through both exports from the RTI tools on the laptop", async () => {
+    const { RTI_GUIDE_STEPS } = await import("./RtiExportGuide");
     const text = RTI_GUIDE_STEPS.flatMap((s) => s.items).join("\n");
     expect(text).toMatch(/File ▸ Export Discovery Data/);
     expect(text).toMatch(/obfuscation option unchecked/);
     expect(text).toMatch(/File ▸ Save/);
-    expect(text).toContain(`${RTI_EXPORT_DIR}/discovery-data.xml`);
-    expect(text).toContain(`${RTI_EXPORT_DIR}/monitor-session.ser`);
-    // The script ships in public/ at the path the guide links, and agrees on
-    // the desktop's export folder.
-    expect(RTI_SETUP_SCRIPT).toBe("/rti/start-rti-tools.sh");
-    const { default: script } = await import("../../../public/rti/start-rti-tools.sh?raw");
-    expect(script).toMatch(/^#!\/usr\/bin\/env bash/);
-    expect(script).toContain(RTI_EXPORT_DIR);
+    for (const d of [7, 12, 13]) expect(text).toContain(String(d));
+    expect(text).toMatch(/\.xml/);
+    expect(text).toMatch(/\.ser/);
+    expect(text).not.toMatch(/docker|start-rti-tools|\/home\/developer/i);   // no container setup
   });
 });
