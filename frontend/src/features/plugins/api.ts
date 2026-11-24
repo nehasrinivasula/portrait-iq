@@ -50,7 +50,7 @@ export interface Job {
 }
 
 export type ToolResult =
-  | { tool: string; summary: string; warnings: string[]; artifact_paths: string[] }
+  | { tool: string; summary: string; warnings: string[]; artifact_paths: string[]; details?: Record<string, unknown> }
   | { tool: string; step?: string; error: string };
 
 export const listPlugins = () => apiFetch<PluginList>("/api/plugins");

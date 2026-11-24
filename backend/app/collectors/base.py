@@ -93,6 +93,9 @@ class CollectorResult:
     summary: str = ""
     warnings: list[str] = field(default_factory=list)
     checks: list[CheckOutcome] = field(default_factory=list)
+    # Structured, UI-safe data for a tool's own results page (e.g. Kubernetes
+    # diagnostics' node and pod tables). Empty for tools that don't need one.
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 class Collector(ABC):
