@@ -110,9 +110,16 @@ def run_job(
 
     # Bound the data volume before this run writes: old run folders age out so
     # the multi-GB TSDB export (SCRUM-105) cannot fill the PVC. Never fails a run.
+    # Protect EVERY queued/running run, not just this one -- another run may be
+    # mid-collect, so its folder must not be pruned out from under it.
     try:
+        active = {jid for (jid,) in db.query(Job.id).filter(
+            Job.status.in_(("queued", "running"))).all()}
+        active.add(job.id)
         removed = prune_old_runs(settings.job_retention_keep,
-                                 settings.job_retention_max_total_mb, protect=frozenset({job.id}))
+                                 settings.job_retention_max_total_mb,
+                                 protect=frozenset(active),
+                                 min_age_seconds=settings.job_retention_min_age_seconds)
         if removed:
             log.info("run retention removed %d old run folder(s)", len(removed))
     except Exception:                       # noqa: BLE001  retention is best-effort

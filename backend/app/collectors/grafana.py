@@ -226,16 +226,40 @@ class GrafanaHealthCollector(Collector):
             notes.append(f"dashboard inventory unavailable ({type(e).__name__})")
 
         # Write the artifact, size-capped (also bounded by the job's output limit).
-        blob = json.dumps(snapshot, indent=2, default=str)
         cap = min(self.limits.max_output_mb, settings.grafana_max_snapshot_mb) * 1024 * 1024
         artifact = out_dir / "grafana_health.json"
-        if len(blob.encode()) > cap:
-            trimmed = {k: v for k, v in snapshot.items() if k != "dashboards"}
-            trimmed["truncated"] = True
-            artifact.write_text(json.dumps(trimmed, indent=2, default=str))
-            notes.append("snapshot exceeded the size cap; dashboard list omitted from the artifact")
-        else:
-            artifact.write_text(blob)
+
+        def _dump(obj) -> str:
+            return json.dumps(obj, indent=2, default=str)
+
+        def _too_big(text: str) -> bool:
+            return len(text.encode()) > cap
+
+        blob = _dump(snapshot)
+        if _too_big(blob):
+            # Trim a copy from the bulkiest, least essential section inward,
+            # RE-MEASURING after every cut, so the file written is always within
+            # the cap -- a large alerts/health section can't slip through just
+            # because the dashboard list was dropped. `snapshot` itself is left
+            # whole for the summary/warnings (which carry counts only, no bulk).
+            trimmed = {k: (dict(v) if isinstance(v, dict) else v) for k, v in snapshot.items()}
+            dropped: list[str] = []
+            for section, field, label in (("dashboards", "titles", "dashboard titles"),
+                                          ("alerts", "firing_names", "firing alert names")):
+                if not _too_big(blob):
+                    break
+                sec = trimmed.get(section)
+                if isinstance(sec, dict) and sec.get(field):
+                    sec[field] = []
+                    dropped.append(label)
+                    blob = _dump({**trimmed, "truncated": dropped})
+            if _too_big(blob):
+                # Still over cap without the lists: keep the scalar health only.
+                trimmed = {k: snapshot.get(k) for k in ("grafana", "datasource", "node", "health")}
+                dropped.append("all lists")
+                blob = _dump({**trimmed, "dashboards": None, "alerts": None, "truncated": dropped})
+            notes.append("snapshot exceeded the size cap; trimmed: " + ", ".join(dropped))
+        artifact.write_text(blob)
 
         return CollectorResult(
             tool=self.name,

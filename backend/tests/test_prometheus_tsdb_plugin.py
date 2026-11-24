@@ -152,15 +152,38 @@ def test_full_export_script(tmp_path, monkeypatch, enabled):
     assert str(artifact) in script
 
 
-def test_windowed_export_script_selects_recent_blocks(tmp_path, monkeypatch, enabled):
+def test_windowed_export_selects_blocks_by_sample_time_not_mtime(tmp_path, monkeypatch, enabled):
     artifact = tmp_path / "prometheus_tsdb.tar.zst"
     runner = FakeRunner(write_to=artifact)
     configured(tmp_path, monkeypatch, runner, scope="7d").run("192.0.2.3")
 
     script = runner.execs[0][2]
     assert "WIN=10080" in script                                  # 7 * 1440 minutes
-    assert "find \"$DB\" -maxdepth 1 -type d -name '01*' -mmin -\"$WIN\"" in script
+    # Blocks are chosen by their data's time range (meta.json maxTime vs a
+    # cutoff), NOT by directory mtime -- `-mmin` would mis-select on restore.
+    assert "-mmin" not in script
+    assert "CUTOFF_MS=$(( ( $(date +%s) - WIN * 60 ) * 1000 ))" in script
+    assert '"maxTime"' in script and 'meta.json' in script
+    assert "$MAXT" in script and "$CUTOFF_MS" in script
     assert 'SEL="$DB/wal $DB/chunks_head $BLOCKS"' in script
+
+
+def test_export_script_does_not_mask_a_failed_tar(tmp_path, monkeypatch, enabled):
+    """A pipe's exit is only the compressor's, so the script must capture tar's
+    own exit and refuse to promote the archive when tar failed (allen #1)."""
+    artifact = tmp_path / "prometheus_tsdb.tar.zst"
+    runner = FakeRunner(write_to=artifact)
+    configured(tmp_path, monkeypatch, runner).run("192.0.2.3")
+
+    script = runner.execs[0][2]
+    # tar's exit is captured to a side file and checked alongside the compressor;
+    # only a clean run reaches the `mv` that promotes .part to the final name.
+    assert 'echo $? > "$TMP.rc"' in script
+    assert "COMP_RC=$?" in script and "TAR_RC=" in script
+    assert '[ "$COMP_RC" -ne 0 ]' in script          # compressor must succeed
+    assert '[ "$TAR_RC" -gt 1 ]' in script           # tar 0/1 ok, >=2 is fatal
+    # the promote happens after the checks, not straight off the pipe
+    assert script.index("COMP_RC=$?") < script.index('mv "$TMP" "$OUT"')
 
 
 def test_gzip_changes_the_extension(tmp_path, monkeypatch, enabled):
@@ -189,6 +212,24 @@ def test_over_cap_failure_is_a_safe_error(tmp_path, monkeypatch, enabled):
     with pytest.raises(PluginError) as ei:
         configured(tmp_path, monkeypatch, runner).run("192.0.2.3")
     assert "larger than the configured export limit" in (ei.value.safe_reason or "")
+
+
+def test_compressor_failure_is_a_safe_error(tmp_path, monkeypatch, enabled):
+    runner = FakeRunner(exit_code=5, stderr="export failed: compressor exited 1")
+    with pytest.raises(PluginError) as ei:
+        configured(tmp_path, monkeypatch, runner).run("192.0.2.3")
+    assert "could not be compressed" in (ei.value.safe_reason or "")
+    assert not (tmp_path / "prometheus_tsdb.tar.zst").exists()
+
+
+def test_incomplete_read_failure_is_a_safe_error(tmp_path, monkeypatch, enabled):
+    # tar exited >=2 (a real read failure, not the benign WAL warning): the
+    # archive is never promoted and the run fails with a safe reason.
+    runner = FakeRunner(exit_code=6, stderr="export failed: tar exited 2 (read incomplete)")
+    with pytest.raises(PluginError) as ei:
+        configured(tmp_path, monkeypatch, runner).run("192.0.2.3")
+    assert "could not be read in full" in (ei.value.safe_reason or "")
+    assert not (tmp_path / "prometheus_tsdb.tar.zst").exists()
 
 
 def test_zero_exit_but_no_file_fails(tmp_path, monkeypatch, enabled):

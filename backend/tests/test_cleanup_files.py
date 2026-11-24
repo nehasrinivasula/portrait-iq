@@ -133,3 +133,34 @@ def test_prune_keeps_the_newest_and_never_touches_protected(jobs_dir):
     assert "cur" not in removed and "old" not in removed        # newest + protected survive
     assert removed == ["mid"]
     assert (jobs_dir / "old").is_dir() and (jobs_dir / "cur").is_dir()
+
+
+def test_prune_protects_every_active_run_not_just_one(jobs_dir):
+    # Two runs are in flight at once (both passed in `protect`): a retention
+    # pass triggered by one must not delete the other's folder (allen #4).
+    for i, name in enumerate(["old", "run-a", "run-b"]):
+        _run(jobs_dir, name, size=_MB, mtime=float(i))
+    removed = prune_old_runs(keep=0, max_total_mb=1, protect=frozenset({"run-a", "run-b"}))
+    assert removed == ["old"]
+    assert (jobs_dir / "run-a").is_dir() and (jobs_dir / "run-b").is_dir()
+
+
+def test_prune_skips_runs_younger_than_min_age(jobs_dir):
+    import time
+    now = time.time()
+    # All three just finished -- their exports may still be building/downloading.
+    for name in ("a", "b", "c"):
+        _run(jobs_dir, name, size=_MB, mtime=now)
+    removed = prune_old_runs(keep=0, max_total_mb=1, min_age_seconds=3600)
+    assert removed == []                                        # grace protects them all
+    assert len(list(jobs_dir.iterdir())) == 3
+
+
+def test_prune_with_min_age_still_removes_settled_old_runs(jobs_dir):
+    import time
+    now = time.time()
+    _run(jobs_dir, "settled", size=2 * _MB, mtime=now - 7200)   # older than the grace
+    _run(jobs_dir, "fresh", size=_MB, mtime=now)                # inside the grace
+    removed = prune_old_runs(keep=0, max_total_mb=1, min_age_seconds=3600)
+    assert removed == ["settled"]
+    assert (jobs_dir / "fresh").is_dir()

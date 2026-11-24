@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 
 from app.config import settings
@@ -75,16 +76,28 @@ def job_dirs_newest_first() -> list[Path]:
     return sorted(dirs, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
-def prune_old_runs(keep: int, max_total_mb: int, protect: frozenset[str] = frozenset()) -> list[str]:
+def prune_old_runs(keep: int, max_total_mb: int, protect: frozenset[str] = frozenset(),
+                   min_age_seconds: int = 0) -> list[str]:
     """Bound the data volume. Always keep the newest `keep` run folders; among
     the rest, delete oldest-first until the total size of all run folders is
-    under max_total_mb. A protected id (e.g. the run in progress) is never
-    removed. Returns the ids removed. A full run folder -- export zip and all --
-    is deleted, so old exports age out; this is what keeps the multi-GB TSDB
-    export (SCRUM-105) from filling the PVC. Disabled when keep and the cap are
-    both 0."""
+    under max_total_mb. Returns the ids removed. A full run folder -- export zip
+    and all -- is deleted, so old exports age out; this is what keeps the
+    multi-GB TSDB export (SCRUM-105) from filling the PVC. Disabled when keep and
+    the cap are both 0.
+
+    Two guards keep retention from deleting output something still needs, so a
+    run started while another is in flight cannot prune the other's folder:
+      * `protect` -- ids never removed. The caller passes EVERY queued/running
+        run (not just the one starting), so concurrent runs can't delete each
+        other's output.
+      * `min_age_seconds` -- a run folder younger than this is never pruned,
+        whatever the cap. Package builds and downloads happen after a run
+        finishes; this leaves a window in which a just-finished run's export is
+        safe from retention. (Download availability is derived from the file on
+        disk, so a run pruned later shows as expired, never as a dead link.)"""
     if keep <= 0 and max_total_mb <= 0:
         return []
+    now = time.time()
     sized = [(p, _dir_size(p)) for p in job_dirs_newest_first()]   # newest first
     newest = {p.name for p, _ in sized[:keep]} if keep > 0 else set()
     total = sum(s for _, s in sized)
@@ -95,6 +108,12 @@ def prune_old_runs(keep: int, max_total_mb: int, protect: frozenset[str] = froze
             break
         if path.name in newest or path.name in protect:
             continue
+        if min_age_seconds > 0:
+            try:
+                if now - path.stat().st_mtime < min_age_seconds:
+                    continue
+            except OSError:
+                continue
         try:
             shutil.rmtree(path)
         except OSError:

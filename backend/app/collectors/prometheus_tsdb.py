@@ -56,11 +56,16 @@ def _window_minutes(scope: str) -> int:
 # config or a validated option (a quoted path, ints, a validated compressor) --
 # never free user input. For a full export the selection is the whole
 # prometheus-db dir; for a window it is the live head (wal, chunks_head) plus
-# the block dirs modified within the window, so the archive is still a loadable
-# TSDB for that period. The disk guard measures the SELECTION, not the whole
-# database. `set -e` with an un-piped `mv` fails the step on a real error; the
-# benign "file changed as we read it" warning on the live WAL does not (that is
-# tar's stderr and the pipeline's exit is the compressor's).
+# the blocks whose sample range falls within the window, so the archive is
+# still a loadable TSDB for that period. The disk guard measures the SELECTION,
+# not the whole database.
+#
+# A pipe's exit status is only its LAST command's, so `tar | comp` would let a
+# failing tar be masked by a successful compressor and promote a truncated
+# archive to the final name. So tar's own exit is captured via a side file and
+# checked against the compressor's: tar exit 0/1 is success/benign (tar exits 1
+# on the harmless "file changed as we read it" on the live WAL), >=2 is a real
+# failure; the compressor must exit 0. Only a clean run renames .part to final.
 _EXPORT_SH = r"""
 set -e
 SRC=/src
@@ -70,9 +75,21 @@ OUT=__OUT__
 TMP="$OUT.part"
 WIN=__WIN_MIN__
 mkdir -p "$(dirname "$OUT")"
-rm -f "$TMP"
+rm -f "$TMP" "$TMP.rc"
 if [ "$WIN" -gt 0 ]; then
-  BLOCKS=$(find "$DB" -maxdepth 1 -type d -name '01*' -mmin -"$WIN" 2>/dev/null)
+  # Select blocks by the time range of their samples (meta.json maxTime), NOT
+  # by directory mtime -- a block's mtime reflects when it was written or
+  # compacted, not the period it covers, so mtime mis-selects after a restore
+  # or compaction. A block is in-window if it holds any sample at or after the
+  # cutoff (maxTime >= cutoff_ms).
+  CUTOFF_MS=$(( ( $(date +%s) - WIN * 60 ) * 1000 ))
+  BLOCKS=""
+  for d in "$DB"/[0-9A-Z]*/; do
+    [ -f "${d}meta.json" ] || continue
+    MAXT=$(grep -o '"maxTime"[[:space:]]*:[[:space:]]*[0-9]*' "${d}meta.json" | head -1 | grep -o '[0-9][0-9]*$')
+    [ -n "$MAXT" ] || continue
+    [ "$MAXT" -ge "$CUTOFF_MS" ] && BLOCKS="$BLOCKS ${d%/}"
+  done
   SEL="$DB/wal $DB/chunks_head $BLOCKS"
 else
   SEL="$DB"
@@ -90,7 +107,20 @@ fi
 REL=$(for p in $SEL; do printf '%s ' "${p#$SRC/}"; done)
 ION=""
 command -v ionice >/dev/null 2>&1 && ION="ionice -c3"
-nice -n 19 $ION tar -C "$SRC" -cf - $REL | __COMP__ > "$TMP"
+set +e
+( nice -n 19 $ION tar -C "$SRC" -cf - $REL; echo $? > "$TMP.rc" ) | __COMP__ > "$TMP"
+COMP_RC=$?
+set -e
+TAR_RC=$(cat "$TMP.rc" 2>/dev/null || echo 2)
+rm -f "$TMP.rc"
+if [ "$COMP_RC" -ne 0 ]; then
+  echo "export failed: compressor exited $COMP_RC" >&2
+  exit 5
+fi
+if [ "$TAR_RC" -gt 1 ]; then
+  echo "export failed: tar exited $TAR_RC (read incomplete)" >&2
+  exit 6
+fi
 mv "$TMP" "$OUT"
 echo "exported $(du -h "$OUT" 2>/dev/null | cut -f1)"
 """
@@ -194,7 +224,9 @@ class PrometheusTsdbCollector(Collector):
         res = self._runner.exec(self._pod, ["sh", "-c", script], timeout)
         if res.exit_code != 0:
             reason = {3: "The Prometheus data volume did not have room for the export.",
-                      4: "The Prometheus database is larger than the configured export limit."}.get(
+                      4: "The Prometheus database is larger than the configured export limit.",
+                      5: "The Prometheus export could not be compressed.",
+                      6: "The Prometheus database could not be read in full."}.get(
                           res.exit_code, "Could not export the Prometheus database.")
             raise PluginError(
                 f"prometheus_tsdb export failed (exit {res.exit_code}): {res.stderr[-500:]}",

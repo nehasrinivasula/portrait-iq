@@ -170,3 +170,29 @@ def test_one_failing_section_is_a_note_not_fatal(tmp_path, monkeypatch, enabled)
     result = configured(tmp_path, monkeypatch, handler=no_search).run("192.0.2.3")
     assert result.summary.startswith("Grafana up, Prometheus ok")   # run still succeeded
     assert any("dashboard inventory unavailable" in w for w in result.warnings)
+
+
+def test_oversize_snapshot_is_trimmed_until_within_cap(tmp_path, monkeypatch, enabled):
+    # A bulky non-dashboard section (here the firing-alert names) must not slip
+    # through just because the dashboard list was dropped: the artifact is
+    # re-measured after each cut, so the file written is always within the cap
+    # (allen #5). The old code dropped only `dashboards` and wrote without
+    # re-measuring, which this would have caught.
+    monkeypatch.setattr(settings, "grafana_max_snapshot_mb", 1)
+    names = [f"alertname-{n:08d}-padding" for n in range(40000)]   # > 1 MB of names alone
+
+    def bulky(request):
+        if request.url.path == "/api/datasources/proxy/uid/prom1/api/v1/alerts":
+            alerts = [{"labels": {"alertname": nm, "severity": "warning"}, "state": "firing"}
+                      for nm in names]
+            return httpx.Response(200, json={"status": "success", "data": {"alerts": alerts}})
+        return grafana_handler(request)
+
+    configured(tmp_path, monkeypatch, handler=bulky).run("192.0.2.3")
+
+    text = (tmp_path / "grafana_health.json").read_text()
+    assert len(text.encode()) <= 1 * 1024 * 1024                  # the written file respects the cap
+    saved = json.loads(text)
+    assert "firing alert names" in saved.get("truncated", [])     # the bulky section was the one cut
+    assert saved["alerts"]["firing"] == len(names)                # counts survive the trim
+    assert saved["alerts"]["firing_names"] == []

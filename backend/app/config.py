@@ -116,9 +116,12 @@ class Settings(BaseSettings):
     # job_retention_keep are always kept; beyond those, the oldest are deleted
     # until the total size of all run folders is under the cap. The cap stays
     # under the data PVC (40Gi) so the volume cannot fill. 0 keep / 0 cap
-    # disables pruning.
+    # disables pruning. Every queued/running run is protected by the caller, and
+    # a run younger than job_retention_min_age_seconds is never pruned, so a run
+    # whose export is still being built or downloaded is not deleted under it.
     job_retention_keep: int = 5
     job_retention_max_total_mb: int = 32000
+    job_retention_min_age_seconds: int = 900
     # SCRUM-105: Grafana / system-health collector. Read-only Grafana HTTP API,
     # reachable in-cluster with no internet (e.g. http://grafana.<ns>.svc:3000).
     # Empty base URL disables the tool. The token is a read-only Grafana
