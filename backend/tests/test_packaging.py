@@ -564,3 +564,23 @@ def test_no_system_files_means_an_empty_but_scanned_section(env):
     export(client)
     system = _report(client)["system"]
     assert system["scanned"] is True and system["files_scanned"] == 0 and system["complete"] is True
+
+
+# --- compressed archives, such as the Prometheus database (collectors/prometheus_tsdb.py) -----------------------------
+
+@pytest.mark.parametrize("name", ["prometheus_tsdb.tar.zst", "prometheus_tsdb.tar.gz", "prometheus_tsdb.tar.xz"])
+def test_a_compressed_archive_is_never_read_as_text(tmp_path, name):
+    src = tmp_path / name
+    src.write_bytes(b"\x28\xb5\x2f\xfd binary metric labels")
+    lines, why = service._read_text(src)
+    assert lines is None and "binary" in why
+
+
+def test_a_masked_export_leaves_a_prometheus_archive_out_and_an_unmasked_one_keeps_it_unscanned(tmp_path):
+    src = tmp_path / "prometheus_tsdb.tar.zst"
+    src.write_bytes(b"\x28\xb5\x2f\xfd binary metric labels")
+    copied, scan = service._scan_artifact(src, tmp_path / "out" / "masked" / src.name, masked=True)
+    assert copied is False and scan.scanned is False and not (tmp_path / "out" / "masked").exists()
+    copied, scan = service._scan_artifact(src, tmp_path / "out" / "raw" / src.name, masked=False)
+    assert copied is True and scan.scanned is False and "binary" in scan.reason
+    assert (tmp_path / "out" / "raw" / src.name).read_bytes() == src.read_bytes()
