@@ -64,6 +64,21 @@ def runner(api):
     return k8s.PodRunner("portrait-iq", core_api=api, sleep=lambda s: None)
 
 
+def test_nondefault_namespace_runner_is_reused(monkeypatch):
+    created = []
+
+    def fake_runner(namespace):
+        created.append(namespace)
+        return SimpleNamespace(namespace=namespace)
+
+    monkeypatch.setattr(k8s, "PodRunner", fake_runner)
+    monkeypatch.setattr(k8s, "_namespace_runners", {})
+    first = k8s.get_pod_runner("portrait-iq-demo")
+    assert first is k8s.get_pod_runner("portrait-iq-demo")
+    assert k8s.get_pod_runner("portrait-iq-other") is not first
+    assert created == ["portrait-iq-demo", "portrait-iq-other"]
+
+
 def test_tool_pod_is_locked_down(runner, api):
     runner.create(name="piq-netshoot-abc", tool="netshoot", job_id="job-1", image="img:1",
                   command=["sleep", "300"], deadline_s=300, limits=LIMITS, add_capabilities=("NET_RAW",))

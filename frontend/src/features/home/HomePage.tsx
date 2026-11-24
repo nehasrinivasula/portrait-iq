@@ -13,7 +13,7 @@ export default function HomePage() {
         </Link>
         <Link to="/logs" className="action-card">
           <h2>Logs</h2>
-          <span className="muted">Choose a time frame, then search, filter and export the logs.</span>
+          <span className="muted">Browse every run and imported file, search and filter them, and export them as a zip.</span>
         </Link>
         <Link to="/run" className="action-card">
           <h2>Run diagnostics</h2>

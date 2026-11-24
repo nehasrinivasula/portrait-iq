@@ -40,6 +40,15 @@ API_TIMEOUT_S = 15              # one Kubernetes API call; exec streams have the
 
 
 @dataclass
+class PodInfo:
+    name: str
+    tool: str
+    job_id: str          # "adhoc" when the pod was not started by a job
+    phase: str
+    created_at: str | None
+
+
+@dataclass
 class ExecResult:
     exit_code: int | None    # None: timed out, or the stream broke
     stdout: str
@@ -202,6 +211,24 @@ class PodRunner:
                 safe_reason="Could not remove the diagnostic's pod.",
             ) from None
 
+    def list_tool_pods(self) -> list[PodInfo]:
+        """Every tool pod of ours in the namespace, for the cleanup prompt."""
+        pods = self.api.list_namespaced_pod(
+            self.namespace, label_selector=TOOL_SELECTOR, _request_timeout=API_TIMEOUT_S
+        )
+        out = []
+        for p in pods.items:
+            labels = p.metadata.labels or {}
+            created = getattr(p.metadata, "creation_timestamp", None)
+            out.append(PodInfo(
+                name=p.metadata.name,
+                tool=labels.get("portrait-iq/tool", "unknown"),
+                job_id=labels.get("portrait-iq/job", "adhoc"),
+                phase=getattr(getattr(p, "status", None), "phase", None) or "Unknown",
+                created_at=created.isoformat() if created else None,
+            ))
+        return out
+
     def sweep(self) -> list[str]:
         """Delete every tool pod in our namespace. For startup only, when no
         job of this backend can be running: these are leftovers of a crash."""
@@ -344,11 +371,16 @@ class _Base64Writer:
 
 
 _runner: PodRunner | None = None
+_namespace_runners: dict[str, PodRunner] = {}
 
 
-def get_pod_runner() -> PodRunner:
-    """The shared runner for our namespace. Connects on first use."""
+def get_pod_runner(namespace: str | None = None) -> PodRunner:
+    """A runner cached per diagnostic namespace. Connects on first use."""
     global _runner
+    if namespace is not None and namespace != settings.tools_namespace:
+        if namespace not in _namespace_runners:
+            _namespace_runners[namespace] = PodRunner(namespace)
+        return _namespace_runners[namespace]
     if _runner is None:
         _runner = PodRunner(settings.tools_namespace)
     return _runner

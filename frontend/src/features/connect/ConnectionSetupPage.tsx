@@ -2,7 +2,7 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError } from "../../api";
 import { useJobs } from "../jobs/JobsContext";
-import { checkConnection, detectConnection, type ConnectionSetupResult, type ConnectivityResult } from "./connectionApi";
+import { detectConnection, type ConnectionSetupResult, type ConnectivityResult } from "./connectionApi";
 import "./connect.css";
 
 type FieldErrors = { ip?: string; username?: string; password?: string };
@@ -37,16 +37,13 @@ export default function ConnectionSetupPage() {
     setErrors(next);
     setRequestError(null);
     setResult(null);
+    setPreflight(null);
     if (Object.keys(next).length) return;
 
     setBusy(true);
     try {
-      const checked = await checkConnection(target);
-      setPreflight(checked);
-      // A failed TCP preflight is useful diagnostic information, but it is not
-      // a reason to discard the safe starting configuration.  `/connect`
-      // returns that configuration without attempting remote authentication.
       const detected = await detectConnection({ ip_address: target, username: username.trim(), password });
+      setPreflight(detected.connectivity);
       setResult(detected);
       setTargetIp(detected.ip_address);
       setConnectionSettings(detected.settings);
@@ -67,7 +64,7 @@ export default function ConnectionSetupPage() {
       <div className="connect-layout">
         <form className="card connect-form" onSubmit={submit} noValidate>
           <h2>Connection information</h2>
-          <p className="hint">Credentials are used only for this request. They are not saved, displayed, or written to the audit log.</p>
+          <p className="hint">Target credentials are not yet used to authenticate or discover settings. Do not enter real credentials; this check only tests TCP reachability.</p>
           <div className="field">
             <label htmlFor="system-ip">Portrait Mobile system IP address</label>
             <input id="system-ip" value={ipAddress} onChange={(e) => setIpAddress(e.target.value)} placeholder="192.168.0.3" inputMode="decimal" autoComplete="off" aria-invalid={Boolean(errors.ip)} aria-describedby={errors.ip ? "system-ip-error" : undefined} />

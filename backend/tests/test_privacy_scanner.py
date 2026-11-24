@@ -1,6 +1,8 @@
 """PHI/PII scanner rules. Pure Python: no database, no web app."""
 import json
 
+import pytest
+
 from app.privacy.scanner import (
     CATEGORY_LABELS, NETWORK_CATEGORIES, SCANNER_VERSION, Flag, category_group, decode_flags, encode_flags,
     mask_text, scan_columns, scan_event_fields, scan_text, split_flags,
@@ -268,7 +270,7 @@ def test_the_wider_rules_do_not_flag_ordinary_log_text():
 
 
 def test_a_change_to_the_rules_bumps_the_scanner_version():
-    assert SCANNER_VERSION >= 3
+    assert SCANNER_VERSION >= 4
 
 
 def test_a_card_after_a_short_number_is_found():
@@ -308,3 +310,112 @@ def test_values_are_masked_whole():
 def test_two_labelled_values_joined_by_a_comma_are_both_found():
     cats = [f.category for f in scan_text("mrn=123456,ssn=123-45-6789")]
     assert cats == ["record_identifier", "ssn"]
+
+
+def test_phone_with_a_country_code_is_masked_whole():
+    assert _masked("phone_number=+1(555)123-4567 ok") == "phone_number=[REDACTED:phone] ok"
+    assert _masked("call +1 (555) 123-4567 now") == "call [REDACTED:phone] now"
+
+
+def test_json_escaped_accented_names_are_found():
+    text = json.dumps({"patientName": "José Garcia"})            # json.dumps writes José
+    assert "\\u00e9" in text
+    assert [f.category for f in scan_text(text)] == ["person_name"]
+    assert [f.category for f in scan_text(json.dumps(text))] == ["person_name"]    # a JSON string inside JSON
+
+
+def test_long_names_are_masked_whole():
+    assert _masked("patientName=Maria Elena Garcia Lopez admitted") == "patientName=[REDACTED:person_name] admitted"
+
+
+def test_an_apostrophe_inside_a_single_quoted_name_does_not_end_it():
+    assert _masked("patientName='O'Brien' ok") == "patientName='[REDACTED:person_name]' ok"
+    assert _masked("patientName='Mary' ok") == "patientName='[REDACTED:person_name]' ok"
+
+
+def test_short_key_forms_are_found():
+    for text, category in {"ptMrn: 42": "record_identifier", "pt_id=12345": "record_identifier", "ptDOB=01/02/1980": "date_of_birth",
+                           "ptSSN=123-45-6789": "ssn", "pt_phone=608-555-0142": "phone"}.items():
+        assert [f.category for f in scan_text(text)] == [category], text
+    assert scan_text("script accept opt: yes") == ()
+
+
+def test_labelled_ids_are_masked_whole():
+    for value in ("1234.5678", "123/456789", "12:34:56", "123,456", "A123 4567", "1234 5678"):
+        assert _masked(f"mrn={value} ok") == "mrn=[REDACTED:record_identifier] ok", value
+    assert _masked("patient_id=123/456789 ok") == "patient_id=[REDACTED:record_identifier] ok"
+    # a comma that starts the next field still ends the value
+    assert [f.category for f in scan_text("mrn=123456,ssn=123-45-6789")] == ["record_identifier", "ssn"]
+
+
+def test_phone_values_with_spaces_are_masked_whole():
+    for value in ("+44 20 7946 0958", "555 1234", "(608) 555-0142", "+1(555)123-4567"):
+        assert _masked(f"phone_number={value} ok") == "phone_number=[REDACTED:phone] ok", value
+    assert scan_text("phone=none") == () and scan_text("phone=12 34") == ()
+
+
+def test_bare_tel_is_flagged():
+    for text in ("tel=5551234567", "tel=5551234", "tel: 555 1234"):
+        assert [f.category for f in scan_text(text)] == ["phone"], text
+    assert scan_text("hotel=Hilton intel=ok") == ()
+
+
+def test_ssn_with_unusual_grouping_is_masked_whole():
+    assert _masked("ssn=123 456789 ok") == "ssn=[REDACTED:ssn] ok"
+    assert _masked("ssn=12345 6789 ok") == "ssn=[REDACTED:ssn] ok"
+
+
+# Where a spaced value stops ---------------------------------------------------------
+# A bare value that can contain spaces (phone, name, id) has no marker for its end, so the scanner
+# takes more rather than less: leaking PHI is worse than hiding a word. These pin how far "more" goes,
+# so a change that masks less (PHI left behind) or more (diagnostic text lost) shows up as a failure.
+
+def _masked(text):
+    from app.privacy.scanner import mask_text
+    return mask_text(text, list(scan_text(text)))
+
+
+@pytest.mark.parametrize("line,expected", [
+    # A last group that starts a time is the log's, not the phone's.
+    ("phone=555-1234 10:30:00", "phone=[REDACTED:phone] 10:30:00"),
+    ("tel=5551234567 10:30", "tel=[REDACTED:phone] 10:30"),
+    ("phone=555 1234 5:07", "phone=[REDACTED:phone] 5:07"),
+    # Words and plain counts after a phone: words stay, a bare count may be taken (accepted trade-off).
+    ("phone=555-1234 at 10:30", "phone=[REDACTED:phone] at 10:30"),
+    ("phone=555-1234 12 retries", "phone=[REDACTED:phone] retries"),
+    # International numbers with spaces are masked whole.
+    ("phone_number=+44 20 7946 0958 ok", "phone_number=[REDACTED:phone] ok"),
+])
+def test_phone_value_stops_at_a_time_or_a_word(line, expected):
+    assert _masked(line) == expected
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("patientName=John Smith was admitted", "patientName=[REDACTED:person_name] was admitted"),
+    ("patientName=John Smith, MD status=ok", "patientName=[REDACTED:person_name] status=ok"),
+    # Up to four words after the first are taken, because names run to "Mary Ann Van Der Berg".
+    # A sentence of Title-Case words right after a name is therefore swallowed too: accepted trade-off.
+    ("patientName=John Reviewed Chart Today Entered", "patientName=[REDACTED:person_name]"),
+    ("patientName=John Reviewed Chart Today Entered Late", "patientName=[REDACTED:person_name] Late"),
+])
+def test_name_value_stops_at_a_lowercase_word_or_after_four_more_words(line, expected):
+    assert _masked(line) == expected
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("mrn=1234 status=ok", "mrn=[REDACTED:record_identifier] status=ok"),
+    ("mrn=123 456 789012 retries=3", "mrn=[REDACTED:record_identifier] retries=3"),
+    ("mrn=A123 4567 queued", "mrn=[REDACTED:record_identifier] queued"),
+    ("mrn=123,456 next", "mrn=[REDACTED:record_identifier] next"),
+    # Up to three further number groups are one id; a fourth is left alone.
+    ("mrn=1 2 3 4 5", "mrn=[REDACTED:record_identifier] 5"),
+])
+def test_id_value_takes_up_to_three_more_number_groups(line, expected):
+    assert _masked(line) == expected
+
+
+def test_a_loose_phone_never_ends_before_its_first_run_of_digits():
+    for line, first in [("phone=5551234567", "5551234567"), ("phone=555-1234", "555-1234"),
+                        ("tel: 555 1234 10:30", "555"), ("phone=+1 555 123 4567", "+1")]:
+        f = scan_text(line)[0]
+        assert line[f.start:f.end].startswith(first), line

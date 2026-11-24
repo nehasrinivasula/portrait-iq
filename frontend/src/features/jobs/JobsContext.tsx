@@ -5,12 +5,13 @@ import { useNotify } from "../../ui/Notifications";
 import { getJob, getResults, isFinished, type Job, type ToolResult } from "../plugins/api";
 import type { AcquisitionResult } from "../logs/logsApi";
 import type { ConnectionSettings } from "../connect/connectionApi";
+import { progressText, type TaskProgress } from "../tasks/tasksApi";
 import { activeJobStore, resumeJobId } from "./jobStorage";
 
 const POLL_MS = 2000;
 
 export type LogPull =
-  | { state: "running" }
+  | { state: "running"; progress?: string }
   | { state: "done"; newFiles: number; events: number; skipped: number }
   | { state: "error"; message: string };
 
@@ -24,7 +25,7 @@ interface JobsState {
   /** True while polling is failing; the run itself is unaffected (S-2). */
   lost: boolean;
   /** Watch a run; pullLogs, when given, starts the log pull for it right away. */
-  track: (job: Job, pullLogs?: () => Promise<AcquisitionResult>) => void;
+  track: (job: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult>) => void;
   clear: () => void;
   /** The Run page's target IP, kept here so it survives leaving the page.
    * Memory only, never browser storage, and forgotten on sign-out. */
@@ -57,11 +58,11 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   const announced = useRef<string | null>(null);
 
   const clear = useCallback(() => { activeJobStore.clear(); setJob(null); setResults(null); setLost(false); setLogPull(null); setRestoring(false); }, []);
-  const track = useCallback((j: Job, pullLogs?: () => Promise<AcquisitionResult>) => {
+  const track = useCallback((j: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult>) => {
     activeJobStore.set(j.id); setResults(null); setLost(false); setRestoring(false); announced.current = null; setJob(j); setLogPull(null);
     if (!pullLogs) return;
     setLogPull({ state: "running" });
-    pullLogs()
+    pullLogs((t) => setLogPull({ state: "running", progress: progressText(t) }))
       .then((r) => {
         const events = r.files.reduce((n, f) => n + (f.events ?? 0), 0);
         const skipped = r.files.reduce((n, f) => n + (f.rows_rejected ?? 0), 0);

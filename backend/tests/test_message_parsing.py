@@ -279,7 +279,7 @@ def test_sequences_endpoint(env, tmp_path):
     assert by_cmd["ChangeConfigCmd"]["median_latency_ms"] == 12
     only = client.get("/api/logs/sequences", params={"state": "unanswered"}).json()
     assert only["total"] == 1 and only["items"][0]["command"] == "RemoveActiveProfileCmd"
-    assert client.get("/api/logs/sequences", params={"state": "lost"}).status_code == 400
+    assert client.get("/api/logs/sequences", params={"state": "lost"}).status_code == 422
     audit = db.scalars(select(AuditLogEntry).where(AuditLogEntry.action == "logs_sequences_view")).all()
     assert audit and REQ not in audit[-1].detail   # filter names only, never values
 
@@ -291,7 +291,7 @@ def test_search_by_exchange_fields(env, tmp_path):
     assert [e["message_kind"] for e in exchange["items"]] == ["request", "reply"]
     replies = client.get("/api/logs/events", params={"message_kind": "reply"}).json()
     assert replies["total"] == 2
-    assert client.get("/api/logs/events", params={"message_kind": "bogus"}).status_code == 400
+    assert client.get("/api/logs/events", params={"message_kind": "bogus"}).status_code == 422
     facets = client.get("/api/logs/facets").json()
     assert {f["value"]: f["count"] for f in facets["message_kinds"]}["request"] == 3
 
