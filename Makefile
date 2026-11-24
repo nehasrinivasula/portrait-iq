@@ -38,14 +38,13 @@ API_CHECK_HOUR ?=#  optional, YYYY-MM-DDTHH; default is the last full hour on th
 
 IMAGE_NAME    ?= portrait-iq
 # Unique per build so a rebuilt image gets a new tag and `kubectl apply` rolls
-# the pod on its own. The old constant "-dirty" suffix stayed identical across
-# uncommitted edits, so rebuilding dirty kept the same tag and the pod never
-# restarted (you had to `kubectl rollout restart` by hand). `git stash create`
-# hashes the tracked working tree without touching the stash stack and prints
-# nothing when the tree is clean, so each distinct change gets a distinct tag
-# while an unchanged rebuild keeps the same one (no needless image churn).
-WORK_HASH     := $(shell git stash create 2>/dev/null | cut -c1-8)
-TAG           := $(shell git rev-parse --short HEAD 2>/dev/null)$(if $(WORK_HASH),-dirty-$(WORK_HASH))
+# the pod on its own, while an unchanged rebuild keeps the same tag (no needless
+# image churn). deploy/scripts/image-tag.sh derives the "-dirty-<hash>" suffix
+# from a timestamp-free git tree hash of the backend/ build context, so the tag
+# is stable for identical content, reflects untracked source files, and ignores
+# edits outside the image (see the script header). Tested in
+# backend/tests/test_image_tag.py.
+TAG           := $(shell deploy/scripts/image-tag.sh backend)
 BUILD_DIR     := dist
 BUNDLE_DIR    := $(BUILD_DIR)/remote
 
