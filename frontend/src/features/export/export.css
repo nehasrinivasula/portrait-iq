@@ -38,6 +38,7 @@
 .export-steps > ol > li[data-state="failed"] { border-left-color: var(--error); background: var(--error-bg); }
 .export-step-detail { margin: 2px 0 0 calc(1.2em + 10px); font-weight: 400; color: var(--muted); }
 .export-steps > ol > li[data-state="failed"] .export-step-detail { color: var(--text); }
+.export-steps > ol > li[data-state="partial"] .export-step-detail { color: var(--text); }
 .export-tag {
   display: inline-block; padding: 0 10px; border-radius: 999px; font-weight: 600; font-size: 14px; border: 1.5px solid;
 }

@@ -224,6 +224,15 @@ def test_each_step_explains_what_it_did_and_what_failed(env):
     assert s["partial"]
 
 
+def test_cleanup_failure_is_exposed_separately_from_diagnostic_results(env):
+    client, db = env
+    db.get(Job, "job-1").status = "cleanup_failed"
+    db.commit()
+    result = export(client)
+    assert result["run_status"] == "cleanup_failed"
+    assert result["partial"]
+
+
 def test_tool_stopped_mid_capture_keeps_partial_file_and_reason_in_export(env):
     client, db = env
 

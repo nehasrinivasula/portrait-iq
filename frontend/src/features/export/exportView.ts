@@ -46,6 +46,10 @@ export function headline(p: Package): [AlertKind, string, string] {
   }
   if (p.state === "interrupted") return ["warn", "The export was interrupted", p.error ?? "Start it again."];
   if (p.state === "failed") return ["error", "The export failed", p.error ?? "Start it again."];
+  if (p.run_status === "cleanup_failed") {
+    return ["warn", "Export ready, but cleanup failed",
+      "A diagnostic may still be running on the system. Check the run's cleanup error before leaving the site."];
+  }
   const failed = p.steps.filter((s) => s.status === "failed").length;
   if (failed) {
     return ["warn", "Export ready, but something is missing",
