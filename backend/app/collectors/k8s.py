@@ -202,6 +202,16 @@ class PodRunner:
                 )
             self._sleep(2)
 
+    def exists(self, name: str) -> bool:
+        """True if the pod is still present. A 404 means it is gone; any other
+        API error is reported as present -- we must not assume a pod we could
+        not check on has been removed (it may still hold a resource)."""
+        try:
+            self.api.read_namespaced_pod(name, self.namespace, _request_timeout=API_TIMEOUT_S)
+            return True
+        except ApiException as e:
+            return e.status != 404
+
     def delete(self, name: str) -> None:
         """Delete the pod now. Already gone is fine."""
         try:

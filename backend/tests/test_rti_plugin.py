@@ -44,9 +44,10 @@ def _no_domain_leaks():
 
 
 class FakeRunner:
-    def __init__(self, exit_code=124, stdout=SPY_OUTPUT, stderr=""):
+    def __init__(self, exit_code=124, stdout=SPY_OUTPUT, stderr="", exists_result=True):
         self.exit_code, self.stdout, self.stderr = exit_code, stdout, stderr
-        self.created, self.execs, self.deleted = [], [], []
+        self.exists_result = exists_result        # what exists() reports for a claimed pod
+        self.created, self.execs, self.deleted, self.exists_calls = [], [], [], []
 
     def create(self, **kw):
         self.created.append(kw)
@@ -57,6 +58,10 @@ class FakeRunner:
     def exec(self, name, argv, timeout_s):
         self.execs.append(argv)
         return k8s.ExecResult(self.exit_code, self.stdout, self.stderr)
+
+    def exists(self, name):
+        self.exists_calls.append(name)
+        return self.exists_result
 
     def delete(self, name):
         self.deleted.append(name)
@@ -236,6 +241,53 @@ def test_a_failed_pod_deletion_keeps_the_domain_blocked(tmp_path, monkeypatch, e
     r.cleanup()                                       # pod confirmed gone, claim released
     assert runner.deleted == [runner.created[0]["name"]]
     configured(tmp_path, monkeypatch, FakeRunner(), domain=12).run("192.0.2.10")   # free again, no raise
+
+
+# SCRUM-39 follow-up re-review (allen #2): the above keeps the domain blocked on a
+# failed delete, but the instance that could retry cleanup() is discarded by the
+# orchestrator. So a new run must reconcile the stale claim against pod existence
+# and reclaim the domain once the pod is truly gone -- otherwise one failed delete
+# blocks the domain until the backend restarts.
+
+def test_a_stale_claim_whose_pod_is_gone_is_reclaimed(tmp_path, monkeypatch, enabled):
+    class FlakyDeleteRunner(FakeRunner):
+        def delete(self, name):
+            raise RuntimeError("kubernetes could not delete the pod")
+
+    stuck_runner = FlakyDeleteRunner()
+    stuck = configured(tmp_path, monkeypatch, stuck_runner, domain=12)
+    stuck.run("192.0.2.10")                            # claims domain 12
+    with pytest.raises(RuntimeError, match="could not delete"):
+        stuck.cleanup()                                # delete fails: stale claim survives
+    holder = stuck_runner.created[0]["name"]
+    assert rti._active_domains[12] == holder           # domain still claimed
+
+    # A new run arrives (the stuck instance is gone). Its runner reports the old
+    # pod as absent (404 -> exists False), so the stale claim is reconciled away.
+    fresh_runner = FakeRunner(exists_result=False)
+    fresh = configured(tmp_path, monkeypatch, fresh_runner, domain=12)
+    fresh.run("192.0.2.10")                            # no raise: domain reclaimed
+    assert holder in fresh_runner.exists_calls         # it checked the stale holder
+    assert fresh_runner.created                         # and deployed its own pod
+    assert rti._active_domains[12] == fresh_runner.created[0]["name"]
+
+
+def test_a_stale_claim_whose_pod_still_exists_still_blocks(tmp_path, monkeypatch, enabled):
+    # Reconciliation must not steal a domain whose pod is genuinely still up.
+    class FlakyDeleteRunner(FakeRunner):
+        def delete(self, name):
+            raise RuntimeError("kubernetes could not delete the pod")
+
+    stuck = configured(tmp_path, monkeypatch, FlakyDeleteRunner(), domain=12)
+    stuck.run("192.0.2.10")
+    with pytest.raises(RuntimeError):
+        stuck.cleanup()
+
+    blocked_runner = FakeRunner(exists_result=True)    # the pod is still there
+    blocked = configured(tmp_path, monkeypatch, blocked_runner, domain=12)
+    with pytest.raises(PluginError, match="already running on domain 12"):
+        blocked.run("192.0.2.10")
+    assert blocked_runner.created == []                 # refused before deploying
 
 
 # SCRUM-39 review, finding 2: a participant deleted mid-capture leaves the summary.
