@@ -2,10 +2,11 @@ import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "rea
 import * as Checkbox from "@radix-ui/react-checkbox";
 import * as Label from "@radix-ui/react-label";
 import { ApiError } from "../../api";
+import type { TaskProgress } from "../tasks/tasksApi";
 import { acquireForJob, listSources, type AcquisitionResult } from "../logs/logsApi";
 import TimeFramePicker from "../logs/TimeFramePicker";
 import { defaultTimeFrame, resolveTimeFrame, toApi } from "../logs/timeframe";
-import { listPlugins, startJob, uploadFile, type Job, type Plugin } from "./api";
+import { getJobConfiguration, listPlugins, startJob, uploadFile, type Job, type JobConfiguration, type Plugin } from "./api";
 import { RtiOptions, TsharkOptions } from "./ToolOptions";
 import { buildOptions, defaultChoices, rtiArtifact, validateChoices, validateTargetIp } from "./options";
 import { useJobs } from "../jobs/JobsContext";
@@ -31,7 +32,7 @@ const messageFor = (err: unknown) =>
     : "Something went wrong. Try again.";
 
 export default function PluginPicker({ onStarted, locked }: {
-  onStarted: (job: Job, pullLogs?: () => Promise<AcquisitionResult>) => void;
+  onStarted: (job: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult>) => void;
   /** A run is in progress: the form stays visible but can't start another. */
   locked: boolean;
 }) {
@@ -41,7 +42,14 @@ export default function PluginPicker({ onStarted, locked }: {
   const [skipped, setSkipped] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [choices, setChoices] = useState(defaultChoices);
+  const [defaults, setDefaults] = useState<JobConfiguration | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [namespace, setNamespace] = useState("");
+  const [cpu, setCpu] = useState("");
+  const [memory, setMemory] = useState("");
+  const [output, setOutput] = useState("");
   const { targetIp, setTargetIp } = useJobs();   // kept when the engineer leaves this page
+  const initialTarget = useRef(targetIp);
   const [logsOn, setLogsOn] = useState(true);
   const [logsReason, setLogsReason] = useState<string | null>(null); // why logs can't be collected here
   const [frame, setFrame] = useState(defaultTimeFrame);
@@ -54,9 +62,28 @@ export default function PluginPicker({ onStarted, locked }: {
     rti: { name: null, busy: false, error: null },
   });
   const [startError, setStartError] = useState<string | null>(null);
-  const feedback = useRef<HTMLDivElement>(null);
+  const [touched, setTouched] = useState<Set<string>>(new Set());   // fields left once: their errors show from then on
+  const [limitsOpen, setLimitsOpen] = useState(false);
+  const [attempt, setAttempt] = useState(0);                         // bumps on each Start press, to focus the first bad field
+  const form = useRef<HTMLFormElement>(null);
+  const leave = (key: string) => setTouched((t) => (t.has(key) ? t : new Set(t).add(key)));
+  const shows = (key: string) => submitted || touched.has(key);
 
   useEffect(() => {
+    getJobConfiguration().then((config) => {
+      setDefaults(config);
+      setNamespace(config.namespace);
+      setCpu(String(config.cpu_limit_pct));
+      setMemory(String(config.mem_limit_mb));
+      setOutput(String(config.max_output_mb));
+      setChoices((current) => ({ ...current,
+        tshark: { ...current.tshark, durationS: String(config.tshark.duration_s), interfaceName: config.tshark.interface,
+          preset: config.tshark.filter_preset as typeof current.tshark.preset },
+        rti: { ...current.rti, domain: config.rti.domain, durationS: String(config.rti.duration_s) },
+        netshoot: { ports: config.netshoot.ports.join(", "), dnsNames: config.netshoot.dns_names.join(", "),
+          extraTargets: config.netshoot.extra_targets.join(", ") },
+      }));
+    }).catch((e) => setConfigError(messageFor(e)));
     listPlugins()
       .then((r) => { setPlugins(r.plugins.filter((p) => !HIDDEN.has(p.name))); setSkipped(r.load_errors); })
       .catch((e) => setLoadError(messageFor(e)));
@@ -68,17 +95,40 @@ export default function PluginPicker({ onStarted, locked }: {
       .catch(() => { setLogsReason("Couldn't check the log sources."); setLogsOn(false); });
   }, []);
 
-  // The start button is at the bottom of a long form: bring a failure into view.
+  // Start pressed with problems: put the cursor in the first field that needs fixing.
   useEffect(() => {
-    if (startError) feedback.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [startError]);
+    if (attempt) form.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [attempt]);
 
   const ipError = validateTargetIp(targetIp);
+  const LIMITS = [
+    { key: "cpu_limit_pct", label: "CPU limit", unit: "%", value: cpu, set: setCpu, max: 100 },
+    { key: "mem_limit_mb", label: "Memory limit", unit: "MB", value: memory, set: setMemory, max: 65536 },
+    { key: "max_output_mb", label: "Output limit", unit: "MB", value: output, set: setOutput, max: 65536 },
+  ] as const;
+  const limitErrors: Record<string, string> = Object.fromEntries(LIMITS.flatMap(({ key, value, max }) =>
+    /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= max ? [] : [[key, `Enter a whole number from 1 to ${max.toLocaleString()}.`]]));
+  const limitError = !!defaults && (!defaults.allowed_namespaces.includes(namespace) || Object.keys(limitErrors).length > 0);
+  const overridden = defaults ? [
+    ...(targetIp !== initialTarget.current ? ["target_ip"] : []),
+    ...(namespace !== defaults.namespace ? ["namespace"] : []),
+    ...(Number(cpu) !== defaults.cpu_limit_pct ? ["cpu_limit_pct"] : []),
+    ...(Number(memory) !== defaults.mem_limit_mb ? ["mem_limit_mb"] : []),
+    ...(Number(output) !== defaults.max_output_mb ? ["max_output_mb"] : []),
+    ...(selected.has("tshark") && Number(choices.tshark.durationS) !== defaults.tshark.duration_s ? ["tshark.duration_s"] : []),
+    ...(selected.has("tshark") && choices.tshark.interfaceName !== defaults.tshark.interface ? ["tshark.interface"] : []),
+    ...(selected.has("tshark") && choices.tshark.preset !== defaults.tshark.filter_preset ? ["tshark.filter_preset"] : []),
+    ...(selected.has("rti") && choices.rti.domain !== defaults.rti.domain ? ["rti.domain"] : []),
+    ...(selected.has("rti") && Number(choices.rti.durationS) !== defaults.rti.duration_s ? ["rti.duration_s"] : []),
+    ...(selected.has("netshoot") && choices.netshoot.ports !== defaults.netshoot.ports.join(", ") ? ["netshoot.ports"] : []),
+    ...(selected.has("netshoot") && choices.netshoot.dnsNames !== defaults.netshoot.dns_names.join(", ") ? ["netshoot.dns_names"] : []),
+    ...(selected.has("netshoot") && choices.netshoot.extraTargets !== defaults.netshoot.extra_targets.join(", ") ? ["netshoot.extra_targets"] : []),
+  ] : [];
   const fieldErrors = useMemo(() => validateChoices(selected, choices), [selected, choices]);
   const window = useMemo(() => resolveTimeFrame(frame), [frame]);
   const nothingToDo = selected.size === 0 && !logsOn;
   const anyUploading = uploads.tshark.busy || uploads.rti.busy;
-  const valid = !ipError && !nothingToDo && Object.keys(fieldErrors).length === 0 && !anyUploading && (!logsOn || window.ok);
+  const valid = !ipError && !limitError && !nothingToDo && Object.keys(fieldErrors).length === 0 && !anyUploading && (!logsOn || window.ok);
 
   const toggle = (name: string, on: boolean) =>
     setSelected((s) => { const n = new Set(s); on ? n.add(name) : n.delete(name); return n; });
@@ -110,12 +160,20 @@ export default function PluginPicker({ onStarted, locked }: {
     e.preventDefault();
     setSubmitted(true);
     setStartError(null);
-    if (!valid || locked) return;
+    if (!valid || locked) {
+      if (limitError) setLimitsOpen(true);
+      setAttempt((n) => n + 1);
+      return;
+    }
     setBusy(true);
     try {
-      const job = await startJob(targetIp.trim(), [...selected], buildOptions(selected, choices));
+      const configuration = defaults ? {
+        namespace, cpu_limit_pct: Number(cpu), mem_limit_mb: Number(memory), max_output_mb: Number(output),
+        overridden_fields: overridden,
+      } : undefined;
+      const job = await startJob(targetIp.trim(), [...selected], buildOptions(selected, choices), configuration);
       const w = logsOn && window.ok ? toApi(window) : null;
-      onStarted(job, w ? () => acquireForJob(LOG_SOURCE, job.id, w.since, w.until) : undefined);
+      onStarted(job, w ? (onProgress) => acquireForJob(LOG_SOURCE, job.id, w.since, w.until, onProgress) : undefined);
     } catch (err) {
       setStartError(messageFor(err));
     } finally {
@@ -130,39 +188,39 @@ export default function PluginPicker({ onStarted, locked }: {
     : logsOn ? "Collect logs"
     : "Run diagnostics";
 
+  const configChanged = overridden.filter((k) => ["namespace", "cpu_limit_pct", "mem_limit_mb", "max_output_mb"].includes(k)).length;
+  const toolNames = (plugins ?? []).filter((p) => selected.has(p.name)).map((p) => p.display_name);
+  // One line above Start: what will happen, or the one thing stopping it.
+  const problem = locked ? "A run is in progress. You can start another when it finishes."
+    : startError ? `Couldn't start the run. ${startError}`
+    : submitted && nothingToDo ? "Choose at least one diagnostic, or include logs."
+    : submitted && !valid ? "Fix the fields marked in red."
+    : null;
+  const summary = [
+    targetIp.trim() && !ipError ? targetIp.trim() : "No target yet",
+    toolNames.length ? toolNames.join(", ") : "No diagnostics",
+    logsOn ? "with logs" : null,
+  ].filter(Boolean).join(" · ");
+  const changed = <span className="override-badge">Changed</span>;
+
   return (
-    <form className="picker" onSubmit={onSubmit} noValidate>
+    <form className="picker" onSubmit={onSubmit} noValidate ref={form}>
       <section aria-labelledby={`${uid}-target`}>
         <h2 id={`${uid}-target`}>Where to run it</h2>
         <div className="field">
-          <Label.Root htmlFor={`${uid}-ip`}>Portrait Mobile server IP address</Label.Root>
-          <input id={`${uid}-ip`} inputMode="decimal" autoComplete="off" value={targetIp} aria-invalid={submitted && !!ipError}
-            aria-describedby={submitted && ipError ? `${uid}-ip-err` : `${uid}-ip-hint`}
-            onChange={(e) => setTargetIp(e.target.value)} />
-          {submitted && ipError ? <div className="error-text" id={`${uid}-ip-err`} role="alert">{ipError}</div>
+          <Label.Root htmlFor={`${uid}-ip`}>Portrait Mobile server IP address {overridden.includes("target_ip") && changed}</Label.Root>
+          <input id={`${uid}-ip`} inputMode="decimal" autoComplete="off" value={targetIp} aria-invalid={shows("ip") && !!ipError}
+            aria-describedby={shows("ip") && ipError ? `${uid}-ip-err` : `${uid}-ip-hint`}
+            onChange={(e) => setTargetIp(e.target.value)} onBlur={() => targetIp && leave("ip")} />
+          {shows("ip") && ipError ? <div className="error-text" id={`${uid}-ip-err`} role="alert">{ipError}</div>
             : <div className="hint" id={`${uid}-ip-hint`}>For example 192.168.0.3, or pick a device below.</div>}
         </div>
         <DeviceFinder selectedIp={targetIp} onUse={setTargetIp} />
       </section>
 
-      <section aria-labelledby={`${uid}-logs`}>
-        <h2 id={`${uid}-logs`}>Logs to include</h2>
-        <div className="plugin-head">
-          <Checkbox.Root id={`${uid}-logs-on`} className="check" checked={logsOn} disabled={!!logsReason}
-            onCheckedChange={(v) => setLogsOn(v === true)}>
-            <Checkbox.Indicator><Check /></Checkbox.Indicator>
-          </Checkbox.Root>
-          <Label.Root htmlFor={`${uid}-logs-on`} className="plugin-label">
-            <span className="plugin-name">Collect system logs with this run</span>
-            <span className="muted">{logsReason ?? "Pulled from the log export API and added to the log table automatically."}</span>
-          </Label.Root>
-        </div>
-        {logsOn && <div style={{ marginLeft: 42, marginTop: 10 }}><TimeFramePicker value={frame} onChange={setFrame} legend="Time frame" /></div>}
-      </section>
-
       <section aria-labelledby={`${uid}-tools`}>
         <div className="section-head">
-          <h2 id={`${uid}-tools`}>Choose what to run</h2>
+          <h2 id={`${uid}-tools`}>What to run</h2>
           {plugins && plugins.length > 0 && <button type="button" className="btn ghost" onClick={selectAll}>{allOn ? "Clear all" : "Select all"}</button>}
         </div>
         <p className="muted">Each diagnostic is removed from the system when it finishes.</p>
@@ -192,6 +250,18 @@ export default function PluginPicker({ onStarted, locked }: {
                   <RtiOptions uid={uid} choices={choices} onChoices={setChoices} errors={fieldErrors}
                     upload={{ ...uploads.rti, onFile: onRtiFile }} />
                 )}
+                {on && p.name === "netshoot" && <div className="plugin-options">
+                  {([
+                    ["Ports", "ports", "ports"], ["DNS names", "dnsNames", "dnsNames"],
+                    ["Additional targets", "extraTargets", "extraTargets"],
+                  ] as const).map(([label, key, errorKey]) => <div className="field" key={key}>
+                    <Label.Root htmlFor={`${uid}-n-${key}`}>{label} (comma separated)</Label.Root>
+                    <input id={`${uid}-n-${key}`} value={choices.netshoot[key]}
+                      onChange={(e) => setChoices((c) => ({ ...c, netshoot: { ...c.netshoot, [key]: e.target.value } }))}
+                      aria-invalid={!!fieldErrors[`netshoot.${errorKey}`]} />
+                    {fieldErrors[`netshoot.${errorKey}`] && <div className="error-text" role="alert">{fieldErrors[`netshoot.${errorKey}`]}</div>}
+                  </div>)}
+                </div>}
               </li>
             );
           })}
@@ -200,16 +270,62 @@ export default function PluginPicker({ onStarted, locked }: {
         {Object.entries(skipped).map(([name, why]) => (
           <div key={name} className="alert warn" role="status"><strong>{name} is unavailable</strong>{why}</div>
         ))}
-        {submitted && nothingToDo && <div className="error-text" role="alert">Choose at least one diagnostic, or include logs.</div>}
       </section>
 
-      <div ref={feedback} />
-      {submitted && !valid && !nothingToDo && (
-        <div className="alert warn" role="alert"><strong>Some settings need attention</strong>Check the fields marked in red above.</div>
+      <section aria-labelledby={`${uid}-logs`}>
+        <h2 id={`${uid}-logs`}>Logs to include</h2>
+        <div className="plugin-head">
+          <Checkbox.Root id={`${uid}-logs-on`} className="check" checked={logsOn} disabled={!!logsReason}
+            onCheckedChange={(v) => setLogsOn(v === true)}>
+            <Checkbox.Indicator><Check /></Checkbox.Indicator>
+          </Checkbox.Root>
+          <Label.Root htmlFor={`${uid}-logs-on`} className="plugin-label" data-disabled={logsReason ? "" : undefined}>
+            <span className="plugin-name">Collect system logs with this run</span>
+            <span className="muted">{logsReason ?? "Pulled from the log export API and added to the log table automatically."}</span>
+          </Label.Root>
+        </div>
+        {logsOn && <div className="plugin-options"><TimeFramePicker value={frame} onChange={setFrame} legend="Time frame" /></div>}
+      </section>
+
+      {configError && <div className="alert warn" role="status"><strong>Run configuration unavailable</strong>
+        {configError} Default settings will be used for this run.</div>}
+      {/* Generated defaults are safe, so the overrides (D-7) stay one click away instead of in the path. */}
+      {defaults && (
+        <details className="strip limits" open={limitsOpen} onToggle={(e) => setLimitsOpen(e.currentTarget.open)}>
+          <summary>
+            <span className="strip-title">Limits and namespace</span>
+            <span className={configChanged ? "override-badge" : "muted"}>{configChanged ? `${configChanged} changed` : "Defaults"}</span>
+          </summary>
+          <div className="strip-body">
+            <div className="field">
+              <Label.Root htmlFor={`${uid}-namespace`}>Diagnostic pod namespace {overridden.includes("namespace") && changed}</Label.Root>
+              <select id={`${uid}-namespace`} value={namespace} onChange={(e) => setNamespace(e.target.value)}>
+                {defaults.allowed_namespaces.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </div>
+            <div className="limit-row">
+              {LIMITS.map(({ key, label, unit, value, set, max }) => {
+                const err = shows(key) ? limitErrors[key] : undefined;
+                return (
+                  <div className="field" key={key}>
+                    <Label.Root htmlFor={`${uid}-${key}`}>{label} ({unit}) {overridden.includes(key) && changed}</Label.Root>
+                    <input id={`${uid}-${key}`} type="number" min="1" max={max} value={value}
+                      onChange={(e) => set(e.target.value)} onBlur={() => leave(key)}
+                      aria-invalid={!!err} aria-describedby={err ? `${uid}-${key}-err` : undefined} />
+                    {err && <div className="error-text" id={`${uid}-${key}-err`} role="alert">{err}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </details>
       )}
-      {startError && <div className="alert error" role="alert"><strong>Couldn't start the run</strong>{startError}</div>}
-      <button className="btn" type="submit" disabled={busy || anyUploading || locked}>{label}</button>
-      {locked && <p className="muted" role="status">A run is in progress. You can start another when it finishes.</p>}
+
+      {/* Start stays in view at the bottom of the screen, with what it will do or what is stopping it. */}
+      <div className="action-bar">
+        <span className={problem ? "text-error action-bar-text" : "action-bar-text"} role={problem ? "alert" : "status"}>{problem ?? summary}</span>
+        <button className="btn" type="submit" disabled={busy || anyUploading || locked}>{label}</button>
+      </div>
     </form>
   );
 }

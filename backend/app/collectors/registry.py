@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 # Built-in plugins, as "module:Class". Add new plugins here.
 PLUGINS = [
     "app.collectors.hub_import:HubImportCollector",
+    "app.collectors.k8s_diagnostics:KubernetesCollector",
     "app.collectors.netshoot:NetshootCollector",
     "app.collectors.rti:RtiCollector",
     "app.collectors.tshark:TsharkCollector",

@@ -342,9 +342,9 @@ on the field engineer's own laptop bound to localhost (uvicorn's default,
 127.0.0.1). Real authentication and a path allow-list must come before the
 backend is ever exposed on a shared network or deployed as a pod.
 
-PHI/PII collection point: acquired files are raw logs and may contain
-patient or staff data. They stay in the gitignored staging folder and are
-never written to the audit log.
+Acquired files are raw logs and may contain patient or staff data. They stay in the gitignored staging
+folder and are never written to the audit log. All collection points are listed in
+[docs/PHI-PII-COLLECTION-POINTS.md](../docs/PHI-PII-COLLECTION-POINTS.md).
 
 ## Central log storage and the unified log view
 
@@ -552,7 +552,15 @@ are not tied to ping. Each finding carries its evidence:
 |---|---|
 | `POST /api/jobs/{id}/findings/run` | Run the rules over the collection's stored events now. Replaces its earlier findings, so running twice never doubles them. Audit action `findings_run` |
 | `GET /api/jobs/{id}/findings` | The findings from the last run, with evidence. Audit action `findings_view` |
+| `GET /api/jobs/{id}/findings/status` | `state` (`never`, `running`, `ok`, `failed`), `last_run_at`, `events_scanned`, the error type if it failed, and `stale`: logs arrived after the last run, so running again would change the findings. Not audited (a page polls it) |
 | `GET /api/jobs/{id}/findings/coverage?top=20` | What the rules do **not** cover: how many ERROR/WARN events match no rule, and the most frequent message shapes among them (numbers and ids folded, one masked example each). Audit action `findings_coverage_view` |
+
+**Automatic runs.** When an acquisition (`POST /api/sources/{id}/acquire`, `POST /api/sources/local/upload`) stores new
+events for a collection (`job_id` given), the rules run on that collection in the background, after the response. The pull never
+waits for it and never fails because of it: a failure is recorded in `analysis_runs` (exception type only) and audited as
+`findings_run_failed`, the earlier findings are kept, and `POST .../findings/run` retries. Automatic runs are audited as
+`findings_run` with `auto=true`. A manual run shows as `running` too; a run that fails is marked `failed` at once, and a run left `running` by a process that died is marked `failed` ("Interrupted") when the server starts. The status endpoint refuses a locked session but does not count as activity. Runs for one collection are serialised in-process, so two at once cannot leave two sets of
+findings. Run the rules again by hand after changing a rule.
 
 The same report from a terminal: `python -m app.analysis.coverage <collection id>`.
 
@@ -656,10 +664,9 @@ left over from a crash are deleted when the backend starts. The lab is
 offline, so import `NETSHOOT_IMAGE` and `TSHARK_IMAGE` into the node's
 containerd the same way as the backend image.
 
-PHI/PII collection point: captures (`capture.pcapng`) and uploads can hold
-patient data even with headers only. They stay in the gitignored data
-folders and are never logged; the audit log records upload ids, not file
-names.
+Captures (`capture.pcapng`) and uploads can hold patient data even with headers only. They stay in the
+gitignored data folders and are never logged; the audit log records upload ids, not file names. See
+[docs/PHI-PII-COLLECTION-POINTS.md](../docs/PHI-PII-COLLECTION-POINTS.md).
 
 ## Data & privacy
 
@@ -672,7 +679,9 @@ and share it through Google Drive, Slack, or whatever your team already
 uses for GE-provided files instead.
 
 Collected logs are scanned for PHI/PII patterns on ingest; see
-[PHI/PII flagging](#phipii-flagging-s-3) for what is and is not detected.
+[PHI/PII flagging](#phipii-flagging-s-3) for what is and is not detected, and
+[docs/PHI-PII-COLLECTION-POINTS.md](../docs/PHI-PII-COLLECTION-POINTS.md) for every place data can enter.
+Text from the Netshoot and tshark tools is scanned the same way when a package is built.
 
 ## Deliberately not built yet
 
@@ -684,10 +693,9 @@ Collected logs are scanned for PHI/PII patterns on ingest; see
 - Downloading a whole collection as CSV/NDJSON (the unified view pages through it; an export route would reuse `storage.events.iter_events`)
 - Full-text search index, and reconciled device ids / category names across sources
 - Analytics endpoints (`analytics/service.py` has no route pointing to it)
-- Packaging the final zip artifact (`orchestrator/routes.py::package` is a stub). When it is built it must include the PHI/PII report for each collection (`privacy.service.privacy_report`), refuse to call the package scanned unless `complete_for_packaging` is true, and run `privacy.scanner.scan_text` over the netshoot and tshark text it adds (only log events are scanned today)
 - Masking in a CSV/NDJSON export: reuse `privacy.scanner.mask_text` so an export honours the same `mask` option as the API
 - PHI/PII flags on analysis findings and in the audit log: findings store event ids and counts, never log text; the evidence text and coverage examples are masked when shown. Any new field that copies log text must be scanned too
-- Running the rules automatically after a collection is acquired (today: `POST .../findings/run`, and the job's package step)
+- Pattern detection for logs tied to no collection (it runs per collection; an upload or pull without a `job_id` has no findings to hold)
 - A Findings page in the UI
 
 Each of these is a natural next PR and doesn't require touching the others —

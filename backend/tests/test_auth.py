@@ -95,6 +95,24 @@ def test_authenticated_protected_route_is_allowed(client: TestClient, demo_crede
     assert response.json() == []
 
 
+def test_plugins_route_rejects_missing_token(client: TestClient, demo_credentials):
+    # Regression for SCRUM-122: /api/plugins used to be the one diagnostic
+    # endpoint with no auth guard. Hit it over HTTP (not by calling the
+    # handler directly) so the dependency layer actually runs.
+    response = client.get("/api/plugins")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Authentication required.", "code": "auth_required"}
+
+
+def test_authenticated_plugins_route_is_allowed(client: TestClient, demo_credentials):
+    token = login(client, demo_credentials)
+    response = client.get("/api/plugins", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    assert "plugins" in response.json()
+
+
 def test_health_is_public(client: TestClient):
     response = client.get("/health")
 
@@ -208,6 +226,21 @@ def test_polling_does_not_keep_the_session_alive(client, demo_credentials, clock
     assert client.get("/api/devices", headers=headers).status_code == 423
 
 
+def test_plugins_is_locked_when_idle_and_does_not_refresh_the_session(client, demo_credentials, clock):
+    # SCRUM-122 review: /api/plugins uses get_unlocked_user, so it enforces the
+    # idle lock (423) but, being a page-load fetch, never counts as activity.
+    # Polling it must not keep the session alive. This pins that dependency: with
+    # get_active_user the final request would stay 200.
+    headers = bearer(login(client, demo_credentials))
+    idle = settings.session_idle_timeout_seconds
+    for _ in range(3):
+        clock[0] += idle / 3
+        assert client.get("/api/plugins", headers=headers).status_code == 200
+    clock[0] += 1              # just past the timeout since login, despite the polling
+    locked = client.get("/api/plugins", headers=headers)
+    assert locked.status_code == 423 and locked.json() == LOCKED
+
+
 def test_user_requests_keep_the_session_alive(client, demo_credentials, clock):
     headers = bearer(login(client, demo_credentials))
     idle = settings.session_idle_timeout_seconds
@@ -278,7 +311,9 @@ def test_every_signed_in_route_checks_the_idle_lock():
                  and auth.get_current_user in set(_dependencies(r.dependant))]
     assert protected   # the walk found the routes
     unchecked = [r.path for r in protected if auth.get_unlocked_user not in set(_dependencies(r.dependant))]
-    assert unchecked == []
+    # Signing out must work on a locked session too (a person whose session went idle still has to be able to
+    # end it), so logout checks the token but deliberately not the lock.
+    assert unchecked == ["/api/auth/logout"]
 
 
 def test_diagnostic_status_survives_idle_lock_and_relogin(client: TestClient, db, demo_credentials, monkeypatch):

@@ -5,6 +5,9 @@
 | List the plugins | `GET /api/plugins` | none | `{ plugins: [{ name, display_name, description }], load_errors }` |
 | Upload a capture (tshark import only) | `POST /api/uploads?kind=pcap` | multipart form, field `file` (.pcap or .pcapng, up to 500 MB) | `{ upload_id, kind, size_bytes }` |
 | Start a job | `POST /api/jobs?target_ip=<ip>` | JSON: `{ tools: [...], plugin_options: {...} }` | the job, with `status: "queued"` |
+| Preview run configuration | `GET /api/jobs/configuration` | none | server defaults for namespace, resource limits, and tool options, plus allowed diagnostic namespaces |
+
+SCRUM-100: The Run form displays the preview defaults and marks changed fields. It sends the final `namespace`, `cpu_limit_pct`, `mem_limit_mb`, `max_output_mb`, and selected `plugin_options` in the job request, with `overridden_fields` as an audit hint. The backend validates these values and persists a safe configuration snapshot on the job. The plugin instance used by that job receives its selected namespace, so concurrent jobs do not change global Kubernetes settings. The default namespace is `TOOLS_NAMESPACE`; additional provisioned diagnostic namespaces may be listed in the local `TOOLS_ALLOWED_NAMESPACES` environment variable as comma-separated names. The backend rejects any namespace outside this list. Existing clients can omit the new fields and keep the server defaults.
 | Job status | `GET /api/jobs/{id}` | none | `{ id, status, current_step, error, created_at, finished_at }`. `error` is `null` unless the run failed or was interrupted; then `{ step, plugin, reason }` — the step it failed at, the tool involved (or `null`), and a plain-language reason safe to show (SCRUM-68) |
 | Job results | `GET /api/jobs/{id}/results` | none | one entry per tool: `{ tool, summary, warnings, artifact_paths }` or, on failure, `{ tool, step, error }` where `error` is a plain-language reason |
 
@@ -31,3 +34,28 @@ Example: `{ "tools": ["tshark"], "plugin_options": { "tshark": { "mode": "run", 
 | Correct a name or role (D-7) | `PATCH /api/devices/{id}` | `{ name?, kind? }` | the device; later searches keep the change |
 
 `kind` is `hub`, `viewer`, `server` (the system the tool runs on) or `unknown`. A search runs one short-lived pod on the system: it reads the ARP table and, when live capture is on, watches the system's own traffic for `duration_s`. A device using RTI domain 12 (source pod) ports is listed as the hub, domain 13 (view pod) as a viewer. Only addresses and ports leave the pod. One search at a time (409 while one runs).
+
+## Kubernetes diagnostics (`kubernetes`)
+
+A read-only snapshot of the cluster for troubleshooting. Select `kubernetes` in
+`tools`; it takes no options. It starts no pod and changes nothing: it only lists
+nodes, and pods and events in the namespaces in `K8S_DIAGNOSTICS_NAMESPACES`
+(default: ours and Portrait's `pm`). RBAC: `deploy/k8s/tool-rbac.yaml` and
+`deploy/k8s-portrait/`.
+
+| Collected | Never collected |
+|---|---|
+| Node Ready state and pressure, roles, kubelet version, capacity | Container environment variables and command lines |
+| Pod phase, ready containers, restart counts, last restart reason and exit code | Secrets, ConfigMaps, annotations |
+| Events (newest first), `kubectl describe`-style text | Pod logs |
+
+Free text the cluster writes (event, pod and condition messages) has personal data
+masked, as on the Logs page. Size caps: 500 pods and 500 events per namespace, a
+cut per describe section, and a byte cap per file; anything left out is named in
+`warnings`. A namespace that can't be read is a warning, not a failure.
+
+Result: the usual `{ tool, summary, warnings, artifact_paths }`, plus `details`
+for the results page (`/jobs/{id}/results/kubernetes`):
+`{ namespaces, nodes, problem_pods, problem_pods_total, warning_events,
+warning_events_total, notes }`. Files `kubernetes.json`, `describe.txt` and
+`events.txt` go in the export zip under `tools/kubernetes/`.

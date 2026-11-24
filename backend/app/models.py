@@ -8,6 +8,7 @@ SessionActivity (server-side idle lock).
 import json
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import relationship
@@ -42,13 +43,23 @@ class Job(Base):
     mode = Column(String, nullable=False, default="live")     # "live" | "pre_install"
     status = Column(String, nullable=False, default="queued")  # queued|running|done|partial|failed|cleanup_failed|interrupted
     current_step = Column(String, nullable=True)
+    # {step: [started, finished]} as naive-UTC ISO strings, so the UI can show how long each step took.
+    step_times_json = Column(Text, nullable=True)
     cpu_limit_pct = Column(Integer, nullable=True)
     mem_limit_mb = Column(Integer, nullable=True)
     max_output_mb = Column(Integer, nullable=True)
     tools = Column(Text, nullable=True)              # JSON list, e.g. ["netshoot","rti"]
+    configuration = Column(Text, nullable=True)  # final non-secret run settings and override names
     # The request that started this background job. The job can finish after
     # the browser request ends, so these fields preserve its audit ownership.
     requested_by = Column(String, nullable=True)
+
+    @property
+    def step_times(self) -> dict[str, list[Optional[str]]]:
+        try:
+            return json.loads(self.step_times_json or "{}")
+        except ValueError:   # a display hint must never break job reads
+            return {}
 
     @property
     def skipped_steps(self) -> list[str]:
@@ -180,6 +191,20 @@ class SignalEvidence(Base):
     rank = Column(Integer, nullable=False, default=0)
 
 
+class AnalysisRun(Base):
+    """The last time pattern detection ran for a collection, and how it ended: so the UI can say "analysed
+    at 10:42" (or "analysing...", or "failed"), and tell findings that are out of date because more logs
+    arrived since. One row per collection, replaced on every run. Holds no log text: `error` is an
+    exception type name only."""
+    __tablename__ = "analysis_runs"
+
+    job_id = Column(String, ForeignKey("jobs.id"), primary_key=True)
+    status = Column(String, nullable=False)           # "running" | "ok" | "failed"
+    ran_at = Column(DateTime, nullable=False)         # when it started (running) or finished (ok, failed); naive UTC
+    events_scanned = Column(Integer, nullable=True)
+    error = Column(String, nullable=True)
+
+
 class AcquiredFileRecord(Base):
     """Manifest of every file pulled from a log source (SCRUM-43). This is
     what makes "only pull new, unprocessed files" true: before fetching, the
@@ -257,3 +282,44 @@ class SessionActivity(Base):
     user_id = Column(String, nullable=False, index=True)
     last_active_at = Column(Float, nullable=False)     # epoch seconds (time.time())
     locked_at = Column(Float, nullable=True)           # set once; a locked session stays locked
+
+
+class CleanupDecision(Base):
+    """An engineer's "keep for later" for one leftover item (a tool pod or a
+    job's files), so the cleanup prompt does not ask again. Removal needs no
+    row: the item is simply gone. item_id is "pod:<name>" or "files:<job_id>"."""
+    __tablename__ = "cleanup_decisions"
+
+    item_id = Column(String, primary_key=True)
+    choice = Column(String, nullable=False, default="keep")
+    decided_by = Column(String, nullable=False)
+    session_id = Column(String, nullable=True)
+    decided_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BackgroundTask(Base):
+    """Heavy work that runs outside the request: a log pull with ingest, or a PHI/PII scan.
+
+    The request creates the row and returns its id at once; a separate worker process does the work and
+    updates progress here, and the UI polls GET /api/tasks/{id}. A task that was queued or running when the
+    backend stopped is marked interrupted at the next start (app/tasks/service.py).
+    kind: acquire | privacy_scan | noop.   status: queued | running | done | failed | interrupted."""
+    __tablename__ = "background_tasks"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    kind = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="queued", index=True)
+    requested_by = Column(String, nullable=False)
+    session_id = Column(String, nullable=True)
+    scope = Column(String, nullable=True)            # what it works on (a collection id, "all", a source), for de-duplicating
+    params = Column(Text, nullable=True)             # JSON the worker needs; never secrets
+    stage = Column(String, nullable=True)            # short plain-language line, e.g. "Scanning events"
+    done = Column(Integer, nullable=False, default=0)
+    total = Column(Integer, nullable=True)           # None while the amount of work is not known yet
+    result = Column(Text, nullable=True)             # JSON, set when done
+    error = Column(String, nullable=True)            # safe to show; set when failed or interrupted
+    pid = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow)

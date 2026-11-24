@@ -200,6 +200,20 @@ def touch_session(db: Session, user: User) -> None:
     db.commit()
 
 
+def end_session(db: Session, user: User) -> None:
+    """Sign out: lock this login session now, so its token stops working
+    even though it has not expired. A session that is already locked stays so."""
+    if not user.session_id:
+        return
+    row = db.get(SessionActivity, user.session_id)
+    if row is None:
+        db.add(SessionActivity(session_id=user.session_id, user_id=user.id,
+                               last_active_at=time.time(), locked_at=time.time()))
+    elif row.locked_at is None:
+        row.locked_at = time.time()
+    db.commit()
+
+
 def is_locked(db: Session, user: User) -> bool:
     """True when this login session is locked; locks it (and audits the
     lock, once) when it has just gone idle.

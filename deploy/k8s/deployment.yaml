@@ -78,6 +78,10 @@ spec:
             # = true in deploy/lab.mk, for a bench whose owners approved it.
             - name: TSHARK_LIVE_CAPTURE_ENABLED
               value: "__TSHARK_LIVE_CAPTURE__"
+            # Kubernetes diagnostics reads these namespaces, read-only: ours and
+            # Portrait's (deploy/k8s/tool-rbac.yaml, deploy/k8s-portrait/).
+            - name: K8S_DIAGNOSTICS_NAMESPACES
+              value: "__DIAGNOSTICS_NAMESPACES__"
             # UMF RTI (SCRUM-39): off unless RTI = true in deploy/lab.mk, once
             # GE's rtitools image is imported and the mentors approved it.
             - name: RTI_ENABLED
@@ -126,7 +130,7 @@ spec:
             periodSeconds: 30
             # The single worker can be busy for a while on a big log ingest or
             # PHI/PII scan (SCRUM-95), so tolerate a few slow health checks
-            # instead of restarting the pod mid-job.
+            # (~3 minutes) instead of restarting the pod mid-job.
             timeoutSeconds: 5
             failureThreshold: 6
           volumeMounts:

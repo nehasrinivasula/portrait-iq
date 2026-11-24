@@ -96,7 +96,15 @@ TIMED_OUT = 124   # coreutils timeout: the expected way rtiddsspy ends
 # participant (SCRUM-39 review). The backend is single-replica, so a process-wide
 # guard is enough: one run per domain at a time. Different domains use different
 # ports and still run in parallel.
-_active_domains: set[int] = set()
+#
+# The claim maps the domain to the pod that holds it, not just the domain, so a
+# claim can be reconciled against reality: if cleanup() could not confirm the
+# pod's deletion it deliberately keeps the claim (the pod may still hold the
+# port), but the instance that could retry is then discarded by the
+# orchestrator's cleanup loop. So a new run treats a claim whose pod no longer
+# exists as stale and takes the domain over -- otherwise a single failed delete
+# would block the domain until the backend restarted (SCRUM-39 follow-up review).
+_active_domains: dict[int, str] = {}
 _active_lock = threading.Lock()
 
 
@@ -222,22 +230,27 @@ class RtiCollector(Collector):
         if self._pod:            # run() again after a partial failure: start clean
             self.cleanup()
 
+        start_s = settings.tool_pod_start_timeout_seconds
+        deadline = start_s + self.duration_s + 60
+        namespace = getattr(self, "namespace", None)
+        self._runner = k8s.get_pod_runner(namespace) if namespace else k8s.get_pod_runner()
+        pod = k8s.pod_name(self.name, self.job_id)
+
         # One run per domain per node: a second run on this domain would bind the
-        # same local WAN port and could silently fail (SCRUM-39 review). cleanup()
-        # releases the claim.
+        # same local WAN port and could silently fail (SCRUM-39 review). The
+        # claim is honoured only while its pod still exists -- a claim left behind
+        # by a cleanup that could not confirm its delete is reclaimed once that
+        # pod is actually gone, so a failed delete cannot block the domain forever.
         with _active_lock:
-            if self.domain in _active_domains:
+            holder = _active_domains.get(self.domain)
+            if holder is not None and holder != pod and self._runner.exists(holder):
                 raise PluginError(
                     f"an RTI diagnostic is already running on domain {self.domain}",
                     safe_reason="Another RTI diagnostic is already running on this domain; try again shortly.",
                 )
-            _active_domains.add(self.domain)
+            _active_domains[self.domain] = pod
+        self._pod = pod            # set first, so cleanup() finds it
         self._claimed_domain = self.domain
-
-        start_s = settings.tool_pod_start_timeout_seconds
-        deadline = start_s + self.duration_s + 60
-        self._runner = k8s.get_pod_runner()
-        self._pod = k8s.pod_name(self.name, self.job_id)   # set first, so cleanup() finds it
         # Host network: the WAN transport advertises the node's IP and binds
         # its port there, so the router can reach this participant. No extra
         # capabilities: a participant only needs ordinary UDP sockets.
@@ -370,15 +383,22 @@ class RtiCollector(Collector):
         # that is still running holds this domain's fixed local WAN port, so a new
         # run on the domain would collide with it (SCRUM-39 review). If delete()
         # raises (Kubernetes could not remove the pod) we keep both the pod
-        # reference and the claim: the domain stays blocked and a later cleanup()
-        # can retry. A delete() that returns — including for an already-absent pod,
-        # which the runner treats as success — means the pod is gone.
-        if self._pod and self._runner:
-            self._runner.delete(self._pod)   # raises if the pod could not be deleted
+        # reference and the claim: the domain stays blocked. The orchestrator then
+        # discards this instance, so no later cleanup() retries -- but a new run
+        # reconciles the claim against pod existence and reclaims the domain once
+        # that pod has actually gone, so the block cannot outlive the pod. A
+        # delete() that returns — including for an already-absent pod, which the
+        # runner treats as success — means the pod is gone.
+        pod = self._pod
+        if pod and self._runner:
+            self._runner.delete(pod)   # raises if the pod could not be deleted
         self._pod = None
         if self._claimed_domain is not None:
             with _active_lock:
-                _active_domains.discard(self._claimed_domain)
+                # Only drop the claim if we still own it: a new run may have
+                # reclaimed this domain as stale and must keep its own claim.
+                if _active_domains.get(self._claimed_domain) == pod:
+                    del _active_domains[self._claimed_domain]
             self._claimed_domain = None
 
 
@@ -595,13 +615,22 @@ def summarize(spy_output: str) -> dict:
     change code per record -- new/updated (+) or deleted (-) -- so a participant
     that is discovered and then deleted during the run is removed, and the
     summary reflects what was live when the run ended rather than everything ever
-    seen. Sample contents are never matched."""
+    seen. Sample contents are never matched.
+
+    This is HOST PRESENCE per topic, not an endpoint count: the Src HostId names
+    a host, and a host can run several participants/endpoints on the same topic.
+    We track one presence per (topic, writer/reader, host), so a dispose ('-')
+    for a host clears that host from the topic even if another endpoint on the
+    same host is still live, and the host count is distinct hosts, not endpoints.
+    Distinguishing endpoints would need the participant GUID, which this spy
+    table does not carry; revisit only against a real multi-endpoint capture
+    (SCRUM-39 follow-up review)."""
     topics: dict = {}
     for m in RTI_SPY_LINE.finditer(spy_output):
         t = topics.setdefault(m["topic"], {"type": m["type"], "writers": set(), "readers": set()})
         who = t["writers"] if m["kind"] == "W" else t["readers"]
         if m["change"] == "-":
-            who.discard(m["host"])
+            who.discard(m["host"])   # host presence, not per-endpoint: see docstring
         else:
             who.add(m["host"])
     topics = {name: t for name, t in topics.items() if t["writers"] or t["readers"]}

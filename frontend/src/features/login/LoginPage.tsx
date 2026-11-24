@@ -3,6 +3,8 @@ import { Navigate, useNavigate } from "react-router-dom";
 import * as Label from "@radix-ui/react-label";
 import { ApiError } from "../../api";
 import { useAuth } from "../../auth/AuthContext";
+import FieldError, { fieldA11y } from "../../ui/FieldError";
+import { validatePassword, validateUsername } from "../../validation";
 import SystemInfoPanel from "../system/SystemInfoPanel";
 import "./login.css";
 
@@ -20,6 +22,8 @@ export function reasonFor(err: unknown): Reason {
       case "not_configured":
         return { kind: "warn", title: "Sign-in isn't set up on this server", body: "Demo credentials haven't been configured. Ask your administrator to set them in the backend .env file." };
     }
+    if (err.status === 422)
+      return { kind: "error", title: "Check what you entered", body: "The username or password is too long or has characters that aren't allowed." };
     if (err.status >= 500)
       return { kind: "error", title: "Server error", body: "Something went wrong on the server. Try again in a moment." };
   }
@@ -40,8 +44,8 @@ export default function LoginPage() {
   if (user) return <Navigate to="/" replace />;
 
   const missing = {
-    username: !username.trim() && "Enter your username.",
-    password: !password && "Enter your password.",
+    username: validateUsername(username),
+    password: validatePassword(password),
   };
 
   async function onSubmit(e: SubmitEvent<HTMLFormElement>) {
@@ -90,12 +94,9 @@ export default function LoginPage() {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 onBlur={() => setTouched((t) => ({ ...t, username: true }))}
-                aria-invalid={touched.username && !!missing.username}
-                aria-describedby={touched.username && missing.username ? "username-err" : undefined}
+                {...fieldA11y("username", touched.username && missing.username)}
               />
-              {touched.username && missing.username && (
-                <div id="username-err" className="error-text">{missing.username}</div>
-              )}
+              <FieldError id="username-err" error={touched.username && missing.username} />
             </div>
 
             <div className="field">
@@ -113,8 +114,7 @@ export default function LoginPage() {
                     setCapsOn(false);
                     setTouched((t) => ({ ...t, password: true }));
                   }}
-                  aria-invalid={touched.password && !!missing.password}
-                  aria-describedby={touched.password && missing.password ? "password-err" : undefined}
+                  {...fieldA11y("password", touched.password && missing.password)}
                 />
                 <button type="button" className="btn ghost" onClick={() => setShowPw((s) => !s)} aria-pressed={showPw}>
                   {showPw ? "Hide" : "Show"}
@@ -123,9 +123,7 @@ export default function LoginPage() {
               {capsOn && (
                 <div className="caps-warning" role="status">⚠ Caps Lock is on</div>
               )}
-              {touched.password && missing.password && (
-                <div id="password-err" className="error-text">{missing.password}</div>
-              )}
+              <FieldError id="password-err" error={touched.password && missing.password} />
             </div>
 
             <button className="btn" type="submit" disabled={busy}>

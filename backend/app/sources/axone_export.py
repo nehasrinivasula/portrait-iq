@@ -102,7 +102,8 @@ class AxoneLogExportSource(LogSource):
 
     def is_configured(self) -> SourceStatus:
         if self._client_factory is None and not settings.axone_base_url:
-            return SourceStatus(ok=False, reason="Not set up: set AXONE_BASE_URL (e.g. http://localhost:9200).")
+            # Shown to the field engineer (U-4): what is wrong and who can fix it; the setting name is for whoever installs it.
+            return SourceStatus(ok=False, reason="Log collection isn't set up on this server. Ask whoever installed Portrait IQ to set the log export address (AXONE_BASE_URL).")
         return SourceStatus(ok=True)
 
     def _get_client(self) -> AxoneLogExportClient:

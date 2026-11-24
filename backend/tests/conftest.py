@@ -23,6 +23,9 @@ def _job_files_in_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "job_output_dir", str(tmp_path / "jobs"))
     monkeypatch.setattr(settings, "upload_dir", str(tmp_path / "uploads"))
     monkeypatch.setattr(settings, "sweep_tool_pods_on_startup", False)
+    # Background tasks run to completion inside the request, so a test sees the finished state. The worker
+    # process, launcher and supervision are covered by their own tests.
+    monkeypatch.setattr(settings, "background_task_mode", "inline")
 
 
 @pytest.fixture

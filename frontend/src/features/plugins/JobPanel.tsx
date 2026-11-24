@@ -1,47 +1,33 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { isFinished, listPlugins, type Job, type ToolResult } from "./api";
 import { useJobs } from "../jobs/JobsContext";
 import { runErrorText, stepLabel as errorStepLabel } from "../jobs/runStatus";
-import { formatElapsed, nextPaced, parseServerTime, runHeadline, STEPS, stepIndex, stepLabel, stepProgress } from "./progress";
+import { formatElapsed, parseServerTime, runHeadline, stepLabel, stepProgress } from "./progress";
+import Steps from "../../ui/Steps";
+import type { StepItem } from "../../ui/stepModel";
 
-/** Least time each step stays on screen, so a person can follow a run whose
- * steps finish faster than the page polls. */
-const STEP_MIN_MS = 900;
-
-/** The step index to show: trails the run's real step, one step per STEP_MIN_MS.
- * A failed or interrupted run, or reduced-motion, shows the truth at once. */
-function usePacedStep(job: Job | null): number {
-  const calm = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  const reached = job ? job.status === "failed" || job.status === "interrupted" : false;
-  const complete = job ? isFinished(job.status) && !reached : false;
-  const target = job ? stepIndex(job.current_step, complete) : -1;
-  const instant = calm || reached;
-  const skipped = job?.skipped_steps ?? [];
-  const [shown, setShown] = useState(target);
-  const id = job?.id;
-  useEffect(() => { setShown(target); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (instant) { if (shown !== target) setShown(target); return; }
-    if (shown >= target) { if (shown > target) setShown(target); return; }
-    const t = window.setTimeout(() => setShown(nextPaced(shown, target, skipped)), STEP_MIN_MS);
-    return () => window.clearTimeout(t);
-  }, [shown, target, instant, skipped.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
-  return instant ? target : shown;
+/** The run's steps in the shared vocabulary, with the server's times. The step a
+ * stopped run was on is shown as failed. Real state only: nothing is held back. */
+function runSteps(job: Job): StepItem[] {
+  const stopped = job.status === "failed" || job.status === "interrupted";
+  const complete = isFinished(job.status) && !stopped;
+  const times = job.step_times ?? {};
+  return stepProgress(job.current_step, job.skipped_steps, complete).steps.map(({ step, label, state }) => ({
+    id: step, label,
+    status: state === "done" ? "done" : state === "current" ? (stopped ? "failed" : "running") : "pending",
+    startedAt: parseServerTime(times[step]?.[0]),
+    finishedAt: parseServerTime(times[step]?.[1]),
+  }));
 }
 
 export default function JobPanel() {
   const { job, results, lost, logPull, clear } = useJobs();
-  const shown = usePacedStep(job);
+  const names = useToolNames();
   if (!job) return null;
-  const realFinished = isFinished(job.status);
-  const complete = realFinished && job.status !== "failed" && job.status !== "interrupted";
-  // A run can be done before the bar has caught up: keep it "running" until it has.
-  const settling = complete && shown < STEPS.length;
-  const finished = realFinished && !settling;
-  const [kind, headline] = runHeadline(settling ? "running" : job.status);
-  const shownStep = shown >= 0 && shown < STEPS.length ? STEPS[shown] : null;
-  const step = (settling || !realFinished ? shownStep : job.current_step) ? stepLabel((settling || !realFinished ? shownStep : job.current_step)!) : null;
+  const finished = isFinished(job.status);
+  const [kind, headline] = runHeadline(job.status);
+  const step = job.current_step ? stepLabel(job.current_step) : null;
   const stopped = job.status === "failed" || job.status === "interrupted";
 
   return (
@@ -56,15 +42,15 @@ export default function JobPanel() {
         {stopped && step && `Stopped at: ${step}.`}
       </div>
       <RunClock job={job} finished={finished} />
-      {!finished && <StepList current={shownStep} skipped={job.skipped_steps}
-        under={{ deploy_tools: <ToolRows job={job} results={results} stepIsCurrent={shownStep === "deploy_tools"} /> }} />}
+      <Steps steps={runSteps(job)} live={!finished} collapsible
+        under={{ deploy_tools: <ToolRows job={job} results={results} stepIsCurrent={job.current_step === "deploy_tools"} /> }} />
       {lost && <p className="muted" role="status">Lost contact with the server. Still trying; the run is not affected.</p>}
 
       {logPull && (
         <div className={`alert ${logPull.state === "error" ? "error" : logPull.state === "done" ? (logPull.skipped ? "warn" : "ok") : "info"}`}
           role={logPull.state === "error" ? "alert" : "status"}>
           <strong>System logs</strong>
-          {logPull.state === "running" && "Collecting…"}
+          {logPull.state === "running" && (logPull.progress ?? "Collecting…")}
           {logPull.state === "error" && logPull.message}
           {logPull.state === "done" && (
             <>{logPull.events} events from {logPull.newFiles} new file{logPull.newFiles === 1 ? "" : "s"}. {logPull.skipped > 0 && <>{logPull.skipped} malformed log lines skipped. </>}
@@ -77,7 +63,7 @@ export default function JobPanel() {
         <ul className="results">
           {results.map((r) => (
             <li key={r.tool} className="card">
-              <h3>{r.tool}</h3>
+              <h3>{names[r.tool] ?? r.tool}</h3>
               {"error" in r ? (
                 <div className="alert error" role="alert">
                   <strong>Failed{errorStepLabel(r.step) ? ` — ${errorStepLabel(r.step)}` : ""}</strong>
@@ -161,26 +147,5 @@ function ToolRows({ job, results, stepIsCurrent }: { job: Job; results: ToolResu
         );
       })}
     </ul>
-  );
-}
-
-/** All six steps, top to bottom, each with a dot: filled once done, ringed
- * while current, hollow while waiting. Only the steps this run uses. */
-function StepList({ current, skipped = [], under = {} }: { current: string | null; skipped?: string[]; under?: Record<string, ReactNode> }) {
-  const { position, total, steps } = stepProgress(current, skipped);
-  return (
-    <div className="run-steps" aria-live="off">
-      {position && <p className="muted">Step {position} of {total}</p>}
-      <ol>
-        {steps.map((s) => (
-          <li key={s.step} data-state={s.state} aria-current={s.state === "current" ? "step" : undefined}>
-            <span className="step-dot" aria-hidden="true" />
-            {s.label}
-            {s.state === "done" && <span className="visually-hidden"> (done)</span>}
-            {under[s.step]}
-          </li>
-        ))}
-      </ol>
-    </div>
   );
 }

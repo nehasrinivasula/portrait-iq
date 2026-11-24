@@ -109,7 +109,7 @@ def test_audit_timeline_paginates_and_rejects_invalid_time_range(env):
         "/api/audit",
         params={"since": "2026-11-02T11:00:00Z", "until": "2026-11-02T10:00:00Z"},
     )
-    assert invalid.status_code == 400
+    assert invalid.status_code == 422
     assert invalid.json()["detail"] == "until must be after since"
 
 
@@ -150,7 +150,7 @@ def test_audit_timeline_rejects_equivalent_mixed_timezone_range(env):
         },
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 422
     assert response.json()["detail"] == "until must be after since"
 
 

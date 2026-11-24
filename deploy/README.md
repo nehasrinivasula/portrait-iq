@@ -81,6 +81,19 @@ make pod-check      # from inside the pod: does the Log Export API answer?
 `make secrets` has run, the app starts but every route except `/health` and
 `/api/plugins` returns 503 (login not configured).
 
+**Kubernetes diagnostics needs read access outside our namespace.** `make deploy`
+also applies, read-only (get and list, nothing else):
+
+- a ClusterRole for **nodes** (nodes aren't in any namespace), and
+- a Role for **pods and events in Portrait's namespace** (`LOG_EXPORT_NAMESPACE`,
+  `pm`), from `deploy/k8s-portrait/`.
+
+The app still can't change anything outside its own namespace, and it never reads
+Secrets, ConfigMaps or pod logs. This does change access on GE's cluster, so **get
+the mentors' approval before the first deploy that includes it**. The pod reads the
+namespaces listed in `K8S_DIAGNOSTICS_NAMESPACES` (ours and Portrait's, set by
+`make deploy`).
+
 Then open `http://192.168.0.3:30080/docs` from a laptop on the lab switch.
 `make status` and `make logs` show what the pod is doing. On an Apple-silicon
 Mac, `make image-save` takes several minutes (amd64 is emulated).
@@ -128,7 +141,9 @@ If you leave it running, tell the team and the mentors, and include the
 
 `make undeploy` removes the pod, service, Secret and database volume, and
 our namespace if `make deploy` created it (a namespace it did not create is
-never deleted). Imported images stay in the container runtime; see "Updating"
+never deleted). It also removes the Kubernetes diagnostics access outside our
+namespace: the node-reader ClusterRole and its binding, and the read-only Role
+in Portrait's namespace (only objects carrying our label). Imported images stay in the container runtime; see "Updating"
 for how to remove them.
 
 ## Troubleshooting

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ACTION_OPTIONS, actionLabel, emptyAuditFilter, getAudit, latestOffset, PAGE_SIZE, shortSession, withRange, type AuditFilter, type AuditPage as Page } from "./auditApi";
+import FieldError, { fieldA11y } from "../../ui/FieldError";
+import { validateIdFilter } from "../../validation";
 import "./audit.css";
 
 const time = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
@@ -40,6 +42,8 @@ export default function AuditPage() {
   useEffect(() => { load(filter, null); }, [filter, load]);
 
   const set = (patch: Partial<AuditFilter>) => setDraft((d) => ({ ...d, ...patch }));
+  const errors = { actor: validateIdFilter(draft.actor, "user"), sessionId: validateIdFilter(draft.sessionId, "session id") };
+  const invalid = !!(errors.actor || errors.sessionId);
   const rows = page ? [...page.items].reverse() : [];       // newest first within the page
   const from = page && page.total > 0 ? page.offset + 1 : 0;
   const to = page ? page.offset + page.items.length : 0;
@@ -52,10 +56,12 @@ export default function AuditPage() {
         Opening this page is recorded too.
       </p>
 
-      <form className="audit-form" onSubmit={(e) => { e.preventDefault(); setFilter(withRange({ ...draft })); }}>
+      <form className="audit-form" noValidate onSubmit={(e) => { e.preventDefault(); if (!invalid) setFilter(withRange({ ...draft })); }}>
         <div className="field">
           <label htmlFor="audit-actor">User</label>
-          <input id="audit-actor" value={draft.actor} autoComplete="off" onChange={(e) => set({ actor: e.target.value })} />
+          <input id="audit-actor" value={draft.actor} autoComplete="off" onChange={(e) => set({ actor: e.target.value })}
+            {...fieldA11y("audit-actor", errors.actor)} />
+          <FieldError id="audit-actor-err" error={errors.actor} />
         </div>
         <div className="field">
           <label htmlFor="audit-action">Action</label>
@@ -67,7 +73,8 @@ export default function AuditPage() {
         <div className="field">
           <label htmlFor="audit-session">Session</label>
           <input id="audit-session" value={draft.sessionId} autoComplete="off" placeholder="full session id"
-            onChange={(e) => set({ sessionId: e.target.value })} />
+            onChange={(e) => set({ sessionId: e.target.value })} {...fieldA11y("audit-session", errors.sessionId)} />
+          <FieldError id="audit-session-err" error={errors.sessionId} />
         </div>
         <div className="field">
           <label htmlFor="audit-range">When</label>
@@ -77,7 +84,7 @@ export default function AuditPage() {
             <option value="day">Last 24 hours</option>
           </select>
         </div>
-        <button type="submit" className="btn">Apply</button>
+        <button type="submit" className="btn" disabled={invalid}>Apply</button>
         <button type="button" className="btn ghost" onClick={() => { const e = emptyAuditFilter(); setDraft(e); setFilter(e); }}>Clear</button>
       </form>
 
