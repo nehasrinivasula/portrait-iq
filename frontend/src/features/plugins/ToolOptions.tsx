@@ -28,6 +28,12 @@ export function TsharkOptions({ uid, choices, onChoices, errors, upload }: Props
         <>
           <DurationField id={`${uid}-t-dur`} label="Capture length" value={t.durationS} onChange={(v) => set({ durationS: v })} limits={TSHARK_DURATION}
             error={errors["tshark.duration"]} hint="Packet headers only; no message contents are kept." />
+          <div className="field">
+            <Label.Root htmlFor={`${uid}-t-interface`}>Capture interface</Label.Root>
+            <input id={`${uid}-t-interface`} value={t.interfaceName} aria-invalid={!!errors["tshark.interface"]}
+              onChange={(e) => set({ interfaceName: e.target.value })} />
+            {errors["tshark.interface"] && <div className="error-text" role="alert">{errors["tshark.interface"]}</div>}
+          </div>
 
           <div className="field">
             <span className="filter-label" id={`${uid}-t-filter`}>What to capture</span>

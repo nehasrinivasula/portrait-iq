@@ -22,7 +22,7 @@ from app.audit import log_action
 from app.collectors import k8s
 from app.collectors.base import Collector, CollectorResult, PluginError, ResourceLimits, reason_for
 from app.collectors.registry import PluginRegistry, get_registry
-from app.config import settings
+from app.config import allowed_tools_namespaces, settings
 from app.models import Job
 
 log = logging.getLogger(__name__)
@@ -62,6 +62,7 @@ def create_job(
     *,
     requested_by: str | None = None,
     session_id: str | None = None,
+    configuration: dict | None = None,
 ) -> Job:
     job = Job(
         mode=mode,
@@ -72,6 +73,7 @@ def create_job(
         max_output_mb=limits.max_output_mb,
         requested_by=requested_by,
         session_id=session_id,
+        configuration=json.dumps(configuration) if configuration is not None else None,
     )
     db.add(job)
     db.commit()
@@ -118,6 +120,7 @@ def run_job(
             # deployed. A bad option fails here; "configure" is the step the
             # field engineer sees for it.
             job.current_step = "configure"
+            _mark_step(job, "configure")
             db.commit()
             plugins = (registry or get_registry()).create_all(tools, limits, plugin_options)
 
@@ -126,6 +129,7 @@ def run_job(
             if step in skipped:
                 continue        # no selected tool uses it; the UI shows it as not needed
             job.current_step = step
+            _mark_step(job, step)
             db.commit()
             _audit_job(db, job, "job_step", f"step={step}")
 
@@ -246,25 +250,56 @@ def recover_interrupted_jobs(db: Session) -> None:
     for job in stale:
         job.status = "interrupted"
         job.finished_at = datetime.utcnow()
+        _mark_step(job, None)
         _set_error(job, job.current_step,
                    "The run was interrupted before it finished (the backend restarted). Any partial results are kept.")
         log_action(db, "system", "job_interrupted", detail=f"job={job.id} step={job.current_step}")
     db.commit()
     if not settings.sweep_tool_pods_on_startup:
+        _note_leftovers(db, len(stale))
         return
+    for namespace in sorted(allowed_tools_namespaces()):
+        try:
+            runner = k8s.get_pod_runner() if namespace == settings.tools_namespace else k8s.get_pod_runner(namespace)
+            removed = runner.sweep()
+        except Exception as e:  # noqa: BLE001  one unavailable namespace must not skip others
+            log.info("tool pod sweep skipped in %s: %s", namespace, e)
+            continue
+        if removed:
+            log.warning("deleted %d leftover tool pod(s) in %s: %s", len(removed), namespace, ", ".join(removed))
+            log_action(db, "system", "tool_pods_swept", detail=f"namespace={namespace} pods={removed}")
+
+
+def _note_leftovers(db: Session, interrupted: int) -> None:
+    """Without the automatic sweep, leftovers wait for the engineer's choice
+    (app/cleanup). Record that they are waiting, so the audit log shows why
+    a prompt follows the restart."""
     try:
-        removed = k8s.get_pod_runner().sweep()
+        pods = k8s.get_pod_runner().list_tool_pods()
     except Exception as e:  # noqa: BLE001  no cluster (e.g. a laptop) must not stop startup
-        log.info("tool pod sweep skipped: %s", e)
-        return
-    if removed:
-        log.warning("deleted %d leftover tool pod(s): %s", len(removed), ", ".join(removed))
-        log_action(db, "system", "tool_pods_swept", detail=f"pods={removed}")
+        log.info("leftover tool pod check skipped: %s", e)
+        pods = []
+    if pods or interrupted:
+        log.warning("%d interrupted run(s), %d tool pod(s) waiting for a cleanup choice", interrupted, len(pods))
+        log_action(db, "system", "leftovers_pending", detail=f"interrupted_jobs={interrupted} pods={len(pods)}")
+
+
+def _mark_step(job: Job, step: str | None) -> None:
+    """Close the step that is open and, when given, start `step`. Naive UTC, like the job's other times."""
+    now = datetime.utcnow().isoformat(timespec="milliseconds")
+    times = job.step_times
+    for t in times.values():
+        if t[1] is None:
+            t[1] = now
+    if step:
+        times[step] = [now, None]
+    job.step_times_json = json.dumps(times)
 
 
 def _finish(db: Session, job: Job, status: str) -> None:
     job.status = status
     job.finished_at = datetime.utcnow()
+    _mark_step(job, None)
     db.commit()
     _audit_job(db, job, "job_status", f"status={status}")
 

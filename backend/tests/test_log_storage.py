@@ -212,6 +212,24 @@ def test_facets_count_what_is_in_the_result_set(db):
     assert narrowed.total == 3 and "kubernetes" not in dict(narrowed.sources)
 
 
+def test_noise_can_be_hidden_and_repeats_are_counted(db):
+    for i in range(3):
+        add_event(db, i, category="PerfData", process="perfd", message="cpu 12% " + "x" * 300)
+    add_event(db, 3, category=None, process=None, message="disk full")
+    add_event(db, 4, category="General", process="svc", message="started")
+
+    r = store.facets(db, build_filter())
+    assert r.repeated_messages == [("cpu 12% " + "x" * 192, 3)]       # cut to 200 characters; singles are not "repeats"
+    assert dict(r.processes)["perfd"] == 3
+
+    # Hiding a category or process keeps rows that have none (SQL NOT IN would drop them).
+    assert store.count_events(db, build_filter(not_categories=["PerfData"])) == 2
+    assert store.count_events(db, build_filter(not_processes=["perfd", "svc"])) == 1
+    # A message is hidden by its prefix, which is how the facet reports it.
+    assert store.count_events(db, build_filter(not_messages=[r.repeated_messages[0][0]])) == 2
+    assert store.count_events(db, build_filter(not_messages=["100%_"])) == 5   # LIKE wildcards are literal
+
+
 def test_facets_on_an_empty_store(db):
     r = store.facets(db, build_filter())
     assert r.total == 0 and r.first_timestamp is None and r.devices == []

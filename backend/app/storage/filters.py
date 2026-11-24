@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 from app.ingestion.schema import MESSAGE_KINDS, SEVERITIES
+from app.validation import ValidationFailure, clean_text
 
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 1000
@@ -44,6 +45,18 @@ def _clean(values: Optional[Iterable[str]]) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def _checked(value: Optional[str], label: str, *, fold_whitespace: bool = False) -> Optional[str]:
+    """One free-text filter value: trimmed, length-capped, no control characters."""
+    try:
+        return clean_text(value, label, max_length=MAX_TEXT_LENGTH, fold_whitespace=fold_whitespace)
+    except ValidationFailure as e:
+        raise FilterError(str(e)) from None
+
+
+def _checked_list(values: Optional[Iterable[str]], label: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(v for v in (_checked(x, label) for x in values or ()) if v))
+
+
 @dataclass(frozen=True)
 class EventFilter:
     since: Optional[datetime] = None          # naive UTC, inclusive
@@ -63,6 +76,10 @@ class EventFilter:
     message_kinds: tuple[str, ...] = ()       # request | reply | response | publish | timeout
     components: tuple[str, ...] = ()          # e.g. ConfigMessageProcessor
     correlation_id: Optional[str] = None      # one whole exchange: request + reply
+    # "Hide the noise": events matching any of these are left out.
+    not_categories: tuple[str, ...] = ()
+    not_processes: tuple[str, ...] = ()
+    not_messages: tuple[str, ...] = ()        # messages that start with one of these
 
     @property
     def effective_severities(self) -> Optional[tuple[str, ...]]:
@@ -86,6 +103,7 @@ class EventFilter:
             "flagged": self.flagged is not None, "flag_category": self.flag_categories,
             "message_kind": self.message_kinds, "component": self.components,
             "correlation_id": self.correlation_id,
+            "not_category": self.not_categories, "not_process": self.not_processes, "not_message": self.not_messages,
         }
         return [name for name, value in names.items() if value]
 
@@ -108,6 +126,9 @@ def build_filter(
     message_kinds: Optional[Iterable[str]] = None,
     components: Optional[Iterable[str]] = None,
     correlation_id: Optional[str] = None,
+    not_categories: Optional[Iterable[str]] = None,
+    not_processes: Optional[Iterable[str]] = None,
+    not_messages: Optional[Iterable[str]] = None,
 ) -> EventFilter:
     """Validate and normalise raw search parameters. Raises FilterError."""
     since = to_naive_utc(since) if since else None
@@ -132,9 +153,7 @@ def build_filter(
         if k not in MESSAGE_KINDS:
             raise FilterError(f"Unknown message kind '{k}'. Use one of: {', '.join(MESSAGE_KINDS)}.")
 
-    text = (text or "").strip() or None
-    if text and len(text) > MAX_TEXT_LENGTH:
-        raise FilterError(f"Search text is limited to {MAX_TEXT_LENGTH} characters.")
+    text = _checked(text, "search text", fold_whitespace=True)   # nak replies in real logs contain tabs
 
     kinds = _clean(flag_categories)
     from app.privacy.scanner import CATEGORY_LABELS
@@ -145,20 +164,24 @@ def build_filter(
     return EventFilter(
         since=since,
         until=until,
-        job_id=(job_id or "").strip() or None,
-        devices=_clean(devices),
-        sources=_clean(sources),
-        categories=_clean(categories),
+        job_id=_checked(job_id, "job id"),
+        devices=_checked_list(devices, "device"),
+        sources=_checked_list(sources, "source"),
+        categories=_checked_list(categories, "category"),
         severities=tuple(dict.fromkeys(levels)),
         min_severity=min_level,
-        process=(process or "").strip() or None,
-        source_file=(source_file or "").strip() or None,
+        process=_checked(process, "process"),
+        source_file=_checked(source_file, "source file"),
         text=text,
         flagged=flagged,
         flag_categories=kinds,
         message_kinds=message_kind_list,
-        components=_clean(components),
-        correlation_id=(correlation_id or "").strip().lower() or None,
+        components=_checked_list(components, "component"),
+        correlation_id=(_checked(correlation_id, "correlation id") or "").lower() or None,
+        not_categories=_checked_list(not_categories, "hidden category"),
+        not_processes=_checked_list(not_processes, "hidden process"),
+        not_messages=tuple(dict.fromkeys(
+            v for v in (_checked(x, "hidden message", fold_whitespace=True) for x in (not_messages or ())[:20]) if v)),
     )
 
 

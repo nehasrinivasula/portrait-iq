@@ -3,17 +3,27 @@ sync with models.py by hand for now; consider generating one from the other
 once the shape stabilizes."""
 import json
 from datetime import datetime, timezone
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
-from typing import Any, Optional
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from app.validation import has_control_chars
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    # Bounds only; the password is never trimmed or character-checked.
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=256)
+
+    @field_validator("username")
+    @classmethod
+    def _username_clean(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Enter your username.")
+        if has_control_chars(v):
+            raise ValueError("Username can't contain control or invisible characters.")
+        return v
 
 
 class TokenResponse(BaseModel):
@@ -162,6 +172,8 @@ class JobCreateRequest(BaseModel):
     cpu_limit_pct: Optional[int] = None
     mem_limit_mb: Optional[int] = None
     max_output_mb: Optional[int] = None
+    namespace: Optional[str] = None
+    overridden_fields: list[str] = []
 
 
 class PluginOut(BaseModel):
@@ -188,7 +200,9 @@ class JobOut(BaseModel):
     status: str
     current_step: Optional[str]
     tools: list[str] = []                 # the tools selected for this run, in run order
+    configuration: Optional[dict[str, Any]] = None
     skipped_steps: list[str] = []         # steps the selected tools never use
+    step_times: dict[str, list[Optional[str]]] = {}   # step -> [started, finished], naive UTC ISO
     error: Optional[RunErrorOut] = None   # set only on a failed/interrupted run
     created_at: datetime
     finished_at: Optional[datetime]
@@ -213,6 +227,11 @@ class JobOut(BaseModel):
             except ValueError:
                 return []
         return value or []
+
+    @field_validator("configuration", mode="before")
+    @classmethod
+    def _parse_configuration(cls, value):
+        return json.loads(value) if isinstance(value, str) else value
 
     @field_validator("error", mode="before")
     @classmethod
@@ -262,6 +281,15 @@ class SignalOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class FindingsStatusOut(BaseModel):
+    state: str                                  # never | running | ok | failed
+    last_run_at: Optional[datetime] = None      # when the last run finished (not while one is running)
+    started_at: Optional[datetime] = None       # when the current run started, while running
+    events_scanned: Optional[int] = None
+    error: Optional[str] = None                 # exception type only, when the last run failed
+    stale: bool = False                         # logs arrived after the last run: running again would change the findings
 
 
 class UnmatchedShapeOut(BaseModel):

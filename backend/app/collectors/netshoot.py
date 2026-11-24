@@ -127,7 +127,8 @@ class NetshootCollector(Collector):
 
         start_s = settings.tool_pod_start_timeout_seconds
         deadline = min(start_s + len(checks) * self.CHECK_TIMEOUT_S + 60, 3600)
-        self._runner = k8s.get_pod_runner()
+        namespace = getattr(self, "namespace", None)
+        self._runner = k8s.get_pod_runner(namespace) if namespace else k8s.get_pod_runner()
         self._pod = k8s.pod_name(self.name, self.job_id)   # set first, so cleanup() finds it
         self._runner.create(
             name=self._pod, tool=self.name, job_id=self.job_id,

@@ -1,9 +1,27 @@
-.picker { display: grid; gap: 28px; max-width: 760px; }
-.picker h2 { font-size: 22px; margin-bottom: 2px; }
+.picker { display: grid; gap: 32px; max-width: 760px; counter-reset: step; }
+.picker h2 { font-size: 22px; margin-bottom: 2px; display: flex; align-items: center; gap: 10px; }
+/* Numbered steps so the order reads as a path: target, what to run, logs. */
+.picker > section h2::before {
+  counter-increment: step; content: counter(step); flex: none; display: grid; place-items: center;
+  width: 28px; height: 28px; border-radius: 50%; background: var(--primary); color: var(--on-primary); font-size: 16px;
+}
+.picker > section > .muted, .picker > section > .section-head + .muted { margin: 2px 0 0 38px; }
+.picker .field + .field, .picker .field + .device-finder { margin-top: 14px; }
+.override-badge {
+  display: inline-block; margin-left: 6px; padding: 0 8px; border-radius: 999px; font-size: 15px; font-weight: 600;
+  color: var(--primary); background: var(--primary-tint); vertical-align: 1px;
+}
+.limits { margin-top: -8px; }
+.limits .strip-body { gap: 14px; }
+.limit-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; align-items: start; }
+.limit-row .field + .field { margin-top: 0; }
+.limit-row input { width: 100%; }
+.limits select { min-width: 220px; }
+
 .plugin-list { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 12px; }
 .plugin-card {
   background: var(--panel); border: 1.5px solid var(--line); border-radius: 8px; padding: 16px 18px;
-  transition: border-color .15s ease, box-shadow .15s ease;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 .plugin-card.on { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
 .plugin-head { display: flex; gap: 14px; align-items: flex-start; }
@@ -15,37 +33,39 @@
   display: grid; place-items: center; cursor: pointer;
 }
 .check[data-state="checked"] { background: var(--primary); border-color: var(--primary); }
-.plugin-options { margin: 14px 0 2px 42px; display: grid; gap: 14px; }
+.check { transition: transform 120ms var(--ease-out), background-color 150ms ease, border-color 150ms ease; }
+.check:active:not(:disabled) { transform: scale(.94); }
+.check:disabled { opacity: .45; cursor: not-allowed; }
+.plugin-label[data-disabled] { cursor: not-allowed; }
+.plugin-label[data-disabled] .plugin-name { color: var(--muted); }
+@media (hover: hover) and (pointer: fine) {
+  .plugin-card:not(.on):hover { border-color: var(--primary); }
+  .check:hover:not(:disabled):not([data-state="checked"]) { border-color: var(--primary); }
+}
+/* Options appear under a ticked tool: fade only, no height animation. */
+.plugin-options { margin: 14px 0 2px 42px; display: grid; gap: 14px; animation: fade-in 150ms ease; }
 .picker .field input { min-height: 44px; }
 .job { display: grid; gap: 16px; max-width: 760px; }
 .results { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
-@media (prefers-reduced-motion: reduce) { .plugin-card { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .check:active { transform: none; } }
 .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .inline-field { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-top: 8px; }
 .inline-field input { max-width: 160px; }
 .option-list { display: grid; gap: 8px; }
 .seg.option { text-align: left; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
 .seg.option .opt-hint { font-weight: 400; }
-.seg[data-state="checked"] .opt-hint { color: var(--on-primary); }
+.seg[data-state="checked"] .opt-hint { color: var(--text); }
 .run-clock { margin: 0; font-variant-numeric: tabular-nums; }
-.run-steps ol { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 6px; }
-.run-steps li { display: flex; gap: 10px; align-items: center; }
-.run-steps .step-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--muted); box-sizing: border-box; flex: none; }
-.run-steps li[data-state="done"] { color: var(--muted); }
-.run-steps li[data-state="done"] .step-dot { background: var(--primary); border-color: var(--primary); }
-.run-steps li[data-state="current"] { font-weight: 600; }
-.run-steps li[data-state="current"] .step-dot { background: var(--primary); border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 30%, transparent); animation: run-step-pulse 1.4s ease-in-out infinite; }
-.run-steps li[data-state="upcoming"] { color: var(--muted); }
-@keyframes run-step-pulse { 50% { box-shadow: 0 0 0 5px transparent; } }
-@media (prefers-reduced-motion: reduce) { .run-steps li[data-state="current"] .step-dot { animation: none; } }
-.run-steps .muted { margin: 0; }
 .job-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-.run-steps li { flex-wrap: wrap; }
 .tool-rows { list-style: none; margin: 4px 0 2px 20px; padding: 0; display: grid; gap: 4px; flex-basis: 100%; font-weight: 400; }
 .tool-rows li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
 .tool-rows .tool-state { font-weight: 600; }
-.tool-rows li[data-state="pass"] .tool-state { color: var(--ok); }
-.tool-rows li[data-state="fail"] .tool-state { color: var(--error); }
+.tool-rows li[data-state="pass"] .tool-state { color: var(--ok-text); }
+.tool-rows li[data-state="fail"] .tool-state { color: var(--error-text); }
 .tool-rows li[data-state="running"] .tool-state { color: var(--primary); }
 .tool-rows li[data-state="waiting"] { color: var(--muted); }
 .tool-rows .tool-reason { flex-basis: 100%; color: var(--muted); }
+
+/* The run page uses its width: the form column is fixed so device rows stay on one line. */
+.run-layout { grid-template-columns: minmax(0, 640px) minmax(0, 1fr); }
+@media (max-width: 900px) { .run-layout { grid-template-columns: 1fr; } }

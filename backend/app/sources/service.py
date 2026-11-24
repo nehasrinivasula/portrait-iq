@@ -18,6 +18,7 @@ import logging
 import shutil
 import uuid
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -399,6 +400,7 @@ def acquire(
     max_bytes: int | None = None,
     staging_root: Path | None = None,
     now: datetime | None = None,
+    progress: Callable[[int, int | None, str | None], None] | None = None,
 ) -> AcquisitionResult:
     """Pull every new file from source in [since, until]. Raises WindowError
     for a bad range and SourceError if the source cannot be listed at all;
@@ -419,7 +421,10 @@ def acquire(
         _audit(db, actor, result, error=str(e), session_id=session_id)
         raise
 
-    for i, (remote, covered) in enumerate(plan_new_windows(db, remotes, source)):
+    planned = list(plan_new_windows(db, remotes, source))
+    note = progress or (lambda *_: None)   # called between files, where everything so far is committed
+    for i, (remote, covered) in enumerate(planned):
+        note(i, len(planned), f"Pulling file {i + 1} of {len(planned)}")
         if covered or is_already_acquired(db, remote):
             result.files.append(FileOutcome(remote.name, remote.remote_id, "already_acquired", remote.size))
             continue
@@ -482,6 +487,7 @@ def acquire(
         _record(db, remote, outcome, sha, job_id)
         result.files.append(outcome)
 
+    note(len(planned), len(planned), "Finished pulling files")
     _audit(db, actor, result, session_id=session_id)
     return result
 

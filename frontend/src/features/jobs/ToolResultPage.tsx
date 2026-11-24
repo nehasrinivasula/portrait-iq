@@ -4,12 +4,15 @@ import { getJob, getResults, isFinished, listPlugins, type Job, type ToolResult 
 import { runHeadline } from "../plugins/progress";
 import { stepLabel } from "./runStatus";
 import JobResultsPage from "./JobResultsPage";
+import KubernetesResultPage from "./KubernetesResultPage";
 import "./jobResults.css";
 
-/** Netshoot has its own per-check page; every other tool gets this one. */
+/** Netshoot and Kubernetes diagnostics have their own pages; every other tool gets this one. */
 export default function ToolRoute() {
   const { tool = "" } = useParams<{ tool: string }>();
-  return tool === "netshoot" ? <JobResultsPage /> : <ToolResultPage />;
+  if (tool === "netshoot") return <JobResultsPage />;
+  if (tool === "kubernetes") return <KubernetesResultPage />;
+  return <ToolResultPage />;
 }
 
 const fileName = (path: string) => path.split(/[\\/]/).pop() || path;
