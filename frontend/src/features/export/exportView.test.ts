@@ -8,7 +8,7 @@ const step = (id: string, status: ExportStep["status"], issues = 0): ExportStep 
 });
 
 const pkg = (over: Partial<Package> = {}): Package => ({
-  job_id: "job-1", state: "ready", masked: true, partial: false, requested_by: "t", started_at: "", finished_at: "",
+  job_id: "job-1", state: "ready", masked: true, partial: false, run_status: "done", requested_by: "t", started_at: "", finished_at: "",
   steps: [step("a", "done"), step("b", "done")], file_name: "x.zip", size_bytes: 10, sha256: "a".repeat(64),
   contents: [], warnings: [], error: null, downloadable: true, ...over,
 });
@@ -53,6 +53,11 @@ describe("headline", () => {
     const [kind, title, body] = headline(pkg({ partial: true, steps: [step("tools", "partial", 1), step("zip", "done")] }));
     expect([kind, title]).toEqual(["warn", "Export ready with partial results"]);
     expect(body).toContain("Available results are in the zip");
+  });
+  it("names cleanup failure even when diagnostic artifacts were complete", () => {
+    const [kind, title, body] = headline(pkg({ run_status: "cleanup_failed", partial: true }));
+    expect([kind, title]).toEqual(["warn", "Export ready, but cleanup failed"]);
+    expect(body).toContain("may still be running");
   });
   it("shows the server's reason when the export failed", () => {
     expect(headline(pkg({ state: "failed", error: "No space left." }))).toEqual(["error", "The export failed", "No space left."]);

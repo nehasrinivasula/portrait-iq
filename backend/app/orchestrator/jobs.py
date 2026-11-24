@@ -231,14 +231,25 @@ def _failed_tool_result(plugin: Collector, step: str, error: BaseException) -> d
     folder = plugin.output_dir
     if folder is not None:
         try:
-            files = sorted(
-                str(path.resolve()) for path in folder.iterdir()
-                if not path.is_symlink() and path.is_file()
-            )
+            files = []
+            remaining = plugin.limits.max_output_mb * 1024 * 1024
+            omitted = False
+            for path in sorted(folder.iterdir()):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                size = path.stat().st_size
+                if size > remaining:
+                    omitted = True
+                    continue
+                files.append(str(path.resolve()))
+                remaining -= size
         except OSError:
             files = []  # a lost folder must not hide the original tool failure
+            omitted = False
         if files:
             result["artifact_paths"] = files
+        if omitted:
+            result["warnings"] = ["Some partial files exceeded the output limit and were left out."]
     return result
 
 

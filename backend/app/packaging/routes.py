@@ -52,6 +52,7 @@ class PackageOut(BaseModel):
     state: str                       # preparing | ready | failed | interrupted
     masked: bool
     partial: bool                    # the run or an export step was incomplete
+    run_status: Optional[str] = None
     requested_by: str
     started_at: str
     finished_at: Optional[str] = None
@@ -99,7 +100,8 @@ class StartRequest(BaseModel):
 
 def _out(s: service.PackageStatus) -> PackageOut:
     return PackageOut(
-        job_id=s.job_id, state=s.state, masked=s.masked, partial=s.partial, requested_by=s.requested_by,
+        job_id=s.job_id, state=s.state, masked=s.masked, partial=s.partial, run_status=s.run_status,
+        requested_by=s.requested_by,
         started_at=s.started_at, finished_at=s.finished_at,
         steps=[StepOut(id=x.id, label=x.label, status=x.status, detail=x.detail,
                        issues=[IssueOut(item=i.item, reason=i.reason) for i in x.issues]) for x in s.steps],

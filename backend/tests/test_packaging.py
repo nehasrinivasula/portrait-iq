@@ -240,6 +240,15 @@ def test_each_step_explains_what_it_did_and_what_failed(env):
     assert s["partial"]
 
 
+def test_cleanup_failure_is_exposed_separately_from_diagnostic_results(env):
+    client, db = env
+    db.get(Job, "job-1").status = "cleanup_failed"
+    db.commit()
+    result = export(client)
+    assert result["run_status"] == "cleanup_failed"
+    assert result["partial"]
+
+
 def test_tool_stopped_mid_capture_keeps_partial_file_and_reason_in_export(env):
     client, db = env
 
@@ -287,6 +296,10 @@ def test_tool_stopped_mid_capture_keeps_partial_file_and_reason_in_export(env):
     with open_zip(client) as package:
         assert "tools/partial_capture/capture.txt" in package.namelist()
         assert "tools/good_capture/checks.txt" in package.namelist()
+        exported_results = json.loads(package.read("tools/results.json"))
+        assert exported_results[0]["artifact_paths"] == ["tools/partial_capture/capture.txt"]
+        assert exported_results[1]["artifact_paths"] == ["tools/good_capture/checks.txt"]
+        assert str(job_output_dir(job.id).resolve()) not in package.read("tools/results.json").decode()
         assert SSN not in package.read("tools/partial_capture/capture.txt").decode()
         metadata = json.loads(package.read("metadata.json"))
         tools_step = next(step for step in metadata["export"]["steps"] if step["id"] == "tools")
@@ -333,7 +346,8 @@ def test_tshark_interrupted_mid_capture_exports_partial_pcap_when_unmasked(env, 
     masked = export(client)
     assert masked["partial"] and masked["state"] == "ready"
     tools = next(step for step in masked["steps"] if step["id"] == "tools")
-    assert tools["status"] == "failed"
+    assert tools["status"] == "partial"
+    assert any("Export with masking off" in issue["reason"] for issue in tools["issues"])
     assert "tools/tshark/capture.pcapng" not in open_zip(client).namelist()
 
     unmasked = export(client, mask=False)
@@ -342,6 +356,33 @@ def test_tshark_interrupted_mid_capture_exports_partial_pcap_when_unmasked(env, 
     assert tools["status"] == "partial"
     assert tools["issues"][0]["reason"].endswith("The network capture could not be completed.")
     assert "tools/tshark/capture.pcapng" in open_zip(client).namelist()
+
+
+def test_failed_tool_salvage_respects_output_limit(env):
+    _, db = env
+
+    class OversizedPartial(Collector):
+        name = "oversized_partial"
+
+        def run(self, target_ip):
+            folder = self.require_output_dir()
+            (folder / "small.txt").write_text("useful partial result")
+            (folder / "scratch.bin").write_bytes(b"x" * (1024 * 1024 + 1))
+            raise PluginError("Stopped after writing files.")
+
+        def cleanup(self):
+            pass
+
+    registry = PluginRegistry()
+    registry.register(OversizedPartial)
+    job = db.get(Job, "job-1")
+    job.tools = '["oversized_partial"]'
+    job.cpu_limit_pct, job.mem_limit_mb, job.max_output_mb = 50, 512, 1
+    db.commit()
+    run_job(db, job, "192.0.2.10", registry=registry)
+    result = read_results(job.id)[0]
+    assert [Path(path).name for path in result["artifact_paths"]] == ["small.txt"]
+    assert "output limit" in result["warnings"][0]
 
 
 def test_a_failed_step_still_exports_the_rest(env, monkeypatch):

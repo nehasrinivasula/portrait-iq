@@ -399,11 +399,15 @@ def _copy_artifact(src: Path, dest: Path, masked: bool) -> bool:
 def _step_tools(ctx: _Ctx, step: Step) -> None:
     results = read_results(ctx.job.id)
     tools_dir = ctx.work / "tools"
-    _write_json(tools_dir / "results.json", results)
     job_root = job_output_dir(ctx.job.id)
     copied = 0
+    omitted_for_masking = False
+    export_results = []
     for r in results:
         tool = str(r.get("tool", "unknown"))
+        exported = {key: value for key, value in r.items() if key != "artifact_paths"}
+        exported_paths = []
+        export_results.append(exported)
         if "error" in r:
             step.issues.append(Issue(tool, f"This diagnostic did not finish during the run: {r['error']}"))
         for raw in r.get("artifact_paths", []):
@@ -422,17 +426,22 @@ def _step_tools(ctx: _Ctx, step: Step) -> None:
                 step.issues.append(Issue(f"{tool}: {name}", "Left out: the file is no longer on the server."))
                 continue
             if not _copy_artifact(src, tools_dir / tool / name, ctx.status.masked):
+                omitted_for_masking = True
                 step.issues.append(Issue(f"{tool}: {name}", "Left out: only text files can be masked. "
                                                               "Export with masking off to include it."))
                 ctx.status.warnings.append(f"{tool}: {name} was left out because it could not be masked.")
                 continue
             copied += 1
+            exported_paths.append(f"tools/{tool}/{name}")
+        if exported_paths:
+            exported["artifact_paths"] = exported_paths
+    _write_json(tools_dir / "results.json", export_results)
     ctx.status.contents.append(ContentEntry("tools/", "Diagnostic results and the files each tool produced",
                                             files=copied + 1, masked=ctx.status.masked))
     ran = len(results)
     failed = sum(1 for r in results if "error" in r)
     if failed:
-        step.status = "failed" if failed == ran and copied == 0 else "partial"
+        step.status = "failed" if failed == ran and copied == 0 and not omitted_for_masking else "partial"
     if not ran:
         step.detail = "This run used no diagnostics."
     else:

@@ -28,6 +28,7 @@ export interface Package {
   state: PackageState;
   masked: boolean;
   partial: boolean;
+  run_status: string | null;
   requested_by: string;
   started_at: string;
   finished_at: string | null;
