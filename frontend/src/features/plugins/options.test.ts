@@ -49,6 +49,20 @@ describe("validateChoices / buildOptions", () => {
     });
   });
 
+  it("requires an uploaded export for RTI import and sends artifact + upload_id", () => {
+    const c = defaultChoices();
+    c.rti.mode = "import";
+    expect(validateChoices(new Set(["rti"]), c)["rti.upload"]).toMatch(/\.xml/);   // admin_console default
+    c.rti.artifact = "monitor";
+    expect(validateChoices(new Set(["rti"]), c)["rti.upload"]).toMatch(/\.ser/);
+    c.rti.durationS = "1";   // ignored in import mode, so no duration error
+    c.rti.uploadId = "deadbeef";
+    expect(validateChoices(new Set(["rti"]), c)).toEqual({});
+    expect(buildOptions(new Set(["rti"]), c)).toEqual({
+      rti: { mode: "import", artifact: "monitor", upload_id: "deadbeef" },
+    });
+  });
+
   it("rejects interface and host values the backend will reject", () => {
     const c = defaultChoices();
     c.tshark.interfaceName = "-eth0";
@@ -80,5 +94,19 @@ describe("validateChoices / buildOptions", () => {
     expect(buildOptions(new Set(["tshark"]), c).tshark).toEqual({ mode: "run", duration_s: 60, interface: "any", capture_filter: "port 7400" });
     c.tshark.proto = "udp";
     expect(buildOptions(new Set(["tshark"]), c).tshark).toMatchObject({ capture_filter: "udp port 7400" });
+  });
+});
+
+describe("RTI export guide (SCRUM-123)", () => {
+  it("walks through both exports from the RTI tools on the laptop", async () => {
+    const { RTI_GUIDE_STEPS } = await import("./RtiExportGuide");
+    const text = RTI_GUIDE_STEPS.flatMap((s) => s.items).join("\n");
+    expect(text).toMatch(/File ▸ Export Discovery Data/);
+    expect(text).toMatch(/obfuscation option unchecked/);
+    expect(text).toMatch(/File ▸ Save/);
+    for (const d of [7, 12, 13]) expect(text).toContain(String(d));
+    expect(text).toMatch(/\.xml/);
+    expect(text).toMatch(/\.ser/);
+    expect(text).not.toMatch(/docker|start-rti-tools|\/home\/developer/i);   // no container setup
   });
 });

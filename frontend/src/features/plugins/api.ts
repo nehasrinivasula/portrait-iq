@@ -66,13 +66,13 @@ export const startJob = (targetIp: string, tools: string[], pluginOptions: Plugi
 export const getJob = (id: string) => apiFetch<Job>(`/api/jobs/${id}`);
 export const getResults = (id: string) => apiFetch<ToolResult[]>(`/api/jobs/${id}/results`);
 
-export async function uploadPcap(file: File) {
+export async function uploadFile(file: File, kind: string) {
   const body = new FormData();
   body.append("file", file);
-  return apiFetch<{ upload_id: string; kind: string; size_bytes: number }>("/api/uploads?kind=pcap", {
-    method: "POST",
-    body,
-  });
+  return apiFetch<{ upload_id: string; kind: string; size_bytes: number }>(
+    `/api/uploads?kind=${encodeURIComponent(kind)}`,
+    { method: "POST", body },
+  );
 }
 
 export const isFinished = (s: JobStatus) => s !== "queued" && s !== "running";

@@ -1,7 +1,9 @@
 """
 Files a field engineer hands to Portrait IQ instead of letting it collect
 them (SCRUM-39): a capture hospital IT already made, for tshark's import
-mode, and later a hub log pulled by hand (hub_import).
+mode; a hub log pulled by hand (hub_import); and RTI GUI exports the operator
+saves from the RTI tools for the UMF RTI import mode (SCRUM-123) -- an Admin
+Console discovery data export (rti_admin) or a Monitor saved session (rti_monitor).
 
 Each upload is stored as <upload_dir>/<id>.<kind>, where id is a random
 token: nothing from the client's file name reaches a path, a log line or
@@ -20,13 +22,22 @@ from app.config import settings
 ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 CHUNK_BYTES = 1024 * 1024
 
-# First bytes of each accepted format.
+# First bytes of each accepted format (compared against the file's first 4
+# bytes, so each prefix is at most 4 bytes long).
 KINDS: dict[str, tuple[bytes, ...]] = {
     "pcap": (
         b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4",   # pcap, microsecond timestamps
         b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d",   # pcap, nanosecond timestamps
         b"\x0a\x0d\x0d\x0a",                        # pcapng
     ),
+    # RTI Admin Console discovery data export (File > Export Discovery Data):
+    # XML. Admin Console 6.1.2 starts it with a "<!-- This is a discovery data
+    # file ..." comment and no XML declaration (bench export, 2026-11-24); a
+    # declaration or a UTF-8 BOM is accepted too (SCRUM-123, the UMF RTI GUI route).
+    "rti_admin": (b"<!--", b"<?xm", b"\xef\xbb\xbf"),
+    # RTI Monitor saved session: a Java-serialized object stream
+    # (STREAM_MAGIC 0xACED + version 0x0005). Only RTI Monitor can read it.
+    "rti_monitor": (b"\xac\xed\x00\x05",),
 }
 
 

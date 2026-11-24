@@ -66,6 +66,20 @@
 .tool-rows li[data-state="waiting"] { color: var(--muted); }
 .tool-rows .tool-reason { flex-basis: 100%; color: var(--muted); }
 
+/* UMF RTI import: how to get the GUI exports (SCRUM-123) */
+.guide { border: 1.5px solid var(--line); border-radius: 8px; padding: 10px 14px; background: var(--panel); }
+.guide summary { cursor: pointer; font-weight: 600; min-height: 32px; display: flex; align-items: center; gap: 8px; list-style: none; }
+.guide summary::-webkit-details-marker { display: none; }
+.guide summary::before { content: "▸"; color: var(--primary); transition: transform .15s ease; }
+.guide[open] summary::before { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .guide summary::before { transition: none; } }
+.guide p { margin: 8px 0; }
+.guide-steps { margin: 8px 0; padding-left: 22px; display: grid; gap: 10px; }
+.guide-step-title { font-weight: 600; }
+.guide-steps ul { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 3px; }
+.guide-notes { margin: 8px 0 2px; padding-left: 18px; display: grid; gap: 4px; font-size: 15px; }
+.guide code { font-size: 14px; background: color-mix(in srgb, var(--line) 45%, transparent); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+
 /* The run page uses its width: the form column is fixed so device rows stay on one line. */
 .run-layout { grid-template-columns: minmax(0, 640px) minmax(0, 1fr); }
 @media (max-width: 900px) { .run-layout { grid-template-columns: 1fr; } }

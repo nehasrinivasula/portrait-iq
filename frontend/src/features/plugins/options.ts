@@ -26,6 +26,18 @@ export const TSHARK_PRESETS = [
 ] as const;
 export type TsharkPresetId = (typeof TSHARK_PRESETS)[number]["id"];
 
+/** RTI import mode (SCRUM-123): which GUI export the operator uploaded, and the
+ * upload kind each one is saved under (POST /api/uploads?kind=...). */
+export const RTI_ARTIFACTS = [
+  { id: "admin_console", kind: "rti_admin", accept: ".xml",
+    label: "Admin Console discovery export", hint: "A .xml from RTI Admin Console (File ▸ Export Discovery Data)" },
+  { id: "monitor", kind: "rti_monitor", accept: ".ser",
+    label: "Monitor saved session", hint: "A .ser saved from RTI Monitor (File ▸ Save)" },
+] as const;
+export type RtiArtifactId = (typeof RTI_ARTIFACTS)[number]["id"];
+export const rtiArtifact = (id: RtiArtifactId) =>
+  RTI_ARTIFACTS.find((a) => a.id === id) ?? RTI_ARTIFACTS[0];
+
 export interface TsharkChoice {
   mode: "run" | "import";
   durationS: string;
@@ -38,8 +50,12 @@ export interface TsharkChoice {
   interfaceName: string;
 }
 export interface RtiChoice {
+  /** run = live rtiddsspy; import = ingest an uploaded RTI GUI export. */
+  mode: "run" | "import";
   domain: number;
   durationS: string;
+  artifact: RtiArtifactId;
+  uploadId: string | null;
 }
 export interface Choices {
   tshark: TsharkChoice;
@@ -52,7 +68,10 @@ export const defaultChoices = (): Choices => ({
     mode: "run", durationS: String(TSHARK_DEFAULT_S), uploadId: null,
     filterKind: "quick", preset: "rti_all", port: "", proto: "any", interfaceName: "any",
   },
-  rti: { domain: 12, durationS: String(RTI_DEFAULT_S) },
+  rti: {
+    mode: "run", domain: 12, durationS: String(RTI_DEFAULT_S),
+    artifact: "admin_console", uploadId: null,
+  },
   netshoot: { ports: "22, 443, 6443", dnsNames: "kubernetes.default.svc.cluster.local, axone-log-export-tcp.pm.svc.cluster.local", extraTargets: "" },
 });
 
@@ -92,8 +111,12 @@ export function validateChoices(selected: Set<string>, c: Choices): Record<strin
     }
   }
   if (selected.has("rti")) {
-    const e = wholeSeconds(c.rti.durationS, RTI_DURATION);
-    if (e) errs["rti.duration"] = e;
+    if (c.rti.mode === "run") {
+      const e = wholeSeconds(c.rti.durationS, RTI_DURATION);
+      if (e) errs["rti.duration"] = e;
+    } else if (!c.rti.uploadId) {
+      errs["rti.upload"] = `Choose a ${rtiArtifact(c.rti.artifact).accept} file to import.`;
+    }
   }
   if (selected.has("netshoot")) {
     const ports = splitList(c.netshoot.ports);
@@ -122,7 +145,11 @@ export function buildOptions(selected: Set<string>, c: Choices): Record<string, 
       out.tshark = { mode: "run", duration_s: Number(t.durationS), interface: t.interfaceName, ...filter };
     }
   }
-  if (selected.has("rti")) out.rti = { domain: c.rti.domain, duration_s: Number(c.rti.durationS) };
+  if (selected.has("rti")) {
+    const r = c.rti;
+    if (r.mode === "import") out.rti = { mode: "import", artifact: r.artifact, upload_id: r.uploadId };
+    else out.rti = { domain: r.domain, duration_s: Number(r.durationS) };
+  }
   if (selected.has("netshoot")) out.netshoot = {
     ports: splitList(c.netshoot.ports).map(Number), dns_names: splitList(c.netshoot.dnsNames),
     extra_targets: splitList(c.netshoot.extraTargets),
