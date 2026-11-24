@@ -6,7 +6,8 @@ What is real and what is faked:
   - Real: login, sources, local upload and ingestion, the job state machine,
     the log search API (an empty dev database gets 420 made-up events),
     tshark "import" mode (needs tshark/editcap on PATH or WIRESHARK_BIN_DIR).
-  - Faked: the tool-pod runner. Netshoot "runs" its checks against a stand-in
+  - Faked: the tool-pod runner and, for Kubernetes diagnostics, the cluster API (a
+    made-up node, pods and events). Netshoot "runs" its checks against a stand-in
     that answers instantly, with traceroute failing so the warning path shows.
     Nothing here talks to a cluster or a device.
 
@@ -97,6 +98,67 @@ class FakePodRunner:
 
 
 k8s.get_pod_runner = lambda *_a, **_k: FakePodRunner()   # callers pass a namespace
+
+
+class FakeCoreApi:
+    """A small made-up cluster for Kubernetes diagnostics: one node, a few pods
+    (one restarting, one not ready) and some events. Read calls only."""
+
+    def __init__(self):
+        from datetime import datetime, timedelta, timezone
+        from types import SimpleNamespace as NS
+        self._ns, now = NS, datetime.now(timezone.utc)
+        self._now, self._ago = now, lambda m: now - timedelta(minutes=m)
+
+    def _list(self, items):
+        return self._ns(items=items, metadata=self._ns(_continue=None))
+
+    def _pod(self, ns, name, restarts=0, ready=True, last=None):
+        NS = self._ns
+        last_state = NS(terminated=NS(reason=last, exit_code=137, finished_at=self._ago(12))) if last else NS(terminated=None)
+        return NS(metadata=NS(name=name, namespace=ns, labels={"app": name.rsplit("-", 1)[0]},
+                              creation_timestamp=self._ago(600)),
+                  spec=NS(node_name="edge-dev", containers=[NS(name="main", image=f"example/{name}:dev",
+                                                              resources=NS(requests={"cpu": "100m"}, limits=None))]),
+                  status=NS(phase="Running", reason=None, message=None, start_time=self._ago(600),
+                            conditions=[NS(type="Ready", status="True" if ready else "False")],
+                            container_statuses=[NS(name="main", image=f"example/{name}:dev", ready=ready,
+                                                   restart_count=restarts, last_state=last_state,
+                                                   state=NS(running=NS(), waiting=None, terminated=None))]))
+
+    def _event(self, ns, obj, reason, minutes, type_="Warning", message="", count=1):
+        NS = self._ns
+        return NS(metadata=NS(namespace=ns, creation_timestamp=self._ago(minutes)), type=type_, reason=reason,
+                  count=count, involved_object=NS(kind="Pod", name=obj), message=message,
+                  last_timestamp=self._ago(minutes), event_time=None, first_timestamp=None)
+
+    def list_node(self, **_kw):
+        NS = self._ns
+        return self._list([NS(
+            metadata=NS(name="edge-dev", labels={"node-role.kubernetes.io/control-plane": "true"},
+                        creation_timestamp=self._ago(60 * 24 * 40)),
+            status=NS(conditions=[NS(type="Ready", status="True", reason="KubeletReady", message="kubelet is ready")],
+                      capacity={"cpu": "16", "memory": "64Gi"}, allocatable={"cpu": "15", "memory": "62Gi"},
+                      node_info=NS(kubelet_version="v1.34.2+k3s1", os_image="Example Linux",
+                                   container_runtime_version="containerd://2.1.5")))])
+
+    def list_namespaced_pod(self, ns, **_kw):
+        if ns == "pm":
+            return self._list([self._pod(ns, "axonerouter-0", restarts=4, last="OOMKilled"),
+                               self._pod(ns, "configservice-0", ready=False),
+                               self._pod(ns, "hl7-outbound-0")])
+        return self._list([self._pod(ns, "portrait-iq-0")])
+
+    def list_namespaced_event(self, ns, **_kw):
+        if ns != "pm":
+            return self._list([])
+        return self._list([self._event(ns, "axonerouter-0", "BackOff", 3, message="Back-off restarting failed container", count=9),
+                           self._event(ns, "configservice-0", "Unhealthy", 1, message="Readiness probe failed: HTTP 503"),
+                           self._event(ns, "hl7-outbound-0", "Pulled", 30, type_="Normal", message="Container image already present")])
+
+
+from app.collectors import k8s_diagnostics  # noqa: E402
+k8s_diagnostics.get_core_api = FakeCoreApi
 
 def _seed_sample_events() -> None:
     """Synthetic events, only into an empty dev database, so the log page has

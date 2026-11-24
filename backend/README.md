@@ -275,6 +275,11 @@ on the server with `AXONE_CMS_EVENT_CATEGORY`; leaving it unset keeps CMS
 collection unavailable and returns a clear `409` from the API. The browser
 cannot choose or relabel a category.
 
+The run screen first requests all categories, so if CMS is included in that
+export, the subsequent CMS-specific pull can be skipped as already covered.
+Confirm with GE whether CMS is included or requires a separate source before
+enabling this option.
+
 Once configured, call `POST /api/sources/axone/cms/acquire` with the same
 `since`, `until`, optional `device_uuids`, `job_id`, and `ingest` fields as a
 normal acquisition. Like every long acquisition, it returns a `202` background
