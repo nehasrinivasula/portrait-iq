@@ -52,7 +52,20 @@ def test_failure_does_not_leave_stale_artifact(tmp_path, monkeypatch, response):
     assert not artifact.exists()
 
 
-def test_rejects_non_ip_without_running_ssh(tmp_path, monkeypatch):
+@pytest.mark.parametrize("target", ["192.0.2.10", "2001:db8::10", "miniedge.example.local"])
+def test_accepts_shared_host_targets(tmp_path, monkeypatch, target):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, b"external\n", b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    collector(tmp_path).run(target)
+    assert f"gehc@{target}" in calls[0]
+
+
+def test_rejects_invalid_host_without_running_ssh(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: pytest.fail("SSH ran"))
-    with pytest.raises(PluginError, match="valid target IP"):
+    with pytest.raises(PluginError, match="valid IP address or host name"):
         collector(tmp_path).run("host; echo unsafe")

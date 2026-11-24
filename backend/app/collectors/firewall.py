@@ -1,9 +1,9 @@
 """Read the target node's external-zone firewalld rules over SSH (SCRUM-126)."""
 
-import ipaddress
 import subprocess
 
 from app.collectors.base import Collector, CollectorResult, PluginError
+from app.collectors.netshoot import is_host
 from app.config import settings
 
 
@@ -13,10 +13,8 @@ class FirewallCollector(Collector):
     description = "Captures the target node's external-zone firewalld rules as a text file."
 
     def run(self, target_ip: str) -> CollectorResult:
-        try:
-            ipaddress.IPv4Address(target_ip)
-        except ValueError:
-            raise PluginError("Firewall settings require a valid target IP address.") from None
+        if not is_host(target_ip):
+            raise PluginError("Firewall settings require a valid IP address or host name.")
 
         out_dir = self.require_output_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
