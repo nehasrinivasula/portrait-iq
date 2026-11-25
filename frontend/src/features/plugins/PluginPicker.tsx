@@ -7,7 +7,7 @@ import { acquireCmsForJob, acquireForJob, listSources, type AcquisitionResult } 
 import TimeFramePicker from "../logs/TimeFramePicker";
 import { defaultTimeFrame, resolveTimeFrame, toApi } from "../logs/timeframe";
 import { getJobConfiguration, listPlugins, startJob, uploadPcap, type Job, type JobConfiguration, type Plugin } from "./api";
-import { RtiOptions, TsharkOptions } from "./ToolOptions";
+import { PrometheusTsdbOptions, RtiOptions, TsharkOptions } from "./ToolOptions";
 import { buildOptions, defaultChoices, validateChoices, validateTargetIp } from "./options";
 import { useJobs } from "../jobs/JobsContext";
 import DeviceFinder from "../devices/DeviceFinder";
@@ -83,6 +83,7 @@ export default function PluginPicker({ onStarted, locked }: {
         rti: { domain: config.rti.domain, durationS: String(config.rti.duration_s) },
         netshoot: { ports: config.netshoot.ports.join(", "), dnsNames: config.netshoot.dns_names.join(", "),
           extraTargets: config.netshoot.extra_targets.join(", ") },
+        prometheus_tsdb: { scope: config.prometheus_tsdb.scope as typeof current.prometheus_tsdb.scope },
       }));
     }).catch((e) => setConfigError(messageFor(e)));
     listPlugins()
@@ -125,6 +126,7 @@ export default function PluginPicker({ onStarted, locked }: {
     ...(selected.has("tshark") && choices.tshark.preset !== defaults.tshark.filter_preset ? ["tshark.filter_preset"] : []),
     ...(selected.has("rti") && choices.rti.domain !== defaults.rti.domain ? ["rti.domain"] : []),
     ...(selected.has("rti") && Number(choices.rti.durationS) !== defaults.rti.duration_s ? ["rti.duration_s"] : []),
+    ...(selected.has("prometheus_tsdb") && choices.prometheus_tsdb.scope !== defaults.prometheus_tsdb.scope ? ["prometheus_tsdb.scope"] : []),
     ...(selected.has("netshoot") && choices.netshoot.ports !== defaults.netshoot.ports.join(", ") ? ["netshoot.ports"] : []),
     ...(selected.has("netshoot") && choices.netshoot.dnsNames !== defaults.netshoot.dns_names.join(", ") ? ["netshoot.dns_names"] : []),
     ...(selected.has("netshoot") && choices.netshoot.extraTargets !== defaults.netshoot.extra_targets.join(", ") ? ["netshoot.extra_targets"] : []),
@@ -257,6 +259,7 @@ export default function PluginPicker({ onStarted, locked }: {
                     upload={{ name: uploadName, busy: uploading, error: uploadError, onFile }} />
                 )}
                 {on && p.name === "rti" && <RtiOptions uid={uid} choices={choices} onChoices={setChoices} errors={fieldErrors} />}
+                {on && p.name === "prometheus_tsdb" && <PrometheusTsdbOptions uid={uid} choices={choices} onChoices={setChoices} />}
                 {on && p.name === "netshoot" && <div className="plugin-options">
                   {([
                     ["Ports", "ports", "ports"], ["DNS names", "dnsNames", "dnsNames"],

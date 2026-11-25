@@ -1,8 +1,25 @@
 """Item ids and job folders for the cleanup choice. No database or cluster."""
+import os
+
 import pytest
 
-from app.cleanup.files import CleanupError, clear_job_files, folder_stats, human_size, parse_ids, safe_job_dir
+from app.cleanup.files import (
+    CleanupError, EXPORTS_DIRNAME, clear_job_files, folder_stats, human_size,
+    job_dirs_newest_first, parse_ids, prune_old_runs, safe_job_dir,
+)
 from app.config import settings
+
+_MB = 1024 * 1024
+
+
+def _run(jobs_dir, name, *, size=0, mtime=0.0):
+    """A run folder with a known size and mtime (mtime set last, after the write)."""
+    d = jobs_dir / name
+    d.mkdir()
+    if size:
+        (d / "artifact.bin").write_bytes(b"x" * size)
+    os.utime(d, (mtime, mtime))
+    return d
 
 
 @pytest.fixture
@@ -83,3 +100,92 @@ def test_only_the_top_level_package_folder_is_protected(tmp_path):
     assert folder_stats(tmp_path) == (1, 1)
     clear_job_files(tmp_path)
     assert list(tmp_path.iterdir()) == []
+
+
+# --- run retention (SCRUM-105) -------------------------------------------
+
+def test_prune_disabled_when_keep_and_cap_both_zero(jobs_dir):
+    _run(jobs_dir, "a", size=10, mtime=1)
+    _run(jobs_dir, "b", size=10, mtime=2)
+    assert prune_old_runs(0, 0) == []
+    assert {p.name for p in jobs_dir.iterdir()} == {"a", "b"}
+
+
+def test_prune_under_cap_deletes_nothing(jobs_dir):
+    _run(jobs_dir, "a", size=100, mtime=1)
+    _run(jobs_dir, "b", size=100, mtime=2)
+    assert prune_old_runs(keep=1, max_total_mb=10) == []        # ~200 B << 10 MB
+    assert len(list(jobs_dir.iterdir())) == 2
+
+
+def test_prune_deletes_oldest_until_under_cap(jobs_dir):
+    for i, name in enumerate(["old", "mid", "new", "newest"]):
+        _run(jobs_dir, name, size=_MB, mtime=float(i))          # newest has the largest mtime
+    removed = prune_old_runs(keep=1, max_total_mb=2)            # 4 MB total, keep newest, trim to <=2 MB
+    assert set(removed) == {"old", "mid"}
+    assert {p.name for p in jobs_dir.iterdir()} == {"new", "newest"}
+
+
+def test_prune_keeps_the_newest_and_never_touches_protected(jobs_dir):
+    for i, name in enumerate(["old", "mid", "cur"]):
+        _run(jobs_dir, name, size=_MB, mtime=float(i))          # cur is newest
+    removed = prune_old_runs(keep=1, max_total_mb=1, protect=frozenset({"old"}))
+    assert "cur" not in removed and "old" not in removed        # newest + protected survive
+    assert removed == ["mid"]
+    assert (jobs_dir / "old").is_dir() and (jobs_dir / "cur").is_dir()
+
+
+def test_prune_protects_every_active_run_not_just_one(jobs_dir):
+    # Two runs are in flight at once (both passed in `protect`): a retention
+    # pass triggered by one must not delete the other's folder (allen #4).
+    for i, name in enumerate(["old", "run-a", "run-b"]):
+        _run(jobs_dir, name, size=_MB, mtime=float(i))
+    removed = prune_old_runs(keep=0, max_total_mb=1, protect=frozenset({"run-a", "run-b"}))
+    assert removed == ["old"]
+    assert (jobs_dir / "run-a").is_dir() and (jobs_dir / "run-b").is_dir()
+
+
+def test_prune_skips_runs_younger_than_min_age(jobs_dir):
+    import time
+    now = time.time()
+    # All three just finished -- their exports may still be building/downloading.
+    for name in ("a", "b", "c"):
+        _run(jobs_dir, name, size=_MB, mtime=now)
+    removed = prune_old_runs(keep=0, max_total_mb=1, min_age_seconds=3600)
+    assert removed == []                                        # grace protects them all
+    assert len(list(jobs_dir.iterdir())) == 3
+
+
+def test_prune_with_min_age_still_removes_settled_old_runs(jobs_dir):
+    import time
+    now = time.time()
+    _run(jobs_dir, "settled", size=2 * _MB, mtime=now - 7200)   # older than the grace
+    _run(jobs_dir, "fresh", size=_MB, mtime=now)                # inside the grace
+    removed = prune_old_runs(keep=0, max_total_mb=1, min_age_seconds=3600)
+    assert removed == ["settled"]
+    assert (jobs_dir / "fresh").is_dir()
+
+
+def test_job_dirs_newest_first_excludes_the_exports_folder(jobs_dir):
+    _run(jobs_dir, "run-a")
+    (jobs_dir / EXPORTS_DIRNAME).mkdir()                        # the reserved export store
+    names = [p.name for p in job_dirs_newest_first()]
+    assert names == ["run-a"]                                  # _exports is not a run
+
+
+def test_prune_never_touches_the_exports_dir(jobs_dir):
+    import time
+    now = time.time()
+    # One old run, plus the reserved _exports store holding finished exports.
+    # _exports is old and large, exactly the folder the old code would have
+    # deleted in one pass, wiping every stored export (allen #1).
+    _run(jobs_dir, "old-run", size=2 * _MB, mtime=now - 7200)  # over the cap, so it prunes
+    exports = jobs_dir / EXPORTS_DIRNAME
+    exports.mkdir()
+    (exports / "exp-1").mkdir()
+    (exports / "exp-1" / "bundle.zip").write_bytes(b"x" * (5 * _MB))
+    os.utime(exports, (now - 7200, now - 7200))                # as old as the run
+
+    removed = prune_old_runs(keep=0, max_total_mb=1)           # cap ignores the 5 MB export
+    assert removed == ["old-run"]                              # the run ages out
+    assert exports.is_dir() and (exports / "exp-1" / "bundle.zip").exists()  # exports survive

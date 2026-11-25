@@ -237,6 +237,7 @@ def job_configuration(user: User = Depends(get_active_user)):
                      "dns_names": list(NetshootCollector.DEFAULT_DNS_NAMES),
                      "extra_targets": [],
                      "check_interval_seconds": NetshootCollector.DEFAULT_CHECK_INTERVAL_SECONDS},
+        "prometheus_tsdb": {"scope": settings.prometheus_tsdb_scope},
     }
 
 
@@ -263,7 +264,7 @@ def start_job(
         "target_ip", "namespace", "cpu_limit_pct", "mem_limit_mb", "max_output_mb",
         "tshark.duration_s", "tshark.interface", "tshark.filter_preset", "tshark.capture_filter",
         "rti.domain", "rti.duration_s", "netshoot.ports", "netshoot.dns_names",
-        "netshoot.extra_targets", "netshoot.check_interval_seconds",
+        "netshoot.extra_targets", "netshoot.check_interval_seconds", "prometheus_tsdb.scope",
     }
     if len(req.overridden_fields) > len(allowed_override_fields) or any(
         field not in allowed_override_fields for field in req.overridden_fields

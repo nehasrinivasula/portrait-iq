@@ -17,6 +17,15 @@ export const TSHARK_DEFAULT_S = 60;
 export const RTI_DEFAULT_S = 30;
 export const RTI_DOMAINS = [7, 12, 13] as const;
 
+/** Prometheus TSDB export range: the whole database, or a recent window. */
+export const TSDB_SCOPES = [
+  { id: "full", label: "Full database" },
+  { id: "7d", label: "Last 7 days" },
+  { id: "24h", label: "Last 24 hours" },
+] as const;
+export type TsdbScope = (typeof TSDB_SCOPES)[number]["id"];
+export const TSDB_DEFAULT_SCOPE: TsdbScope = "full";
+
 /** Named capture filters the backend expands (docs/plugins-api.md). */
 export const TSHARK_PRESETS = [
   { id: "rti_all", label: "All UMF RTI traffic", hint: "Domains 7, 12 and 13" },
@@ -45,6 +54,7 @@ export interface Choices {
   tshark: TsharkChoice;
   rti: RtiChoice;
   netshoot: { ports: string; dnsNames: string; extraTargets: string };
+  prometheus_tsdb: { scope: TsdbScope };
 }
 
 export const defaultChoices = (): Choices => ({
@@ -54,6 +64,7 @@ export const defaultChoices = (): Choices => ({
   },
   rti: { domain: 12, durationS: String(RTI_DEFAULT_S) },
   netshoot: { ports: "22, 443, 6443", dnsNames: "kubernetes.default.svc.cluster.local, axone-log-export-tcp.pm.svc.cluster.local", extraTargets: "" },
+  prometheus_tsdb: { scope: TSDB_DEFAULT_SCOPE },
 });
 
 const splitList = (value: string) => value.split(",").map((item) => item.trim()).filter(Boolean);
@@ -123,6 +134,7 @@ export function buildOptions(selected: Set<string>, c: Choices): Record<string, 
     }
   }
   if (selected.has("rti")) out.rti = { domain: c.rti.domain, duration_s: Number(c.rti.durationS) };
+  if (selected.has("prometheus_tsdb")) out.prometheus_tsdb = { scope: c.prometheus_tsdb.scope };
   if (selected.has("netshoot")) out.netshoot = {
     ports: splitList(c.netshoot.ports).map(Number), dns_names: splitList(c.netshoot.dnsNames),
     extra_targets: splitList(c.netshoot.extraTargets),

@@ -38,6 +38,24 @@ NODE_PORT            = 30080
 # 7, 12 and 13. Default: false.
 # TSHARK_LIVE_CAPTURE  = true
 
+# Grafana / system-health collector (SCRUM-105): the in-cluster Grafana URL.
+# Empty leaves the tool off. On the Axone bench the monitoring stack lives in
+# the `compute` namespace; find it with:
+#   kubectl get svc -A | grep grafana
+# The Viewer API token is a secret, not here: put it in SECRETS_DIR as a file
+# named GRAFANA_API_TOKEN (backend/SECRETS.md).
+# GRAFANA_BASE_URL     = http://axone-compute-monitoring-grafana.compute.svc:80
+
+# Full Prometheus TSDB export (SCRUM-105): the node path to the Prometheus
+# data directory (the local-path PVC dir that holds prometheus-db/). Empty
+# leaves the tool off. Find it on the node with:
+#   PV=$(kubectl -n compute get pvc -o jsonpath='{range .items[*]}{.spec.volumeName}:{.metadata.name}{"\n"}{end}' | grep -i prometheus | head -1 | cut -d: -f1)
+#   kubectl get pv "$PV" -o jsonpath='{.spec.hostPath.path}'
+# WARNING: when set, this runs a short-lived ROOT pod with a read-only hostPath
+# onto that dir -- the one privileged tool pod -- and writes a multi-GB archive
+# into every run (needs the 40Gi data PVC, and adds heavy disk I/O near etcd).
+# Have the bench owners sign off before enabling it.
+# PROMETHEUS_TSDB_HOSTPATH = /opt/local-path-provisioner/pvc-..._compute_prometheus-...-db-...-0
 # UMF RTI: true to turn on, false to turn off, then make deploy. Needs GE's
 # rtitools image imported on the node (k3s ctr images import --local <tar>);
 # RTI_IMAGE is the name it was saved under. Default: false.

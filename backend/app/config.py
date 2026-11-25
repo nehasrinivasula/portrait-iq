@@ -167,6 +167,59 @@ class Settings(BaseSettings):
     # Files a field engineer hands in (e.g. a hospital's .pcap).
     upload_dir: str = "./data/uploads"
     upload_max_mb: int = 500
+    # Run retention (SCRUM-105): a full Prometheus TSDB export is multi-GB, so
+    # old run folders are pruned at the start of each run. The newest
+    # job_retention_keep are always kept; beyond those, the oldest are deleted
+    # until the total size of all run folders is under the cap. The cap stays
+    # under the data PVC (40Gi) so the volume cannot fill. 0 keep / 0 cap
+    # disables pruning. Every queued/running run is protected by the caller, and
+    # a run younger than job_retention_min_age_seconds is never pruned, so a run
+    # whose export is still being built or downloaded is not deleted under it.
+    job_retention_keep: int = 5
+    job_retention_max_total_mb: int = 32000
+    job_retention_min_age_seconds: int = 900
+    # SCRUM-105: Grafana / system-health collector. Read-only Grafana HTTP API,
+    # reachable in-cluster with no internet (e.g. http://grafana.<ns>.svc:3000).
+    # Empty base URL disables the tool. The token is a read-only Grafana
+    # service-account / API token.
+    grafana_base_url: str | None = None
+    grafana_api_token: SecretStr | None = None
+    grafana_timeout_seconds: float = 15.0
+    # Snapshot size cap, also bounded by the job's max_output_mb limit.
+    grafana_max_snapshot_mb: int = 16
+    # Optional: pin the Prometheus data source by uid; empty auto-picks the
+    # first Grafana data source of type "prometheus".
+    grafana_datasource_uid: str = ""
+
+    # SCRUM-105: Prometheus TSDB export. A full copy of the Prometheus
+    # database can only be read from the node's filesystem (the admin
+    # snapshot API is off and does not serve files, and the PVC lives in
+    # another namespace). So a short-lived, privileged pod runs as root, reads
+    # the Prometheus data dir from the node over a read-only hostPath, and
+    # writes a compressed native-TSDB tar onto the backend's own data volume
+    # -- never through the base64-exec path, which is for small files.
+    # Empty hostPath leaves the collector off (like grafana_base_url).
+    prometheus_tsdb_hostpath: str = ""
+    # The backend's data PVC and its mount path: the pod mounts the same PVC
+    # so the artifact it writes lands where the backend already reads it
+    # (job_output_dir must live under this mount).
+    prometheus_tsdb_data_pvc: str = "portrait-iq-data"
+    prometheus_tsdb_data_mount: str = "/data"
+    # "full" exports the whole database; a duration like "7d" is reserved for
+    # a future windowed export and is rejected until implemented.
+    prometheus_tsdb_scope: str = "full"
+    # Compressor run inside the tool pod; must exist in the image. gzip ships
+    # in the netshoot image; zstd does not, so it's the reliable default (the
+    # TSDB is already compressed, so the ratio difference is small anyway).
+    prometheus_tsdb_compressor: str = "gzip"       # "zstd" or "gzip"
+    prometheus_tsdb_level: int = 3
+    # Image for the export pod; empty uses netshoot_image (has tar + zstd).
+    prometheus_tsdb_image: str = ""
+    # Refuse rather than fill the node disk / package. The pod also checks the
+    # data volume has room for the (uncompressed-sized) export before it runs.
+    prometheus_tsdb_max_output_mb: int = 30000
+    # tar + compress of a multi-GB TSDB can take many minutes.
+    prometheus_tsdb_timeout_seconds: int = 3600
 
     class Config:
         env_file = ".env"
@@ -175,10 +228,13 @@ class Settings(BaseSettings):
 # Login settings that may also come from NAME_FILE, so a Kubernetes Secret
 # volume can supply them (backend/SECRETS.md). Plain NAME / .env still work.
 LOGIN_SECRET_NAMES = ("DEMO_AUTH_USERNAME", "DEMO_AUTH_PASSWORD", "AUTH_TOKEN_SECRET")
+# Other file-backed secrets, loaded by the same mechanism. The Grafana Viewer
+# token for the system-health collector (SCRUM-105).
+FILE_SECRET_NAMES = LOGIN_SECRET_NAMES + ("GRAFANA_API_TOKEN",)
 
 
 def load_login_secret_files(s: Settings) -> None:
-    for name in LOGIN_SECRET_NAMES:
+    for name in FILE_SECRET_NAMES:
         path = os.environ.get(f"{name}_FILE")
         if not path:
             continue

@@ -29,9 +29,11 @@ log = logging.getLogger(__name__)
 # Built-in plugins, as "module:Class". Add new plugins here.
 PLUGINS = [
     "app.collectors.firewall:FirewallCollector",
+    "app.collectors.grafana:GrafanaHealthCollector",
     "app.collectors.hub_import:HubImportCollector",
     "app.collectors.k8s_diagnostics:KubernetesCollector",
     "app.collectors.netshoot:NetshootCollector",
+    "app.collectors.prometheus_tsdb:PrometheusTsdbCollector",
     "app.collectors.rti:RtiCollector",
     "app.collectors.tshark:TsharkCollector",
 ]

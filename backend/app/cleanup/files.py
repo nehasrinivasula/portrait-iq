@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 
 from app.config import settings
@@ -20,6 +21,13 @@ class CleanupError(ValueError):
 # A run's export (<job>/package/*.zip) is something the engineer asked for and can still
 # download, even for an interrupted run. It is never listed or removed as a leftover.
 PROTECTED_DIRS = frozenset({"package"})
+
+# The packaging service keeps finished exports in one reserved folder that sits
+# next to the run folders under the job output dir (packaging.service.exports_root
+# imports this name). It is NOT a run, so run retention must never iterate over it
+# or delete it -- doing so would wipe every stored export in a single pass.
+# test_prune_never_touches_the_exports_dir keeps this in sync with the service.
+EXPORTS_DIRNAME = "_exports"
 
 
 def folder_stats(path: Path) -> tuple[int, int]:
@@ -48,6 +56,79 @@ def clear_job_files(folder: Path) -> None:
             shutil.rmtree(entry)
         else:
             entry.unlink()
+
+
+def _dir_size(path: Path) -> int:
+    """Every byte under a run folder, the export zip included (unlike
+    folder_stats, which skips the protected export): retention has to account
+    for the whole folder because the package zip holds the big artifacts too."""
+    total = 0
+    for root, _dirs, names in os.walk(path, followlinks=False):
+        for n in names:
+            fp = Path(root) / n
+            try:
+                if not fp.is_symlink():
+                    total += fp.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def job_dirs_newest_first() -> list[Path]:
+    """Every run's folder under the job output dir, newest first by mtime."""
+    base = Path(settings.job_output_dir)
+    if not base.is_dir():
+        return []
+    dirs = [p for p in base.iterdir()
+            if p.is_dir() and not p.is_symlink() and p.name != EXPORTS_DIRNAME]
+    return sorted(dirs, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def prune_old_runs(keep: int, max_total_mb: int, protect: frozenset[str] = frozenset(),
+                   min_age_seconds: int = 0) -> list[str]:
+    """Bound the data volume. Always keep the newest `keep` run folders; among
+    the rest, delete oldest-first until the total size of all run folders is
+    under max_total_mb. Returns the ids removed. A full run folder -- export zip
+    and all -- is deleted, so old exports age out; this is what keeps the
+    multi-GB TSDB export (SCRUM-105) from filling the PVC. Disabled when keep and
+    the cap are both 0.
+
+    Two guards keep retention from deleting output something still needs, so a
+    run started while another is in flight cannot prune the other's folder:
+      * `protect` -- ids never removed. The caller passes EVERY queued/running
+        run (not just the one starting), so concurrent runs can't delete each
+        other's output.
+      * `min_age_seconds` -- a run folder younger than this is never pruned,
+        whatever the cap. Package builds and downloads happen after a run
+        finishes; this leaves a window in which a just-finished run's export is
+        safe from retention. (Download availability is derived from the file on
+        disk, so a run pruned later shows as expired, never as a dead link.)"""
+    if keep <= 0 and max_total_mb <= 0:
+        return []
+    now = time.time()
+    sized = [(p, _dir_size(p)) for p in job_dirs_newest_first()]   # newest first
+    newest = {p.name for p, _ in sized[:keep]} if keep > 0 else set()
+    total = sum(s for _, s in sized)
+    cap = max_total_mb * 1024 * 1024
+    removed: list[str] = []
+    for path, size in reversed(sized):                            # oldest first
+        if cap and total <= cap:
+            break
+        if path.name in newest or path.name in protect:
+            continue
+        if min_age_seconds > 0:
+            try:
+                if now - path.stat().st_mtime < min_age_seconds:
+                    continue
+            except OSError:
+                continue
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            continue
+        removed.append(path.name)
+        total -= size
+    return removed
 
 
 def human_size(n: int) -> str:

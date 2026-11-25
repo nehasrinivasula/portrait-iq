@@ -122,10 +122,21 @@ class PodRunner:
         host_network: bool = False,
         add_capabilities: tuple[str, ...] = (),
         tmp_size_mb: int = 64,
+        run_as_user: int | None = None,
+        extra_volumes: tuple[dict, ...] = (),
+        extra_mounts: tuple[dict, ...] = (),
         secret_mount: tuple[str, str] | None = None,
     ) -> None:
         """Start a pod that runs command (usually a long sleep) so the plugin
-        can exec its checks in it. Only /tmp is writable.
+        can exec its checks in it. Only /tmp is writable, unless extra_volumes
+        are given.
+
+        run_as_user and the extra_volumes/extra_mounts exist for the Prometheus
+        TSDB export (SCRUM-105): a root pod with a read-only hostPath onto the
+        node's Prometheus data and a writable mount of the backend's data PVC,
+        so a multi-GB file is written straight to where the backend reads it
+        rather than streamed out over exec. Every other plugin leaves them unset
+        and keeps the locked-down default (non-root, no host access).
 
         secret_mount, when given, is (secret_name, mount_path): that Secret is
         mounted read-only at mount_path, each of its keys appearing as a file.
@@ -135,6 +146,16 @@ class PodRunner:
             "portrait-iq/tool": tool.replace("_", "-"),
             "portrait-iq/job": job_id or "adhoc",
         }
+        security_context: dict = {
+            "allowPrivilegeEscalation": False,
+            "readOnlyRootFilesystem": True,
+            "capabilities": {"drop": ["ALL"], "add": list(add_capabilities)},
+        }
+        if run_as_user is not None:
+            security_context["runAsUser"] = run_as_user
+            security_context["runAsGroup"] = run_as_user
+        volume_mounts = [{"name": "tmp", "mountPath": "/tmp"}, *extra_mounts]
+        volumes = [{"name": "tmp", "emptyDir": {"sizeLimit": f"{tmp_size_mb}Mi"}}, *extra_volumes]
         body = {
             "apiVersion": "v1",
             "kind": "Pod",
@@ -155,14 +176,10 @@ class PodRunner:
                     "command": command,
                     "env": [{"name": "HOME", "value": "/tmp"}],
                     "resources": pod_resources(limits),
-                    "securityContext": {
-                        "allowPrivilegeEscalation": False,
-                        "readOnlyRootFilesystem": True,
-                        "capabilities": {"drop": ["ALL"], "add": list(add_capabilities)},
-                    },
-                    "volumeMounts": [{"name": "tmp", "mountPath": "/tmp"}],
+                    "securityContext": security_context,
+                    "volumeMounts": volume_mounts,
                 }],
-                "volumes": [{"name": "tmp", "emptyDir": {"sizeLimit": f"{tmp_size_mb}Mi"}}],
+                "volumes": volumes,
             },
         }
         if secret_mount is not None:

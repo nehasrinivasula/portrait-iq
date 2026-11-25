@@ -15,7 +15,10 @@ spec:
   # run `kubectl get storageclass` on the node: there may be none.
   resources:
     requests:
-      storage: 2Gi
+      # Holds every run's artifacts and the export zip being assembled. Sized
+      # for the full Prometheus TSDB export (SCRUM-105), which writes a
+      # multi-GB archive here; old run dirs are cleaned up so it does not fill.
+      storage: 40Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -78,6 +81,24 @@ spec:
             # = true in deploy/lab.mk, for a bench whose owners approved it.
             - name: TSHARK_LIVE_CAPTURE_ENABLED
               value: "__TSHARK_LIVE_CAPTURE__"
+            # Grafana / system-health collector (SCRUM-105). Empty base URL
+            # leaves the tool off; set GRAFANA_BASE_URL in deploy/lab.mk to the
+            # in-cluster Grafana to enable it. The Viewer API token is a secret
+            # file, like the login secrets above.
+            - name: GRAFANA_BASE_URL
+              value: "__GRAFANA_BASE_URL__"
+            - name: GRAFANA_API_TOKEN_FILE
+              value: /run/secrets/portrait-iq/GRAFANA_API_TOKEN
+            # Full Prometheus TSDB export (SCRUM-105). The node path to the
+            # Prometheus data dir (the local-path PVC dir that holds
+            # prometheus-db/); find it with
+            #   kubectl -n <mon-ns> get pv <prometheus-pv> \
+            #     -o jsonpath='{.spec.hostPath.path}'
+            # Empty leaves the tool off. When set, this collector runs a
+            # short-lived ROOT pod with a read-only hostPath onto that dir --
+            # the one privileged tool pod; keep the value accurate.
+            - name: PROMETHEUS_TSDB_HOSTPATH
+              value: "__PROMETHEUS_TSDB_HOSTPATH__"
             # Kubernetes diagnostics reads these namespaces, read-only: ours and
             # Portrait's (deploy/k8s/tool-rbac.yaml, deploy/k8s-portrait/).
             - name: K8S_DIAGNOSTICS_NAMESPACES

@@ -22,6 +22,15 @@ describe("validateChoices / buildOptions", () => {
     } });
   });
 
+  it("sends the Prometheus TSDB export range, defaulting to full", () => {
+    const c = defaultChoices();
+    expect(buildOptions(new Set(["prometheus_tsdb"]), c)).toEqual({ prometheus_tsdb: { scope: "full" } });
+    c.prometheus_tsdb.scope = "7d";
+    expect(buildOptions(new Set(["prometheus_tsdb"]), c)).toEqual({ prometheus_tsdb: { scope: "7d" } });
+    // Nothing sent when the tool isn't selected.
+    expect(buildOptions(new Set(["netshoot"]), c).prometheus_tsdb).toBeUndefined();
+  });
+
   it("requires an uploaded capture for tshark import", () => {
     const c = defaultChoices();
     c.tshark.mode = "import";

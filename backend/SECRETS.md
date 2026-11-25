@@ -23,6 +23,7 @@ The module is deliberately not called `secrets.py`, which would shadow Python's 
 | `VIEWER_LOGIN_USERNAME` / `VIEWER_LOGIN_PASSWORD`, `HUB_LOGIN_USERNAME` / `HUB_LOGIN_PASSWORD` | Viewer / Hub sign-in | **Only if a plugin signs in programmatically.** TBD. |
 | `DEMO_AUTH_USERNAME` / `DEMO_AUTH_PASSWORD` | Demo login (SCRUM-32) | Team test login for the lab, not a real person's password. In the pod: files from `make secrets` (deploy/README.md). |
 | `AUTH_TOKEN_SECRET` | Signs login tokens (SCRUM-32) | Generate: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `GRAFANA_API_TOKEN` | Grafana / system-health collector (SCRUM-105) | A read-only **Viewer** service-account token from the cluster's Grafana (`glsa_…`). Loaded from `GRAFANA_API_TOKEN_FILE`; set `GRAFANA_BASE_URL` in `deploy/lab.mk` to enable the tool. |
 | `SESSION_SIGNING_KEY` | Session lock (SCRUM-34) | Generate: `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` |
 
 Not in this list: **user passwords.** The Login story (SCRUM-32) should store a salted hash, never the password.

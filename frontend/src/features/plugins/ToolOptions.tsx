@@ -1,7 +1,7 @@
 import * as Label from "@radix-ui/react-label";
 import * as RadioGroup from "@radix-ui/react-radio-group";
 import DurationField from "./DurationField";
-import { RTI_DOMAINS, RTI_DURATION, TSHARK_DURATION, TSHARK_PRESETS, type Choices, type TsharkChoice } from "./options";
+import { RTI_DOMAINS, RTI_DURATION, TSDB_SCOPES, TSHARK_DURATION, TSHARK_PRESETS, type Choices, type TsdbScope, type TsharkChoice } from "./options";
 
 interface Props {
   uid: string;
@@ -99,6 +99,22 @@ export function RtiOptions({ uid, choices, onChoices, errors }: Omit<Props, "upl
       <DurationField id={`${uid}-r-dur`} label="Listen time" value={r.durationS}
         onChange={(v) => onChoices({ ...choices, rti: { ...r, durationS: v } })} limits={RTI_DURATION} error={errors["rti.duration"]}
         hint="Reports which hosts and topics are active, never message contents." />
+    </div>
+  );
+}
+
+export function PrometheusTsdbOptions({ uid, choices, onChoices }: Omit<Props, "upload" | "errors">) {
+  const p = choices.prometheus_tsdb;
+  return (
+    <div className="plugin-options">
+      <div className="field">
+        <span className="filter-label" id={`${uid}-p-scope`}>Export range</span>
+        <RadioGroup.Root className="segmented" aria-labelledby={`${uid}-p-scope`} value={p.scope}
+          onValueChange={(v) => onChoices({ ...choices, prometheus_tsdb: { scope: v as TsdbScope } })}>
+          {TSDB_SCOPES.map((s) => <RadioGroup.Item key={s.id} value={s.id} className="seg"><span>{s.label}</span></RadioGroup.Item>)}
+        </RadioGroup.Root>
+        <div className="hint">A full export copies the entire database (large); a window copies only recent data.</div>
+      </div>
     </div>
   );
 }

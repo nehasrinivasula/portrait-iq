@@ -63,6 +63,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.cleanup.files import EXPORTS_DIRNAME
 from app.config import settings
 from app.models import AcquiredFileRecord, AuditLogEntry, Job, Signal
 from app.orchestrator.jobs import job_output_dir, read_results
@@ -196,7 +197,8 @@ def package_dir(job_id: str) -> Path:
 
 
 def exports_root() -> Path:
-    return Path(settings.job_output_dir) / "_exports"
+    # Reserved folder, excluded from run retention (see cleanup.files.EXPORTS_DIRNAME).
+    return Path(settings.job_output_dir) / EXPORTS_DIRNAME
 
 
 def export_dir(export_id: str) -> Path:
