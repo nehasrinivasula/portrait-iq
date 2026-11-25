@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     tools_namespace: str = "portrait-iq"
     # Comma-separated namespaces explicitly provisioned for diagnostic pods.
     tools_allowed_namespaces: str = ""
+    # Optional private key mounted on the backend for read-only node diagnostics.
+    # When unset, SSH uses the backend process's agent/default identities.
+    firewall_ssh_identity_file: str | None = None
     # Namespaces the Kubernetes diagnostics tool reads (pods, events), comma-separated.
     # Empty: ours (tools_namespace) and Portrait's pm. Read-only RBAC for each is in
     # deploy/k8s/tool-rbac.yaml and deploy/k8s-portrait/.
