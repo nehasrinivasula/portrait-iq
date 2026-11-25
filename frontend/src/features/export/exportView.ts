@@ -29,10 +29,18 @@ export function headline(p: Package): [AlertKind, string, string] {
   }
   if (p.state === "interrupted") return ["warn", "The export was interrupted", p.error ?? "Start it again."];
   if (p.state === "failed") return ["error", "The export failed", p.error ?? "Start it again."];
+  if (p.run_status === "cleanup_failed") {
+    return ["warn", "Export ready, but cleanup failed",
+      "A diagnostic may still be running on the system. Check the run's cleanup error before leaving the site."];
+  }
   const failed = p.steps.filter((s) => s.status === "failed").length;
   if (failed) {
     return ["warn", "Export ready, but something is missing",
       `${failed} part${failed === 1 ? "" : "s"} could not be added. Open the steps below to see why.`];
+  }
+  if (p.partial) {
+    return ["warn", "Export ready with partial results",
+      "The run did not finish every diagnostic. Available results are in the zip; open the steps below for the failure reason."];
   }
   // Notes on a step (a diagnostic that did not run, a file left out) mean the zip is not
   // "everything", even when nothing failed.

@@ -11,6 +11,21 @@ The dev server proxies `/api` to the backend (`API_TARGET`, see
 `vite.config.ts`). Sign in with the login configured in the backend's
 environment; never put those values in this repository.
 
+## Connection setup (SCRUM-99)
+
+Open **Connect** before running diagnostics. The screen collects a system IP,
+username, and password; first calls the bounded `/api/connectivity-check`
+preflight, then calls `/api/connect` only when the target is reachable. The
+password stays only in the submitted request and the page clears it afterward;
+it is not kept in browser storage, URLs, responses, or audit records.
+
+The resulting namespace, resolved node IPs, and tool-host interfaces are shown
+as a starting configuration and carried in browser memory with the target IP
+to **Run diagnostics**. Credentials are not part of that handoff. DDS domain
+IDs remain explicitly "Not detected" until an approved RTI discovery
+integration is available. This local flow is not GE SSO and does not claim to
+authenticate to a real GE system.
+
 ## Diagnostic runs after logout or idle lock (SCRUM-94)
 
 Starting a diagnostic creates a server-side job and returns immediately. The

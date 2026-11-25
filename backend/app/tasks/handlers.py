@@ -18,6 +18,7 @@ def run_noop(db: Session, task: BackgroundTask, progress) -> tuple[dict, None]:
 
 def run_acquire(db: Session, task: BackgroundTask, progress) -> tuple[dict, Optional[Callable[[], None]]]:
     from app.analysis import auto as auto_analysis
+    from app.audit import log_action
     from app.sources import registry
     from app.sources.routes import to_out
     from app.sources.service import acquire
@@ -31,6 +32,14 @@ def run_acquire(db: Session, task: BackgroundTask, progress) -> tuple[dict, Opti
         options=p.get("options") or {}, job_id=p.get("job_id"), ingest=bool(p.get("ingest")),
         progress=progress,
     )
+    if category := p.get("cms_event_category"):
+        result.notes.insert(0, f"CMS collection used configured Axone event category {category}.")
+    if action := p.get("audit_action"):
+        log_action(
+            db, task.requested_by, action,
+            detail=f"{p.get('audit_detail', '')} files={result.new_files} failed={result.count('failed')}",
+            session_id=task.session_id,
+        )
     after = None
     if auto_analysis.should_run(p.get("job_id"), result.files):
         # After the pull is recorded as done: pattern detection must not hold the pull back or fail it.

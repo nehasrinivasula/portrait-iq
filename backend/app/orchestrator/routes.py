@@ -20,6 +20,7 @@ from app.auth import User, get_active_user, get_unlocked_user
 from app.collectors.base import Collector, PluginError, ResourceLimits
 from app.collectors.netshoot import NetshootCollector
 from app.collectors.registry import get_registry
+from app.connection_setup import inspect_connection
 from app.collectors.rti import RtiCollector
 from app.collectors.tshark import TsharkCollector
 from app.config import allowed_tools_namespaces, settings
@@ -31,6 +32,7 @@ from app.orchestrator.jobs import create_job, read_results, run_job
 from app.reporting.summary import build_summary, render_markdown, summary_to_json
 from app.schemas import (
     ConnectRequest,
+    ConnectResponse,
     CoverageOut,
     FindingsStatusOut,
     ConnectivityCheckRequest,
@@ -114,32 +116,41 @@ def connectivity_check(
         return response
 
 
-@router.post("/connect", response_model=list[DeviceOut])
+@router.post("/connect", response_model=ConnectResponse)
 def connect(
     req: ConnectRequest,
     db: Session = Depends(get_db),
     user: User = Depends(get_active_user),
 ):
-    """This week's feature #2 lives here. Today it does nothing real —
-    replace the body with an actual reachability check (ping/SNMP/SSH,
-    whatever fits your lab) against req.ip_address, and for 'live' mode,
-    real discovery of the hub/viewer/server behind it. For 'pre_install'
-    mode, this should instead stand this machine up as the test endpoint
-    Marco and Andrew described, not probe an installed system.
+    """Safely prefill run settings after a bounded connection preflight.
 
-    The password is masked in logs only while this request runs, then
-    forgotten (SCRUM-72). Keep everything that uses it inside the with."""
+    The request credentials remain in memory only.  The current local-demo
+    provider does not authenticate to GE systems or discover DDS domains; it
+    exposes a stable contract for a future approved provider to replace.
+    """
     with redaction_scope(req.password.get_secret_value(), "CONNECT_PASSWORD"):
-        log_action(db, user.id, "connect", detail=f"mode={req.mode} ip={req.ip_address}", session_id=user.session_id)
-
-        if req.mode not in ("live", "pre_install"):
-            raise HTTPException(400, "mode must be 'live' or 'pre_install'")
-
-        raise HTTPException(
-            501,
-            "TODO: implement real discovery. See app/orchestrator/routes.py::connect "
-            "and app/collectors/base.py.",
+        log_action(
+            db, user.id, "connect",
+            detail=json.dumps({"mode": req.mode, "ip": req.ip_address, "event": "started"}),
+            session_id=user.session_id,
         )
+        try:
+            response = inspect_connection(req.ip_address, req.mode)
+        except Exception:
+            log_action(
+                db, user.id, "connect",
+                detail=json.dumps({"mode": req.mode, "ip": req.ip_address, "event": "failed"}),
+                session_id=user.session_id,
+            )
+            raise
+        log_action(
+            db, user.id, "connect",
+            detail=json.dumps(
+                {"mode": req.mode, "ip": req.ip_address, "event": "completed", "result": response.connectivity.status}
+            ),
+            session_id=user.session_id,
+        )
+        return response
 
 
 @router.get("/plugins", response_model=PluginListOut)
@@ -224,7 +235,8 @@ def job_configuration(user: User = Depends(get_active_user)):
                 "duration_s": RtiCollector.DEFAULT_DURATION_S},
         "netshoot": {"ports": list(NetshootCollector.DEFAULT_PORTS),
                      "dns_names": list(NetshootCollector.DEFAULT_DNS_NAMES),
-                     "extra_targets": []},
+                     "extra_targets": [],
+                     "check_interval_seconds": NetshootCollector.DEFAULT_CHECK_INTERVAL_SECONDS},
     }
 
 
@@ -251,7 +263,7 @@ def start_job(
         "target_ip", "namespace", "cpu_limit_pct", "mem_limit_mb", "max_output_mb",
         "tshark.duration_s", "tshark.interface", "tshark.filter_preset", "tshark.capture_filter",
         "rti.domain", "rti.duration_s", "netshoot.ports", "netshoot.dns_names",
-        "netshoot.extra_targets",
+        "netshoot.extra_targets", "netshoot.check_interval_seconds",
     }
     if len(req.overridden_fields) > len(allowed_override_fields) or any(
         field not in allowed_override_fields for field in req.overridden_fields
@@ -288,7 +300,7 @@ def start_job(
         "plugin_options": {
             name: {key: value for key, value in opts.items() if key in {
                 "mode", "duration_s", "interface", "filter_preset", "capture_filter",
-                "domain", "ports", "dns_names", "extra_targets",
+                "domain", "ports", "dns_names", "extra_targets", "check_interval_seconds",
             }}
             for name, opts in req.plugin_options.items()
         },

@@ -6,11 +6,15 @@ import { isFinished } from "./api";
 
 // Setup on the left, the run on the right. Starting a run keeps you here.
 export default function RunPage() {
-  const { job, restoring, track } = useJobs();
+  const { job, restoring, track, targetIp, connectionSettings } = useJobs();
   const running = job !== null && !isFinished(job.status);
   return (
     <>
       <h1>Run diagnostics</h1>
+      {connectionSettings && <div className="alert ok run-connection-summary" role="status">
+        <strong>Connection setup applied</strong>
+        Target {targetIp}; namespace {connectionSettings.namespace}; {connectionSettings.node_ips.length} resolved node IP{connectionSettings.node_ips.length === 1 ? "" : "s"}. DDS domains remain unset until approved discovery.
+      </div>}
       <div className="run-layout">
         <PluginPicker onStarted={track} locked={running} />
         <aside className="run-side" aria-label={restoring ? "Restoring diagnostic run" : running ? "Current run" : "Last run"}>

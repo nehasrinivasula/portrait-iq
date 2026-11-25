@@ -20,6 +20,7 @@ import ipaddress
 import json
 import re
 from dataclasses import dataclass
+from time import sleep
 
 from app.collectors import k8s
 from app.collectors.base import CheckOutcome, Collector, CollectorResult, PluginConfigError, PluginError
@@ -65,12 +66,14 @@ class NetshootCollector(Collector):
     ]
     MAX_ITEMS = 20
     CHECK_TIMEOUT_S = 30
+    DEFAULT_CHECK_INTERVAL_SECONDS = 1
 
     def __init__(self, limits):
         super().__init__(limits)
         self.ports = list(self.DEFAULT_PORTS)
         self.dns_names = list(self.DEFAULT_DNS_NAMES)
         self.extra_targets: list[str] = []
+        self.check_interval_seconds = self.DEFAULT_CHECK_INTERVAL_SECONDS
         self._runner = None
         self._pod: str | None = None
 
@@ -78,7 +81,7 @@ class NetshootCollector(Collector):
         """Options: ports (list of TCP ports), dns_names (names to resolve)
         and extra_targets (hosts to test besides the job's target), each at
         most MAX_ITEMS long. All optional."""
-        unknown = sorted(set(options) - {"ports", "dns_names", "extra_targets"})
+        unknown = sorted(set(options) - {"ports", "dns_names", "extra_targets", "check_interval_seconds"})
         if unknown:
             raise PluginConfigError(f"netshoot does not accept options: {unknown}")
         ports = self._list(options, "ports", self.DEFAULT_PORTS)
@@ -89,8 +92,12 @@ class NetshootCollector(Collector):
         for value in (*dns_names, *extra_targets):
             if not is_host(value):
                 raise PluginConfigError(f"netshoot: {value!r} is not an IP address or host name")
+        interval = options.get("check_interval_seconds", self.DEFAULT_CHECK_INTERVAL_SECONDS)
+        if not isinstance(interval, int) or isinstance(interval, bool) or not 1 <= interval <= 60:
+            raise PluginConfigError("netshoot check_interval_seconds must be a whole number from 1 to 60")
+        self.check_interval_seconds = interval
         self.ports, self.dns_names, self.extra_targets = ports, dns_names, extra_targets
-        self.options = {"ports": ports, "dns_names": dns_names, "extra_targets": extra_targets}
+        self.options = {"ports": ports, "dns_names": dns_names, "extra_targets": extra_targets, "check_interval_seconds": interval}
 
     def _list(self, options, key, default):
         value = options.get(key, default)
@@ -126,7 +133,7 @@ class NetshootCollector(Collector):
             self.cleanup()
 
         start_s = settings.tool_pod_start_timeout_seconds
-        deadline = min(start_s + len(checks) * self.CHECK_TIMEOUT_S + 60, 3600)
+        deadline = min(start_s + len(checks) * (self.CHECK_TIMEOUT_S + self.check_interval_seconds) + 60, 3600)
         namespace = getattr(self, "namespace", None)
         self._runner = k8s.get_pod_runner(namespace) if namespace else k8s.get_pod_runner()
         self._pod = k8s.pod_name(self.name, self.job_id)   # set first, so cleanup() finds it
@@ -138,7 +145,9 @@ class NetshootCollector(Collector):
         self._runner.wait_running(self._pod, start_s)
 
         records, warnings, outcomes = [], [], []
-        for check in checks:
+        for index, check in enumerate(checks):
+            if index:
+                sleep(self.check_interval_seconds)
             res = self._runner.exec(self._pod, check.argv, self.CHECK_TIMEOUT_S)
             stdout, stderr = redact(res.stdout), redact(res.stderr)
             ok = res.exit_code == 0 and (bool(stdout.strip()) or not check.needs_output)
@@ -155,8 +164,25 @@ class NetshootCollector(Collector):
             if not ok:
                 warnings.append(f"{check.label} failed: {_why(res.exit_code, stdout, stderr)}")
 
-        (out_dir / "netshoot.json").write_text(json.dumps(records, indent=2))
-        (out_dir / "netshoot.txt").write_text(_report(target_ip, records))
+        if any(record["truncated"] for record in records):
+            warnings.append("Netshoot command output was truncated by the stream size limit.")
+        cap = self.limits.max_output_mb * 1024 * 1024
+        encoded = []
+        size = 2  # JSON array brackets
+        for record in records:
+            item = json.dumps(record).encode("utf-8")
+            size += len(item) + bool(encoded)
+            if size > cap:
+                warnings.append("Netshoot JSON output was truncated at the output size limit.")
+                break
+            encoded.append(item)
+        (out_dir / "netshoot.json").write_bytes(b"[" + b",".join(encoded) + b"]")
+        report = _report(target_ip, records).encode("utf-8")
+        if len(report) > cap:
+            marker = b"\n[output truncated]\n"
+            report = report[:cap - len(marker)].decode("utf-8", errors="ignore").encode("utf-8") + marker
+            warnings.append("Netshoot text output was truncated at the output size limit.")
+        (out_dir / "netshoot.txt").write_bytes(report)
         passed = sum(r["ok"] for r in records)
         return CollectorResult(
             tool=self.name,

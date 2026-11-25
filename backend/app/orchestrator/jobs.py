@@ -151,15 +151,13 @@ def run_job(
                         # shown, so the failure can still be diagnosed.
                         failed_tools += 1
                         log.warning("job %s: plugin %s did not run: %s", job.id, plugin.name, e)
-                        _record(job.id, results,
-                                {"tool": plugin.name, "step": step, "error": reason_for(e)})
+                        _record(job.id, results, _failed_tool_result(plugin, step, e))
                     except Exception as e:  # noqa: BLE001
                         # reason_for names the type only: an unexpected error's
                         # own text may hold anything.
                         failed_tools += 1
                         log.exception("job %s: plugin %s crashed", job.id, plugin.name)
-                        _record(job.id, results,
-                                {"tool": plugin.name, "step": step, "error": reason_for(e)})
+                        _record(job.id, results, _failed_tool_result(plugin, step, e))
 
             elif step == "collect_server_logs":
                 # TODO: point ingestion.pipeline.ingest_directory() at wherever
@@ -223,6 +221,38 @@ def _cleanup_reason(tools: list[str]) -> str:
     names = ", ".join(tools)
     return (f"Cleanup did not finish for: {names}. A diagnostic may still be "
             "running on the system; remove its pod or process by hand.")
+
+
+def _failed_tool_result(plugin: Collector, step: str, error: BaseException) -> dict[str, Any]:
+    """Keep finished local files from a tool that stopped partway through.
+
+    Only direct, regular files in this run's tool folder are eligible. The
+    exporter still checks containment and masks their contents before sharing.
+    """
+    result: dict[str, Any] = {"tool": plugin.name, "step": step, "error": reason_for(error)}
+    folder = plugin.output_dir
+    if folder is not None:
+        try:
+            files = []
+            remaining = plugin.limits.max_output_mb * 1024 * 1024
+            omitted = False
+            for path in sorted(folder.iterdir()):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                size = path.stat().st_size
+                if size > remaining:
+                    omitted = True
+                    continue
+                files.append(str(path.resolve()))
+                remaining -= size
+        except OSError:
+            files = []  # a lost folder must not hide the original tool failure
+            omitted = False
+        if files:
+            result["artifact_paths"] = files
+        if omitted:
+            result["warnings"] = ["Some partial files exceeded the output limit and were left out."]
+    return result
 
 
 def job_output_dir(job_id: str) -> Path:

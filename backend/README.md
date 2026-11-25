@@ -130,10 +130,11 @@ tests/
    parser in `parsers/portrait_csv.py` is real and tested — start by pointing
    `pipeline.ingest_directory()` at your own log exports and checking the numbers
    against what you already know from the 35 sample files.
-2. **Real device connect.** Live in `orchestrator/routes.py` (`POST /connect`,
-   `GET /discover`) and `collectors/base.py`. The current discovery stub returns
-   nothing — that's the first thing to replace with an actual reachability check
-   against your lab's MiniEdge P360 and Virtual Hub Host.
+2. **Connection setup and device discovery.** `POST /connect` in
+   `orchestrator/routes.py` now performs a bounded TCP preflight and returns
+   safe starting settings for the Connect screen. `GET /discover` and the
+   collector layer remain the extension points for approved, real device and
+   RTI/DDS discovery; a target IP alone must not be used to guess those values.
 
 ## Running it
 
@@ -151,6 +152,23 @@ uvicorn app.main:app --reload
 # API docs at http://localhost:8000/docs
 pytest tests/
 ```
+
+## Diagnostic limits (SCRUM-107)
+
+In **Run diagnostics → Limits and namespace**, set CPU, memory, output size,
+and the interval between Netshoot checks. The Netshoot interval defaults to
+1 second and accepts whole numbers from 1 to 60. API clients can set
+`plugin_options.netshoot.check_interval_seconds` on `POST /api/jobs`.
+The delay runs after each completed check except the last. The existing pod
+deadline still applies, so large batches with long intervals can time out.
+
+Netshoot caps each report at the configured output size and flags truncated
+command streams or report files in the run warnings. JSON reports remain
+parseable, and individual check statuses remain available.
+
+The initial throttling assumption is to pace checks launched by Portrait IQ.
+Per-packet, bandwidth, and passive-capture rate limits remain outside this
+implementation.
 
 ## Connectivity preflight
 
@@ -173,6 +191,27 @@ of at most eight workers across all requests, so an otherwise idle request for
 16 ports takes at most two TCP rounds (plus DNS): about 30 seconds at the
 maximum timeout. Under concurrent load, a request may also wait for shared
 worker capacity.
+
+## Connection setup (SCRUM-99)
+
+The protected `POST /api/connect` endpoint supports the **Connect** screen.
+It accepts an IP address plus request-scoped credentials and returns a bounded
+TCP preflight plus initial run settings. The password is a `SecretStr`, is
+redacted while the request runs, and is never returned, stored, or included in
+the audit record.
+
+```bash
+curl -X POST http://localhost:8000/api/connect \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <token>' \
+  -d '{"ip_address":"192.168.0.3","username":"demo-user","password":"demo-password"}'
+```
+
+For the local demo, the provider returns the configured Portrait IQ tools
+namespace, addresses resolved from the target, and interfaces on the tool host.
+It intentionally returns no DDS domain IDs: those cannot be inferred safely
+from an IP address and require an approved RTI discovery adapter. This is not
+GE authentication or GE SSO.
 ## Login setup
 
 This is a local demo implementation, not GE SSO. The one demo user's username,
@@ -251,6 +290,7 @@ GET  /api/sources                  sources + whether each is usable (and why not
 POST /api/sources/{id}/test        connection check with a specific reason
 GET  /api/sources/{id}/files       preview, flags files already pulled
 POST /api/sources/{id}/acquire     {"since", "until", "options": {...}, "ingest": true}
+POST /api/sources/axone/cms/acquire  CMS CSV pull using the GE-confirmed category
 POST /api/sources/local/upload     multipart files / ZIPs
 ```
 
@@ -264,6 +304,35 @@ same CSV format as the "all device log" exports. It only answers from inside
 the Kubernetes cluster. Optional `options`:
 `{"device_uuid": "...", "event_category": "3"}` (category is the API's
 integer code; the name mapping is not confirmed yet).
+
+#### CMS logs (SCRUM-124)
+
+CMS retrieval deliberately reuses the Axone CSV export path rather than
+creating a second ingestion format. GE must first confirm that CMS is an
+`eventCategory` on this API and provide its integer code. Set that code only
+on the server with `AXONE_CMS_EVENT_CATEGORY`; leaving it unset keeps CMS
+collection unavailable and returns a clear `409` from the API. The browser
+cannot choose or relabel a category.
+
+The run screen first requests all categories, so if CMS is included in that
+export, the subsequent CMS-specific pull can be skipped as already covered.
+Confirm with GE whether CMS is included or requires a separate source before
+enabling this option.
+
+Once configured, call `POST /api/sources/axone/cms/acquire` with the same
+`since`, `until`, optional `device_uuids`, `job_id`, and `ingest` fields as a
+normal acquisition. Like every long acquisition, it returns a `202` background
+task; poll `GET /api/tasks/{id}` until its `result` is available. The pull is
+CSV-derived and follows the existing hour-window limits, settle time,
+deduplication and audit behavior. Rows enter `normalized_events`, the unified
+Logs page, and the automatic PHI/PII scan with every other acquired file. No
+credential or endpoint URL is included in audit details; the completed task
+records only the configured CMS category and aggregate outcome.
+
+This is distinct from the optional read-only CMS *snap* client used by package
+export (`CMS_BASE_URL` and `/cms/sprsnap/*`). That client downloads a support
+artifact into an export package; it does not claim that the artifact is
+normalized CMS event data or replace the Axone CSV ingestion path above.
 
 Time-frame selection (SCRUM-44): a pull covers exactly `[since, until)` and
 nothing outside it. Times are ISO 8601; a time without an offset is read as
@@ -618,6 +687,19 @@ Start a job with `POST /api/jobs?target_ip=...`. It returns at once with
 status `queued`; poll `GET /api/jobs/{id}`, then read each plugin's summary,
 warnings and files from `GET /api/jobs/{id}/results`. Files land in
 `JOB_OUTPUT_DIR/<job id>/<plugin>/` (default `./data/jobs`, gitignored).
+
+**Firewall settings** (`{"tools": ["firewall"]}`) connects from the backend
+to the target IP as `gehc` via SSH and reads `sudo -n firewall-cmd
+--zone=external --list-all`. It saves `firewall-info.txt` in the run's
+`firewall/` directory; the normal run ZIP includes it at
+`tools/firewall/firewall-info.txt`. The backend needs network access to the
+node, a trusted SSH host key in its `known_hosts`, an approved SSH identity
+(agent/default identity or a mounted private key selected by
+`FIREWALL_SSH_IDENTITY_FILE`), and noninteractive sudo permission for this
+read-only command. Do not place the private key in the repository or job
+options. SSH, sudo and firewalld failures are reported as tool failures.
+Only the external zone is collected; confirm any additional zones with the
+sponsor before expanding this scope.
 
 **Netshoot** (`{"tools": ["netshoot"]}`) starts one pod from
 `NETSHOOT_IMAGE` in `TOOLS_NAMESPACE` (default `portrait-iq`), runs

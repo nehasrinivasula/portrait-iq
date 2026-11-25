@@ -1,5 +1,6 @@
 """SCRUM-72: the secrets loader is actually wired into the app."""
 import logging
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -26,10 +27,19 @@ def db():
     clear_registered_secrets()
 
 
+@pytest.fixture(autouse=True)
+def no_network_connection_setup(monkeypatch):
+    """These are redaction tests, so never perform a real socket check."""
+    monkeypatch.setattr(
+        routes,
+        "inspect_connection",
+        lambda *_: SimpleNamespace(connectivity=SimpleNamespace(status="unreachable")),
+    )
+
+
 def _connect(db, password=FAKE_PASSWORD):
     req = ConnectRequest(ip_address="192.0.2.1", username="tester", password=password)
-    with pytest.raises(HTTPException):  # discovery is still a 501 stub
-        routes.connect(req, db=db, user=User(id="tester", name="Tester"))
+    routes.connect(req, db=db, user=User(id="tester", name="Tester"))
 
 
 def test_connect_password_hidden_in_repr():

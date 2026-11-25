@@ -3,7 +3,7 @@ import * as Checkbox from "@radix-ui/react-checkbox";
 import * as Label from "@radix-ui/react-label";
 import { ApiError } from "../../api";
 import type { TaskProgress } from "../tasks/tasksApi";
-import { acquireForJob, listSources, type AcquisitionResult } from "../logs/logsApi";
+import { acquireCmsForJob, acquireForJob, listSources, type AcquisitionResult } from "../logs/logsApi";
 import TimeFramePicker from "../logs/TimeFramePicker";
 import { defaultTimeFrame, resolveTimeFrame, toApi } from "../logs/timeframe";
 import { getJobConfiguration, listPlugins, startJob, uploadPcap, type Job, type JobConfiguration, type Plugin } from "./api";
@@ -32,7 +32,7 @@ const messageFor = (err: unknown) =>
     : "Something went wrong. Try again.";
 
 export default function PluginPicker({ onStarted, locked }: {
-  onStarted: (job: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult>) => void;
+  onStarted: (job: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult | AcquisitionResult[]>) => void;
   /** A run is in progress: the form stays visible but can't start another. */
   locked: boolean;
 }) {
@@ -48,10 +48,13 @@ export default function PluginPicker({ onStarted, locked }: {
   const [cpu, setCpu] = useState("");
   const [memory, setMemory] = useState("");
   const [output, setOutput] = useState("");
+  const [checkInterval, setCheckInterval] = useState("1");
   const { targetIp, setTargetIp } = useJobs();   // kept when the engineer leaves this page
   const initialTarget = useRef(targetIp);
   const [logsOn, setLogsOn] = useState(true);
   const [logsReason, setLogsReason] = useState<string | null>(null); // why logs can't be collected here
+  const [cmsCategory, setCmsCategory] = useState<string | null>(null);
+  const [cmsOn, setCmsOn] = useState(false);
   const [frame, setFrame] = useState(defaultTimeFrame);
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -73,6 +76,7 @@ export default function PluginPicker({ onStarted, locked }: {
       setCpu(String(config.cpu_limit_pct));
       setMemory(String(config.mem_limit_mb));
       setOutput(String(config.max_output_mb));
+      setCheckInterval(String(config.netshoot.check_interval_seconds));
       setChoices((current) => ({ ...current,
         tshark: { ...current.tshark, durationS: String(config.tshark.duration_s), interfaceName: config.tshark.interface,
           preset: config.tshark.filter_preset as typeof current.tshark.preset },
@@ -88,6 +92,8 @@ export default function PluginPicker({ onStarted, locked }: {
       .then((s) => {
         const src = s.find((x) => x.id === LOG_SOURCE);
         if (!src?.configured) { setLogsReason(src?.reason || "The log export API isn't set up on this server."); setLogsOn(false); }
+        const category = src?.options?.cms_event_category?.[0];
+        setCmsCategory(category ?? null);
       })
       .catch(() => { setLogsReason("Couldn't check the log sources."); setLogsOn(false); });
   }, []);
@@ -102,7 +108,8 @@ export default function PluginPicker({ onStarted, locked }: {
     { key: "cpu_limit_pct", label: "CPU limit", unit: "%", value: cpu, set: setCpu, max: 100 },
     { key: "mem_limit_mb", label: "Memory limit", unit: "MB", value: memory, set: setMemory, max: 65536 },
     { key: "max_output_mb", label: "Output limit", unit: "MB", value: output, set: setOutput, max: 65536 },
-  ] as const;
+    { key: "netshoot.check_interval_seconds", label: "Network check interval", unit: "seconds", value: checkInterval, set: setCheckInterval, max: 60 },
+  ].filter(({ key }) => key !== "netshoot.check_interval_seconds" || selected.has("netshoot"));
   const limitErrors: Record<string, string> = Object.fromEntries(LIMITS.flatMap(({ key, value, max }) =>
     /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= max ? [] : [[key, `Enter a whole number from 1 to ${max.toLocaleString()}.`]]));
   const limitError = !!defaults && (!defaults.allowed_namespaces.includes(namespace) || Object.keys(limitErrors).length > 0);
@@ -112,6 +119,7 @@ export default function PluginPicker({ onStarted, locked }: {
     ...(Number(cpu) !== defaults.cpu_limit_pct ? ["cpu_limit_pct"] : []),
     ...(Number(memory) !== defaults.mem_limit_mb ? ["mem_limit_mb"] : []),
     ...(Number(output) !== defaults.max_output_mb ? ["max_output_mb"] : []),
+    ...(selected.has("netshoot") && Number(checkInterval) !== defaults.netshoot.check_interval_seconds ? ["netshoot.check_interval_seconds"] : []),
     ...(selected.has("tshark") && Number(choices.tshark.durationS) !== defaults.tshark.duration_s ? ["tshark.duration_s"] : []),
     ...(selected.has("tshark") && choices.tshark.interfaceName !== defaults.tshark.interface ? ["tshark.interface"] : []),
     ...(selected.has("tshark") && choices.tshark.preset !== defaults.tshark.filter_preset ? ["tshark.filter_preset"] : []),
@@ -163,9 +171,19 @@ export default function PluginPicker({ onStarted, locked }: {
         namespace, cpu_limit_pct: Number(cpu), mem_limit_mb: Number(memory), max_output_mb: Number(output),
         overridden_fields: overridden,
       } : undefined;
-      const job = await startJob(targetIp.trim(), [...selected], buildOptions(selected, choices), configuration);
+      const options = buildOptions(selected, choices);
+      if (selected.has("netshoot")) options.netshoot = { ...options.netshoot, check_interval_seconds: Number(checkInterval) };
+      const job = await startJob(targetIp.trim(), [...selected], options, configuration);
       const w = logsOn && window.ok ? toApi(window) : null;
-      onStarted(job, w ? (onProgress) => acquireForJob(LOG_SOURCE, job.id, w.since, w.until, onProgress) : undefined);
+      onStarted(job, w ? async (onProgress) => {
+        // Keep the existing source pull first. CMS is optional and uses the
+        // same bounded window; waiting avoids two heavy pulls competing for
+        // the single background worker while retaining real task progress.
+        const system = await acquireForJob(LOG_SOURCE, job.id, w.since, w.until, onProgress);
+        if (!cmsOn || !cmsCategory) return system;
+        const cms = await acquireCmsForJob(job.id, w.since, w.until, onProgress);
+        return [system, cms];
+      } : undefined);
     } catch (err) {
       setStartError(messageFor(err));
     } finally {
@@ -180,7 +198,7 @@ export default function PluginPicker({ onStarted, locked }: {
     : logsOn ? "Collect logs"
     : "Run diagnostics";
 
-  const configChanged = overridden.filter((k) => ["namespace", "cpu_limit_pct", "mem_limit_mb", "max_output_mb"].includes(k)).length;
+  const configChanged = overridden.filter((key) => key === "namespace" || LIMITS.some((limit) => limit.key === key)).length;
   const toolNames = (plugins ?? []).filter((p) => selected.has(p.name)).map((p) => p.display_name);
   // One line above Start: what will happen, or the one thing stopping it.
   const problem = locked ? "A run is in progress. You can start another when it finishes."
@@ -273,7 +291,18 @@ export default function PluginPicker({ onStarted, locked }: {
             <span className="muted">{logsReason ?? "Pulled from the log export API and added to the log table automatically."}</span>
           </Label.Root>
         </div>
-        {logsOn && <div className="plugin-options"><TimeFramePicker value={frame} onChange={setFrame} legend="Time frame" /></div>}
+        {logsOn && <div className="plugin-options">
+          <TimeFramePicker value={frame} onChange={setFrame} legend="Time frame" />
+          {cmsCategory ? <div className="plugin-head cms-option">
+            <Checkbox.Root id={`${uid}-cms-on`} className="check" checked={cmsOn} onCheckedChange={(v) => setCmsOn(v === true)}>
+              <Checkbox.Indicator><Check /></Checkbox.Indicator>
+            </Checkbox.Root>
+            <Label.Root htmlFor={`${uid}-cms-on`} className="plugin-label">
+              <span className="plugin-name">Also collect CMS logs</span>
+              <span className="muted">Uses GE-confirmed Axone event category {cmsCategory}; CMS rows use the same time range and PHI/PII scan.</span>
+            </Label.Root>
+          </div> : <p className="muted cms-option">CMS logs are unavailable until GE confirms the Axone CMS event-category code.</p>}
+        </div>}
       </section>
 
       {configError && <div className="alert warn" role="status"><strong>Run configuration unavailable</strong>
@@ -306,6 +335,7 @@ export default function PluginPicker({ onStarted, locked }: {
                 );
               })}
             </div>
+            {selected.has("netshoot") && <p className="muted">Netshoot waits this long after each check before starting the next one.</p>}
           </div>
         </details>
       )}

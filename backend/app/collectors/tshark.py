@@ -280,8 +280,13 @@ class TsharkCollector(Collector):
             argv += ["-s", str(self.HEADER_SNAPLEN)]
         if self.capture_filter:
             argv += ["-f", self.capture_filter]
-        res = self._runner.exec(self._pod, argv, self.duration_s + 60)
+        try:
+            res = self._runner.exec(self._pod, argv, self.duration_s + 60)
+        except Exception:
+            self._try_copy_partial_capture(dest, max_mb)
+            raise
         if res.exit_code != 0:
+            self._try_copy_partial_capture(dest, max_mb)
             why = "timed out" if res.exit_code is None else f"exit {res.exit_code}"
             last = redact(res.stderr.strip().splitlines()[-1][:200]) if res.stderr.strip() else ""
             raise PluginError(
@@ -289,6 +294,23 @@ class TsharkCollector(Collector):
                 safe_reason="The network capture could not be completed.",
             )
         self._runner.read_file(self._pod, "/tmp/capture.pcapng", dest, max_bytes=(max_mb + 1) * 1024 * 1024)
+
+    def _try_copy_partial_capture(self, dest: Path, max_mb: int) -> None:
+        """A stopped tshark process may leave a usable partial file in its pod.
+
+        Copy it before cleanup deletes the pod. A missing pod/file must not
+        replace the original capture failure with a second error.
+        """
+        try:
+            self._runner.read_file(
+                self._pod, "/tmp/capture.pcapng", dest,
+                max_bytes=(max_mb + 1) * 1024 * 1024,
+            )
+        except Exception:  # noqa: BLE001 - best effort; the original failure wins
+            try:
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def cleanup(self) -> None:
         if self._pod and self._runner:

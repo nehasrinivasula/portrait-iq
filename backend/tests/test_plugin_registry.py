@@ -33,7 +33,7 @@ from app.orchestrator.jobs import create_job, read_results, run_job
 from app.schemas import JobCreateRequest, JobOut
 
 LIMITS = ResourceLimits(cpu_pct=50, mem_mb=512, max_output_mb=100)
-BUILTINS = {"hub_import", "netshoot", "rti", "tshark"}
+BUILTINS = {"firewall", "hub_import", "netshoot", "rti", "tshark"}
 
 
 @pytest.fixture
