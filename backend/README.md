@@ -273,6 +273,7 @@ GET  /api/sources                  sources + whether each is usable (and why not
 POST /api/sources/{id}/test        connection check with a specific reason
 GET  /api/sources/{id}/files       preview, flags files already pulled
 POST /api/sources/{id}/acquire     {"since", "until", "options": {...}, "ingest": true}
+POST /api/sources/axone/cms/acquire  CMS CSV pull using the GE-confirmed category
 POST /api/sources/local/upload     multipart files / ZIPs
 ```
 
@@ -286,6 +287,35 @@ same CSV format as the "all device log" exports. It only answers from inside
 the Kubernetes cluster. Optional `options`:
 `{"device_uuid": "...", "event_category": "3"}` (category is the API's
 integer code; the name mapping is not confirmed yet).
+
+#### CMS logs (SCRUM-124)
+
+CMS retrieval deliberately reuses the Axone CSV export path rather than
+creating a second ingestion format. GE must first confirm that CMS is an
+`eventCategory` on this API and provide its integer code. Set that code only
+on the server with `AXONE_CMS_EVENT_CATEGORY`; leaving it unset keeps CMS
+collection unavailable and returns a clear `409` from the API. The browser
+cannot choose or relabel a category.
+
+The run screen first requests all categories, so if CMS is included in that
+export, the subsequent CMS-specific pull can be skipped as already covered.
+Confirm with GE whether CMS is included or requires a separate source before
+enabling this option.
+
+Once configured, call `POST /api/sources/axone/cms/acquire` with the same
+`since`, `until`, optional `device_uuids`, `job_id`, and `ingest` fields as a
+normal acquisition. Like every long acquisition, it returns a `202` background
+task; poll `GET /api/tasks/{id}` until its `result` is available. The pull is
+CSV-derived and follows the existing hour-window limits, settle time,
+deduplication and audit behavior. Rows enter `normalized_events`, the unified
+Logs page, and the automatic PHI/PII scan with every other acquired file. No
+credential or endpoint URL is included in audit details; the completed task
+records only the configured CMS category and aggregate outcome.
+
+This is distinct from the optional read-only CMS *snap* client used by package
+export (`CMS_BASE_URL` and `/cms/sprsnap/*`). That client downloads a support
+artifact into an export package; it does not claim that the artifact is
+normalized CMS event data or replace the Axone CSV ingestion path above.
 
 Time-frame selection (SCRUM-44): a pull covers exactly `[since, until)` and
 nothing outside it. Times are ISO 8601; a time without an offset is read as

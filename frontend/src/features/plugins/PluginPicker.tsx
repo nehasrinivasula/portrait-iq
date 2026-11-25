@@ -3,7 +3,7 @@ import * as Checkbox from "@radix-ui/react-checkbox";
 import * as Label from "@radix-ui/react-label";
 import { ApiError } from "../../api";
 import type { TaskProgress } from "../tasks/tasksApi";
-import { acquireForJob, listSources, type AcquisitionResult } from "../logs/logsApi";
+import { acquireCmsForJob, acquireForJob, listSources, type AcquisitionResult } from "../logs/logsApi";
 import TimeFramePicker from "../logs/TimeFramePicker";
 import { defaultTimeFrame, resolveTimeFrame, toApi } from "../logs/timeframe";
 import { getJobConfiguration, listPlugins, startJob, uploadPcap, type Job, type JobConfiguration, type Plugin } from "./api";
@@ -32,7 +32,7 @@ const messageFor = (err: unknown) =>
     : "Something went wrong. Try again.";
 
 export default function PluginPicker({ onStarted, locked }: {
-  onStarted: (job: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult>) => void;
+  onStarted: (job: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult | AcquisitionResult[]>) => void;
   /** A run is in progress: the form stays visible but can't start another. */
   locked: boolean;
 }) {
@@ -52,6 +52,8 @@ export default function PluginPicker({ onStarted, locked }: {
   const initialTarget = useRef(targetIp);
   const [logsOn, setLogsOn] = useState(true);
   const [logsReason, setLogsReason] = useState<string | null>(null); // why logs can't be collected here
+  const [cmsCategory, setCmsCategory] = useState<string | null>(null);
+  const [cmsOn, setCmsOn] = useState(false);
   const [frame, setFrame] = useState(defaultTimeFrame);
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -88,6 +90,8 @@ export default function PluginPicker({ onStarted, locked }: {
       .then((s) => {
         const src = s.find((x) => x.id === LOG_SOURCE);
         if (!src?.configured) { setLogsReason(src?.reason || "The log export API isn't set up on this server."); setLogsOn(false); }
+        const category = src?.options?.cms_event_category?.[0];
+        setCmsCategory(category ?? null);
       })
       .catch(() => { setLogsReason("Couldn't check the log sources."); setLogsOn(false); });
   }, []);
@@ -165,7 +169,15 @@ export default function PluginPicker({ onStarted, locked }: {
       } : undefined;
       const job = await startJob(targetIp.trim(), [...selected], buildOptions(selected, choices), configuration);
       const w = logsOn && window.ok ? toApi(window) : null;
-      onStarted(job, w ? (onProgress) => acquireForJob(LOG_SOURCE, job.id, w.since, w.until, onProgress) : undefined);
+      onStarted(job, w ? async (onProgress) => {
+        // Keep the existing source pull first. CMS is optional and uses the
+        // same bounded window; waiting avoids two heavy pulls competing for
+        // the single background worker while retaining real task progress.
+        const system = await acquireForJob(LOG_SOURCE, job.id, w.since, w.until, onProgress);
+        if (!cmsOn || !cmsCategory) return system;
+        const cms = await acquireCmsForJob(job.id, w.since, w.until, onProgress);
+        return [system, cms];
+      } : undefined);
     } catch (err) {
       setStartError(messageFor(err));
     } finally {
@@ -273,7 +285,18 @@ export default function PluginPicker({ onStarted, locked }: {
             <span className="muted">{logsReason ?? "Pulled from the log export API and added to the log table automatically."}</span>
           </Label.Root>
         </div>
-        {logsOn && <div className="plugin-options"><TimeFramePicker value={frame} onChange={setFrame} legend="Time frame" /></div>}
+        {logsOn && <div className="plugin-options">
+          <TimeFramePicker value={frame} onChange={setFrame} legend="Time frame" />
+          {cmsCategory ? <div className="plugin-head cms-option">
+            <Checkbox.Root id={`${uid}-cms-on`} className="check" checked={cmsOn} onCheckedChange={(v) => setCmsOn(v === true)}>
+              <Checkbox.Indicator><Check /></Checkbox.Indicator>
+            </Checkbox.Root>
+            <Label.Root htmlFor={`${uid}-cms-on`} className="plugin-label">
+              <span className="plugin-name">Also collect CMS logs</span>
+              <span className="muted">Uses GE-confirmed Axone event category {cmsCategory}; CMS rows use the same time range and PHI/PII scan.</span>
+            </Label.Root>
+          </div> : <p className="muted cms-option">CMS logs are unavailable until GE confirms the Axone CMS event-category code.</p>}
+        </div>}
       </section>
 
       {configError && <div className="alert warn" role="status"><strong>Run configuration unavailable</strong>

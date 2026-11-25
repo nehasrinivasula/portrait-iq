@@ -67,6 +67,7 @@ const ACTION_LABELS: Record<string, string> = {
   job_status: "Run status change",
   job_step: "Run step",
   acquire_logs: "Pull logs",
+  acquire_cms_logs: "Pull CMS logs",
   source_test: "Test log source",
   upload: "Upload file",
   logs_search: "Search logs",
