@@ -37,13 +37,12 @@ SECRETS_DIR   ?=#   folder OUTSIDE the repo, one file per secret (backend/SECRET
 API_CHECK_HOUR ?=#  optional, YYYY-MM-DDTHH; default is the last full hour on the node
 
 IMAGE_NAME    ?= portrait-iq
-# Unique per build so a rebuilt image gets a new tag and `kubectl apply` rolls
-# the pod on its own, while an unchanged rebuild keeps the same tag (no needless
-# image churn). deploy/scripts/image-tag.sh derives the "-dirty-<hash>" suffix
-# from a timestamp-free git tree hash of the backend/ build context, so the tag
-# is stable for identical content, reflects untracked source files, and ignores
-# edits outside the image (see the script header). Tested in
-# backend/tests/test_image_tag.py.
+# A content hash of exactly what the backend image is built from (the Dockerfile
+# and the files it COPYs: requirements.txt and app/). A changed image gets a new
+# tag so `kubectl apply` rolls the pod on its own; an unchanged image keeps its
+# tag (no needless churn), and a commit that doesn't touch those inputs -- a
+# frontend/docs change, or an edit to backend/tests/ -- never forces a rollout.
+# See deploy/scripts/image-tag.sh; tested in backend/tests/test_image_tag.py.
 TAG           := $(shell deploy/scripts/image-tag.sh backend)
 BUILD_DIR     := dist
 BUNDLE_DIR    := $(BUILD_DIR)/remote

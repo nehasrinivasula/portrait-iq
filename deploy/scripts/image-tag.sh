@@ -1,44 +1,42 @@
 #!/bin/sh
-# Print the image tag for a build: the short HEAD commit, plus a deterministic
-# "-dirty-<hash>" suffix when the build context differs from HEAD.
+# Print the backend image tag: a content hash of exactly what the image is built
+# from -- the Dockerfile and the files it COPYs (requirements.txt and app/).
 #
-# The suffix is a git *tree* hash of the context directory (CTX, default
-# "backend"), computed in a throwaway index so the real index and the shared
-# stash stack are never touched. A tree hash is pure content -- it carries no
-# commit timestamp -- so, unlike `git stash create`, two calls a second apart
-# on an unchanged tree agree, and a rebuilt-but-identical image keeps its tag.
-# It also:
-#   * includes untracked, non-ignored files that `docker build` copies in, so
-#     a new un-`git add`ed source file still changes the tag; and
-#   * is scoped to the context `docker build` actually sends, so edits
-#     elsewhere in the repo (frontend, docs) don't churn the image tag.
+# The hash is a git *tree* of those paths staged into a throwaway index (the real
+# index and the shared stash stack are never touched), so the tag:
+#   * is pure content, with no commit timestamp: identical inputs always hash the
+#     same, so a rebuilt-but-unchanged image keeps its tag and the pod does not
+#     roll;
+#   * tracks only what the image actually contains -- so a different commit that
+#     does not touch these inputs (a frontend or docs change, or an edit to
+#     backend/tests/, which .dockerignore excludes) does NOT change the tag and
+#     does not force a needless rollout; and
+#   * includes untracked, non-ignored files under those paths, since docker would
+#     COPY them into the image.
 #
-# Prints just the short HEAD when the context matches HEAD, and prints nothing
-# when not in a git repo (same graceful degradation as before).
+# A changed image always gets a new tag, so `kubectl apply` rolls the pod on its
+# own. Prints nothing when not in a git repo (callers fall back).
 set -u
 
 CTX="${1:-backend}"
 
-short_head=$(git rev-parse --short HEAD 2>/dev/null) || exit 0
-[ -n "$short_head" ] || exit 0
-printf '%s' "$short_head"
+git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+
+# The paths the Dockerfile builds from, relative to the repo root. Only the ones
+# that exist are hashed, so a non-standard layout degrades instead of failing.
+INPUTS=""
+for p in "$CTX/Dockerfile" "$CTX/requirements.txt" "$CTX/app"; do
+	[ -e "$p" ] && INPUTS="$INPUTS $p"
+done
+[ -n "$INPUTS" ] || exit 0
 
 # A unique name with the file removed, so `git add` writes a fresh empty index.
-idx=$(mktemp "${TMPDIR:-/tmp}/piq-imgidx.XXXXXX" 2>/dev/null) && rm -f "$idx" || {
-	printf '\n'
-	exit 0
-}
+idx=$(mktemp "${TMPDIR:-/tmp}/piq-imgidx.XXXXXX" 2>/dev/null) && rm -f "$idx" || exit 0
 trap 'rm -f "$idx"' EXIT
 
-# `git write-tree` hashes the whole index, so pull out the CTX subtree and
-# compare it to HEAD's CTX subtree -- same nesting on both sides.
-work_full=$(GIT_INDEX_FILE="$idx" git add -A -- "$CTX" >/dev/null 2>&1 &&
-	GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null) || work_full=
-work_ctx=
-[ -n "$work_full" ] && work_ctx=$(git rev-parse -q --verify "$work_full:$CTX" 2>/dev/null)
-head_ctx=$(git rev-parse -q --verify "HEAD:$CTX" 2>/dev/null) || head_ctx=
+# shellcheck disable=SC2086 # INPUTS is a deliberate list of pathspecs
+tree=$(GIT_INDEX_FILE="$idx" git add -A -- $INPUTS >/dev/null 2>&1 &&
+	GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null) || tree=
+[ -n "$tree" ] || exit 0
 
-if [ -n "$work_ctx" ] && [ "$work_ctx" != "$head_ctx" ]; then
-	printf -- '-dirty-%s' "$(printf '%s' "$work_ctx" | cut -c1-8)"
-fi
-printf '\n'
+printf '%s\n' "$(printf '%s' "$tree" | cut -c1-12)"

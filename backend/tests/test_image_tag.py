@@ -1,6 +1,8 @@
-"""deploy/scripts/image-tag.sh: the build tag must be stable for identical
-content, change for any change to the image's build context, and ignore
-changes outside it (SCRUM, PR #68 review)."""
+"""deploy/scripts/image-tag.sh: the build tag is a content hash of exactly the
+backend image inputs (Dockerfile + requirements.txt + app/). It must be stable
+for identical inputs, change for any change to those inputs, and ignore
+everything the image does not contain -- other commits, the frontend, docs, and
+backend/tests/ (SCRUM, PR #68 review)."""
 import shutil
 import subprocess
 import time
@@ -28,8 +30,12 @@ def repo(tmp_path: Path) -> Path:
         pytest.skip("git not available")
     r = tmp_path / "repo"
     (r / "backend" / "app").mkdir(parents=True)
+    (r / "backend" / "tests").mkdir()
     (r / "frontend").mkdir()
+    (r / "backend" / "Dockerfile").write_text("FROM python:3.13\nCOPY requirements.txt .\nCOPY app ./app\n")
+    (r / "backend" / "requirements.txt").write_text("fastapi\n")
     (r / "backend" / "app" / "main.py").write_text("print('v1')\n")
+    (r / "backend" / "tests" / "test_x.py").write_text("def test_x(): pass\n")
     (r / "frontend" / "ui.ts").write_text("export const x = 1\n")
     (r / "README.md").write_text("# repo\n")
     _git(r, "init", "-q")
@@ -40,45 +46,55 @@ def repo(tmp_path: Path) -> Path:
     return r
 
 
-def test_clean_tree_has_no_dirty_suffix(repo: Path):
+def test_tag_is_nonempty_and_stable(repo: Path):
     tag = _tag(repo)
-    assert tag and "-dirty-" not in tag
-    assert tag == _tag(repo)  # and it is stable
+    assert tag
+    assert tag == _tag(repo)
 
 
-def test_identical_dirty_content_hashes_the_same_across_a_time_boundary(repo: Path):
-    # Finding 1: git stash create embeds a timestamp, so it drifted second to
-    # second. A tree hash must not: the same dirty tree is the same tag.
+def test_identical_inputs_hash_the_same_across_a_time_boundary(repo: Path):
+    # A tree hash carries no commit timestamp, so the tag must not drift second
+    # to second the way `git stash create` did.
     (repo / "backend" / "app" / "main.py").write_text("print('v2 edited')\n")
     first = _tag(repo)
     time.sleep(1.1)  # cross a whole-second boundary
     second = _tag(repo)
-    assert "-dirty-" in first
     assert first == second, f"tag drifted over time: {first} != {second}"
 
 
-def test_untracked_backend_file_changes_the_tag(repo: Path):
-    # Finding 2: a new source file docker would COPY must change the tag even
-    # before it is `git add`ed.
-    clean = _tag(repo)
+@pytest.mark.parametrize("path,content", [
+    ("backend/app/main.py", "print('changed')\n"),
+    ("backend/requirements.txt", "fastapi\nuvicorn\n"),
+    ("backend/Dockerfile", "FROM python:3.13\nENV X=1\nCOPY requirements.txt .\nCOPY app ./app\n"),
+])
+def test_editing_an_image_input_changes_the_tag(repo: Path, path: str, content: str):
+    before = _tag(repo)
+    (repo / path).write_text(content)
+    assert _tag(repo) != before
+
+
+def test_untracked_app_file_changes_the_tag(repo: Path):
+    # A new source file docker would COPY must change the tag even before it is
+    # `git add`ed.
+    before = _tag(repo)
     (repo / "backend" / "app" / "new_collector.py").write_text("x = 1\n")
-    dirty = _tag(repo)
-    assert "-dirty-" in dirty
-    assert dirty != clean
+    assert _tag(repo) != before
 
 
-def test_edit_outside_the_backend_context_does_not_change_the_tag(repo: Path):
-    # Finding 3: the image is built from backend/ only, so a frontend or docs
-    # edit must not churn the image tag.
-    clean = _tag(repo)
+def test_a_committed_frontend_only_change_does_not_change_the_tag(repo: Path):
+    # The image is not built from the frontend or docs, so a commit that only
+    # touches them must not change the tag or force a backend rollout (finding 1).
+    before = _tag(repo)
     (repo / "frontend" / "ui.ts").write_text("export const x = 999\n")
     (repo / "README.md").write_text("# repo\n\nmore docs\n")
-    assert _tag(repo) == clean
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "frontend and docs only")
+    assert _tag(repo) == before
 
 
-def test_distinct_backend_changes_get_distinct_tags(repo: Path):
-    (repo / "backend" / "app" / "main.py").write_text("print('a')\n")
-    a = _tag(repo)
-    (repo / "backend" / "app" / "main.py").write_text("print('b')\n")
-    b = _tag(repo)
-    assert a != b and "-dirty-" in a and "-dirty-" in b
+def test_editing_backend_tests_does_not_change_the_tag(repo: Path):
+    # .dockerignore excludes backend/tests/, so it is not in the image; editing
+    # it must not change the tag (finding 2).
+    before = _tag(repo)
+    (repo / "backend" / "tests" / "test_x.py").write_text("def test_x(): assert True\n")
+    assert _tag(repo) == before
