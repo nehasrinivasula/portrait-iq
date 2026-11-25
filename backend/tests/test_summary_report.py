@@ -241,7 +241,7 @@ def test_summary_has_level_counts_and_top_services(db):
     seed_run(db)
     s = build_summary(db, "job-1")
     assert s.severity_counts == {"DEBUG": 0, "INFO": 1, "WARN": 1, "ERROR": 4}
-    assert s.top_services[0] == ("scheduler", 2, 0)
+    assert s.top_services == [("svc", 2, 0), ("scheduler", 2, 0), ("viewer", 0, 1)]   # ties on errors: busiest first
     md = render_markdown(s)
     assert "## Log counts" in md and "ERROR 4" in md
     body = summary_to_json(s)
