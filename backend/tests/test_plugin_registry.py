@@ -595,3 +595,11 @@ def test_skipped_steps_are_the_tool_steps_no_selected_tool_uses():
     assert skipped_steps([]) == []   # nothing selected: the full walk-through
     assert skipped_steps(["netshoot"]) == ["collect_server_logs", "collect_network_diagnostics", "collect_grafana_health"]
     assert skipped_steps(["nope"]) == []   # unknown tool fails at "configure"; hide nothing
+
+
+def test_each_run_step_records_when_it_started_and_finished(db, local_registry):
+    """The run page shows how long each step took instead of holding steps on screen."""
+    job = run_job(db, _job(db, ["recorder"]), "192.0.2.10", registry=local_registry)
+    times = job.step_times
+    assert "deploy_tools" in times and "cleanup" in times
+    assert all(start and end and start <= end for start, end in times.values())   # every step closed at the end

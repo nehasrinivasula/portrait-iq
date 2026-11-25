@@ -137,6 +137,11 @@ deploy() {
         kubectl label namespace "$NAMESPACE" "$MANAGED=portrait-iq-make"
     fi
     k apply -f "$HERE/k8s/"
+    # Read-only access for Kubernetes diagnostics in Portrait's namespace. Applied
+    # with that namespace: kubectl refuses objects for another namespace under -n.
+    if [ -n "${PORTRAIT_NAMESPACE:-}" ] && ls "$HERE"/k8s-portrait/*.yaml >/dev/null 2>&1; then
+        kubectl -n "$PORTRAIT_NAMESPACE" apply -f "$HERE/k8s-portrait/"
+    fi
     if ! k rollout status deployment/portrait-iq --timeout=180s; then
         echo "Pod did not become ready. Volume and events:" >&2
         k get pvc,pods -l "$LABEL" >&2
@@ -172,6 +177,12 @@ logs() { k logs -f deploy/portrait-iq --tail=200; }
 
 undeploy() {
     k delete deployment,service,pvc,secret -l "$LABEL" --ignore-not-found --wait=true
+    # Outside our namespace, so deleting it would not remove them: the node reader
+    # and the read-only access in Portrait's namespace (only objects with our label).
+    kubectl delete clusterrolebinding,clusterrole -l "$LABEL" --ignore-not-found
+    if [ -n "${PORTRAIT_NAMESPACE:-}" ]; then
+        kubectl -n "$PORTRAIT_NAMESPACE" delete rolebinding,role -l "$LABEL" --ignore-not-found
+    fi
     owner=$(kubectl get ns "$NAMESPACE" -o jsonpath="{.metadata.labels.app\.kubernetes\.io/managed-by}" 2>/dev/null || true)
     if [ "$owner" = portrait-iq-make ]; then
         kubectl delete namespace "$NAMESPACE"

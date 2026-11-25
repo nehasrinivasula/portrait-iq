@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 PLUGINS = [
     "app.collectors.firewall:FirewallCollector",
     "app.collectors.hub_import:HubImportCollector",
+    "app.collectors.k8s_diagnostics:KubernetesCollector",
     "app.collectors.netshoot:NetshootCollector",
     "app.collectors.rti:RtiCollector",
     "app.collectors.tshark:TsharkCollector",

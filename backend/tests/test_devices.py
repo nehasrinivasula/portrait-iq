@@ -215,7 +215,9 @@ def test_acquire_request_takes_a_device_list(client, monkeypatch):
     # before any API call is made (planning needs no network).
     monkeypatch.setattr(settings, "axone_base_url", "http://fake-axone:9200")
     r = client.post("/api/sources/axone/acquire", json={"device_uuids": [HUB, "bad id"]})
-    assert r.status_code == 400 and "'bad id' is not a valid device ID" in r.json()["detail"]
+    # Accepted, then failed in the background task with the specific reason (no network call was made).
+    assert r.status_code == 202
+    assert r.json()["status"] == "failed" and "'bad id' is not a valid device ID" in r.json()["error"]
     r = client.get("/api/sources/axone/files", params={"device_uuids": f"{HUB},{VIEWER}",
                                                        "since": (NOW_HOUR - timedelta(hours=3)).isoformat(),
                                                        "until": (NOW_HOUR - timedelta(hours=2)).isoformat()})

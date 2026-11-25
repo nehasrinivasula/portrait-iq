@@ -102,7 +102,8 @@ class AxoneLogExportSource(LogSource):
 
     def is_configured(self) -> SourceStatus:
         if self._client_factory is None and not settings.axone_base_url:
-            return SourceStatus(ok=False, reason="Not set up: set AXONE_BASE_URL (e.g. http://localhost:9200).")
+            # Shown to the field engineer (U-4): what is wrong and who can fix it; the setting name is for whoever installs it.
+            return SourceStatus(ok=False, reason="Log collection isn't set up on this server. Ask whoever installed Portrait IQ to set the log export address (AXONE_BASE_URL).")
         return SourceStatus(ok=True)
 
     def _get_client(self) -> AxoneLogExportClient:
@@ -136,7 +137,12 @@ class AxoneLogExportSource(LogSource):
     def options(self) -> SourceOptions:
         # Free-form; empty means all devices / all categories. device_uuids is
         # a comma-separated list (the acquire request's device_uuids field).
-        return SourceOptions(fields={"device_uuids": [], "event_category": []})
+        fields = {"device_uuids": [], "event_category": []}
+        # Expose the configured CMS category to the UI without making it an
+        # arbitrary user input. CMS category naming/numbering is owned by GE.
+        if settings.axone_cms_event_category is not None:
+            fields["cms_event_category"] = [str(settings.axone_cms_event_category)]
+        return SourceOptions(fields=fields)
 
     @staticmethod
     def _parse_options(options: dict[str, str]) -> tuple[list[str], int | None]:

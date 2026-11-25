@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatElapsed, nextPaced, parseServerTime, STEPS, stepIndex, stepLabel, stepProgress } from "./progress";
+import { formatElapsed, parseServerTime, STEPS, stepIndex, stepLabel, stepProgress } from "./progress";
 
 describe("stepProgress", () => {
   it("marks earlier steps done, the current one current, the rest upcoming", () => {
@@ -62,20 +62,8 @@ describe("formatElapsed", () => {
   });
 });
 
-describe("nextPaced", () => {
-  it("walks one step at a time toward the target", () => {
-    expect(nextPaced(-1, 4)).toBe(0);
-    expect(nextPaced(0, 4)).toBe(1);
-    expect(nextPaced(3, 4)).toBe(4);
-  });
-  it("passes over skipped steps", () => {
-    const skipped = ["collect_server_logs", "collect_network_diagnostics", "collect_grafana_health"];
-    expect(nextPaced(0, 4, skipped)).toBe(4);
-    expect(nextPaced(-1, 4, skipped)).toBe(0);
-  });
-  it("stops at the target and reaches the end once every step is done", () => {
-    expect(nextPaced(2, 2)).toBe(2);
-    expect(nextPaced(5, STEPS.length)).toBe(STEPS.length);
+describe("a finished run", () => {
+  it("reaches the end with every step done", () => {
     expect(stepIndex("package", true)).toBe(STEPS.length);
     expect(stepProgress(null, [], true).steps.every((s) => s.state === "done")).toBe(true);
   });

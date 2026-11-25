@@ -13,6 +13,8 @@ export interface ExportStep {
   status: StepStatus;
   detail: string | null;
   issues: ExportIssue[];
+  started_at?: string | null;
+  finished_at?: string | null;
 }
 
 export interface ContentEntry {
@@ -24,7 +26,11 @@ export interface ContentEntry {
 }
 
 export interface Package {
-  job_id: string;
+  export_id: string;
+  job_id: string;              // the set of logs: a run id, "unassigned", "all" or a set id
+  scope: ExportScope | "runs";
+  title: string;
+  runs: string[];              // a set's run ids
   state: PackageState;
   masked: boolean;
   partial: boolean;
@@ -42,12 +48,17 @@ export interface Package {
   downloadable: boolean;
 }
 
+export type ExportScope = "run" | "imported" | "all";
+
 export interface Preview {
   job_id: string;
-  job_status: string;
+  scope: ExportScope;
+  title: string;               // "Run", "Imported logs" or "All logs"
+  job_status: string | null;   // null unless a run
   finished: boolean;
   events: number;
   tools: { tool: string; ok: boolean; files: number; error: string | null }[];
+  system: { key: string; label: string; available: boolean; needed: string | null }[];
   findings: number;
   privacy: {
     complete_for_packaging: boolean;
@@ -62,15 +73,29 @@ export interface Preview {
 }
 
 const base = (jobId: string) => `/api/jobs/${encodeURIComponent(jobId)}/package`;
+const one = (exportId: string) => `/api/exports/${encodeURIComponent(exportId)}`;
 
 export const getPreview = (jobId: string) => apiFetch<Preview>(`${base(jobId)}/preview`);
-export const getPackage = (jobId: string) => apiFetch<Package>(base(jobId));
-export const startExport = (jobId: string, mask: boolean) =>
-  apiFetch<Package>(base(jobId), { method: "POST", body: JSON.stringify({ mask }) });
+
+/** What to export: one or more runs (two or more share one zip), the imported files, or every log. */
+export type Selection = { kind: "runs"; runs: string[] } | { kind: "imported" } | { kind: "all" };
+
+/** The set of logs a single-scope selection means, for its preview; null for none or several runs. */
+export const selectionScope = (s: Selection): string | null =>
+  s.kind === "imported" ? "unassigned" : s.kind === "all" ? "all" : s.runs.length === 1 ? s.runs[0] : null;
+
+export const startExport = (s: Selection, mask: boolean) =>
+  apiFetch<Package>("/api/exports", {
+    method: "POST",
+    body: JSON.stringify(s.kind === "runs" ? { runs: s.runs, mask } : { scope: s.kind === "imported" ? "unassigned" : "all", mask }),
+  });
+export const getExport = (exportId: string) => apiFetch<Package>(one(exportId));
+export const listExports = () => apiFetch<{ exports: Package[]; total_bytes: number }>("/api/exports");
+export const deleteExport = (exportId: string) => apiFetch<{ deleted: string }>(one(exportId), { method: "DELETE" });
 
 /** Fetch the zip with the session's token and hand it to the browser as a download. */
-export async function downloadPackage(jobId: string, fallbackName: string): Promise<string> {
-  const { blob, fileName } = await apiDownload(`${base(jobId)}/download`);
+export async function downloadPackage(exportId: string, fallbackName: string): Promise<string> {
+  const { blob, fileName } = await apiDownload(`${one(exportId)}/download`);
   const name = fileName ?? fallbackName;
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
