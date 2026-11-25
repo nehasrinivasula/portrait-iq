@@ -32,6 +32,14 @@ LOG_EXPORT_SERVICE ?= axone-log-export-tcp
 NAMESPACE     ?= portrait-iq
 NODE_PORT     ?= 30080
 TSHARK_LIVE_CAPTURE ?= false
+RTI ?= false
+RTI_IMAGE ?= docker-axone-all/axone-umf-rtitools:branch-latest
+# The -WithWAN QoS carries the umfwan_server_* profiles the collector drives
+# over Real-Time WAN. Empty would fall back to the image's default QoS.
+RTI_QOS_FILE ?= /opt/axone-tools/qos/MDH-tools-RTIAdminConsole-WithWAN.xml
+RTI_PEER ?=
+RTI_SECURITY_SECRET ?=
+RTI_SDDS_DIR ?= /opt/axone-tools/sdds
 LOG_EXPORT_URL ?= http://$(LOG_EXPORT_SERVICE).$(LOG_EXPORT_NAMESPACE).svc.cluster.local:9200
 # Namespaces Kubernetes diagnostics reads: ours and Portrait's (LOG_EXPORT_NAMESPACE).
 DIAGNOSTICS_NAMESPACES ?= $(NAMESPACE)$(if $(strip $(LOG_EXPORT_NAMESPACE)),$(COMMA)$(strip $(LOG_EXPORT_NAMESPACE)))
@@ -59,7 +67,7 @@ require = $(if $(strip $($(1))),,$(error $(1) is not set. Add it to deploy/lab.m
 
 .DEFAULT_GOAL := help
 .PHONY: help setup test dev dev-nocluster image image-save image-load secrets deploy pod-check \
-        status logs api-check undeploy clean render bundle ship tool-images
+        status logs api-check undeploy clean-images clean render bundle ship tool-images
 
 help:  ## List targets
 	@grep -hE '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -149,7 +157,8 @@ render:
 		sed -e "s|__IMAGE__|$$image|" -e "s|__LOG_EXPORT_URL__|$(LOG_EXPORT_URL)|" \
 		    -e "s|__NODE_PORT__|$(NODE_PORT)|" -e "s|__NAMESPACE__|$(NAMESPACE)|" \
 		    -e "s|__TSHARK_LIVE_CAPTURE__|$(TSHARK_LIVE_CAPTURE)|" \
-		    -e "s|__DIAGNOSTICS_NAMESPACES__|$(DIAGNOSTICS_NAMESPACES)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
+		    -e "s|__DIAGNOSTICS_NAMESPACES__|$(DIAGNOSTICS_NAMESPACES)|" \
+		    -e "s|__RTI__|$(RTI)|" -e "s|__RTI_IMAGE__|$(RTI_IMAGE)|" -e "s|__RTI_QOS_FILE__|$(RTI_QOS_FILE)|" -e "s|__RTI_PEER__|$(RTI_PEER)|" -e "s|__RTI_SECURITY_SECRET__|$(RTI_SECURITY_SECRET)|" -e "s|__RTI_SDDS_DIR__|$(RTI_SDDS_DIR)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
 	done
 	@for f in deploy/k8s-portrait/*.yaml; do \
 		sed -e "s|__NAMESPACE__|$(NAMESPACE)|" "$$f" > $(BUNDLE_DIR)/k8s-portrait/$$(basename $$f); \
@@ -196,6 +205,9 @@ logs: bundle  ## Follow the pod's logs (Ctrl-C to stop)
 undeploy: bundle  ## Remove everything make deploy created (deletes the database volume)
 	$(REMOTE) undeploy
 	$(SSH) $(NODE) rm -rf $(REMOTE_DIR)
+
+clean-images: bundle  ## Remove old portrait-iq images from the node, keeping the deployed one
+	$(REMOTE) clean-images
 
 clean:  ## Remove local build output (dist/)
 	rm -rf $(BUILD_DIR)

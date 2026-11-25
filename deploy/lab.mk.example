@@ -38,5 +38,28 @@ NODE_PORT            = 30080
 # 7, 12 and 13. Default: false.
 # TSHARK_LIVE_CAPTURE  = true
 
+# UMF RTI: true to turn on, false to turn off, then make deploy. Needs GE's
+# rtitools image imported on the node (k3s ctr images import --local <tar>);
+# RTI_IMAGE is the name it was saved under. Default: false.
+# RTI                  = true
+# RTI_IMAGE            = axone-umf-rtitools:temp
+# The QoS file in that image. The collector reaches each UMF domain over RTI
+# Real-Time WAN through the router's WAN NodePort (proven on the bench
+# 2026-11-08: plain UDP never completes), so the default is the -WithWAN file,
+# which has the umfwan_server_* profiles. Change only to experiment.
+# RTI_QOS_FILE         = /opt/axone-tools/qos/MDH-tools-RTIAdminConsole-WithWAN.xml
+# The collector builds the WAN peer (udpv4_wan://<router>:<NodePort>, where the
+# router host defaults to the job's target IP, then the node). Set RTI_PEER to
+# override it, or point the job's target IP at the node (e.g. 192.168.0.3).
+# RTI_PEER             = udpv4_wan://192.168.0.3:32013
+# A Secret (in the tools namespace) with replacement DDS security files,
+# mounted over the image's set when the bench's certs were rotated and the
+# image's no longer authenticate. Create it yourself; its keys must be the
+# file names the image's QoS reads (Test.cert.pem, Test.key.pem,
+# Test_certsigner.cert.pem, TestGovernance.p7s, TestPermissions.p7s). Empty
+# keeps the image's own files. RTI_SDDS_DIR is where that QoS reads them.
+# RTI_SECURITY_SECRET  = rti-dds-security
+# RTI_SDDS_DIR         = /opt/axone-tools/sdds
+
 # Absolute path to a folder outside the repo, e.g. $(HOME)/portrait-iq-secrets
 SECRETS_DIR          =
