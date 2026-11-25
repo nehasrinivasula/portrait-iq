@@ -44,10 +44,13 @@ from app.models import NormalizedEvent as E
 from app.orchestrator.jobs import read_results
 from app.privacy.scanner import category_group, mask_text, scan_text
 from app.storage import events as store
+from app.storage.filters import EventFilter
+from app.storage.metrics import metrics as event_metrics
 from app.storage.completeness import PROBLEM
 
 TOP_ERRORS = 10
 TOP_DEVICES = 5
+TOP_SERVICES = 5
 # Distinct message shapes kept while grouping "other" errors. A noisy run can
 # have a huge number; lines past the cap are counted, not grouped.
 MAX_SHAPES = 2000
@@ -130,6 +133,8 @@ class Summary:
     completeness_issues: list[str]
     next_steps: list[str]
     notes: list[str]
+    severity_counts: dict[str, int] = field(default_factory=dict)   # DEBUG/INFO/WARN/ERROR line counts
+    top_services: list[tuple[str, int, int]] = field(default_factory=list)  # (service, errors, warnings), most errors first
 
     @property
     def verdict(self) -> str:
@@ -318,6 +323,11 @@ def build_summary(db: Session, job_id: str, *, mask: bool = True,
         notes.append("The saved pattern detection for this run is out of date (the logs changed after it "
                      "ran), so the findings below come from applying the rules to the stored logs now.")
 
+    # Plain counts for the high-level view (A-4): lines per severity and the services with the most errors.
+    m = event_metrics(db, EventFilter(job_id=job_id), group_by="process", top=TOP_SERVICES, series=False)
+    services = [(_safe(g.value, mask) if g.value else "(no service)", g.counts["ERROR"], g.counts["WARN"])
+                for g in m.groups if g.counts["ERROR"] or g.counts["WARN"]]
+
     return Summary(
         job_id=job.id, mode=job.mode, status=job.status, tools=json.loads(job.tools or "[]"),
         requested_by=job.requested_by, started_at=job.created_at, finished_at=job.finished_at,
@@ -327,6 +337,7 @@ def build_summary(db: Session, job_id: str, *, mask: bool = True,
         other_error_ungrouped=ungrouped, analysis=analysis,
         diagnostics=diagnostics, logs_complete=logs_complete, completeness_issues=issues,
         next_steps=_next_steps(findings, diagnostics, logs_complete, issues), notes=notes,
+        severity_counts=m.severities, top_services=services,
     )
 
 
@@ -383,6 +394,16 @@ def render_markdown(s: Summary) -> str:
             "",
         ]
 
+    lines += ["## Log counts", ""]
+    if not s.events:
+        lines.append("No log entries stored.")
+    else:
+        lines.append("Lines per level: " + ", ".join(f"{k} {v:,}" for k, v in s.severity_counts.items()) + ".")
+        if s.top_services:
+            lines += ["", "Services with the most errors and warnings:", "", "| Service | Errors | Warnings |", "|---|---|---|"]
+            lines += [f"| {_cell(n)} | {e:,} | {w:,} |" for n, e, w in s.top_services]
+    lines.append("")
+
     lines += ["## Other errors and warnings", ""]
     if not s.other_errors:
         lines.append("None beyond the findings above.")
@@ -438,6 +459,8 @@ def summary_to_json(s: Summary) -> dict:
         "other_error_total": s.other_error_total, "other_error_ungrouped": s.other_error_ungrouped,
         "analysis": s.analysis,
         "diagnostics": [asdict(t) for t in s.diagnostics],
+        "severity_counts": s.severity_counts,
+        "top_services": [{"service": n, "errors": e, "warnings": w} for n, e, w in s.top_services],
         "logs_complete": s.logs_complete, "completeness_issues": s.completeness_issues, "notes": s.notes,
     }
 

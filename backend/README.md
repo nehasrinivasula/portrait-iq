@@ -425,6 +425,7 @@ need a signed-in, unlocked session.
 ```
 GET /api/logs/events                        search everything, newest first
 GET /api/logs/facets                        counts per source / severity / category / device / message kind
+GET /api/logs/metrics                       counts per level, over time, and errors/warnings by service (A-4)
 GET /api/logs/sequences                     request/reply sequences: answered, nak, unanswered, latency
 GET /api/logs/collections                   every collection (job) and how many events it holds
 GET /api/logs/collections/{id}              is this collection complete? what is missing?
@@ -480,6 +481,19 @@ curl -H "Authorization: Bearer $TOKEN" \
 # hide the noisy category: ask /facets what is there, then filter the rest
 curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/logs/facets"
 ```
+
+**Metrics (A-4).** `GET /api/logs/metrics` takes the same filters as search
+(period, `job_id`, device, text, ...) and returns plain counts for exactly those
+logs: `severities` (DEBUG / INFO / WARN / ERROR, zeros included), `buckets`
+(counts per minute, hour or day; `bucket=auto` picks the smallest size that stays
+under 500 bars, quiet buckets are zero-filled, a period too long for the size asked
+for is a 422), and `groups` (errors and warnings by `group_by` = `process` (the
+default, "service"), `category`, `source`, `device` or `component`; the top `top`
+values, most errors first, plus an `other` row so the totals add up). CRITICAL and
+FATAL logs are folded into ERROR when ingested, so they count as errors here. With
+`mask=true`, groups by fields that can hold flagged text are withheld
+(`withheld: true`). The diagnostic summary report also carries the level counts and
+the five services with the most errors. No scoring or guessing, only counts.
 
 **Unified log view.** `/collections/{id}/events` returns every entry of one
 collection as a single time-ordered stream across all its files, sources and
@@ -583,6 +597,7 @@ caller asks for `mask=true`.
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/logs/events`, `GET /api/logs/collections/{id}/events` | Each event now has `privacy_scanned`, `sensitive` (flags) and `masked`. Add `mask=true` to get `[REDACTED:<kind>]` in place of flagged text (positions are then omitted, for network identifiers too). An event the current scanner has not judged is scanned on the spot for that response, and an event whose stored flags cannot be read is withheld entirely (`[REDACTED:unreadable]`), so `mask=true` never returns unchecked text. Filters: `flagged=true/false` (`false` means judged clean by the *current* scanner), `flag_category=ssn` (repeatable) |
+| `GET /api/logs/metrics?mask=true` | Counts only, no log text. Withholds the group values for `process`, `category`, `device` and `component` (log fields that can hold flagged text); `source` is a fixed vocabulary and stays. Audited as `logs_metrics_view` with filter names, never values |
 | `GET /api/logs/facets?mask=true` | Withholds the `devices` and `categories` lists: those are log fields that can hold flagged text, and the table masks them |
 | `GET /api/logs/collections/{id}/privacy`, `GET /api/logs/privacy` | Report for one collection, or for every event (what the Logs page shows with no run chosen): events, how many were scanned by the current scanner (`all_scanned`), flagged events, flags by kind, confidence and field, and per file. Counts only. `all_scanned` is false for a collection with no events. `ingest_complete` is true only when everything pulled in was stored (no rejected rows or failed files; for "all", true for every collection; a finished run that holds no logs, such as a Netshoot-only run, is not counted against it, but a running or failed one is) and is false when that cannot be told. **The packaging step should include the report and refuse to call a package scanned unless `complete_for_packaging` is true** (`all_scanned` and `ingest_complete`) |
 | `POST /api/logs/collections/{id}/privacy/scan`, `POST /api/logs/privacy/scan` | Scans events the current scanner has not judged yet (older data, or after a rule change). Safe to repeat. Audited when it starts (`logs_privacy_scan_start`) and when it ends or fails (`logs_privacy_scan`). A very large scan runs inside the request; running it in the background is a follow-up |

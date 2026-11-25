@@ -86,6 +86,7 @@ const ACTION_LABELS: Record<string, string> = {
   job_view: "Run viewed",
   logs_view: "Logs viewed",
   logs_facets_view: "Log filter options viewed",
+  logs_metrics_view: "Log metrics viewed",
   logs_privacy_scan_start: "PHI/PII scan started",
   plugin_cleanup_failed: "Diagnostics cleanup failed",
   source_devices_view: "Source devices viewed",

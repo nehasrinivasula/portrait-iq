@@ -235,3 +235,22 @@ def test_endpoint_markdown_json_404_and_audit(api):
 def test_endpoint_requires_sign_in():
     app.dependency_overrides.clear()
     assert TestClient(app).get("/api/jobs/job-1/summary").status_code == 401
+
+
+def test_summary_has_level_counts_and_top_services(db):
+    seed_run(db)
+    s = build_summary(db, "job-1")
+    assert s.severity_counts == {"DEBUG": 0, "INFO": 1, "WARN": 1, "ERROR": 4}
+    assert s.top_services == [("svc", 2, 0), ("scheduler", 2, 0), ("viewer", 0, 1)]   # ties on errors: busiest first
+    md = render_markdown(s)
+    assert "## Log counts" in md and "ERROR 4" in md
+    body = summary_to_json(s)
+    assert body["severity_counts"]["ERROR"] == 4 and body["top_services"][0]["errors"] >= 2
+
+
+def test_masking_hides_flagged_service_names_in_counts(db):
+    add(db, "job-1", 1, "ERROR", "boom", process="patientName=John Smith")
+    db.add(Job(id="job-1", mode="live", status="done", tools="[]", requested_by="t", created_at=T0))
+    db.commit()
+    assert "John Smith" in render_markdown(build_summary(db, "job-1", mask=False))
+    assert "John Smith" not in render_markdown(build_summary(db, "job-1"))

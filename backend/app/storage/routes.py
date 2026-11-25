@@ -3,6 +3,7 @@ HTTP surface for the central event store. Mounted at /api/logs.
 
   GET /api/logs/events                           search every stored event, any source or device
   GET /api/logs/facets                           counts per source/severity/category/device
+  GET /api/logs/metrics                          counts by severity, over time, and by service (A-4)
   GET /api/logs/sequences                        request/reply sequences: answered, nak, unanswered
   GET /api/logs/collections                      every collection and how many events it holds
   GET /api/logs/collections/{id}                 is this collection complete? what is missing?
@@ -37,12 +38,13 @@ from app.privacy.scanner import (
 from app.tasks.routes import TaskOut, task_out
 from app.storage.completeness import PROBLEM
 from app.storage import events as store
+from app.storage import metrics as metrics_store
 from app.storage import sequences
 from app.validation import ValidationFailure, clean_text
 from app.storage.filters import DEFAULT_LIMIT, MAX_LIMIT, MAX_TEXT_LENGTH, UNASSIGNED, EventFilter, FilterError, build_filter
 from app.storage.schemas import (
     CollectionOut, CollectionSummaryOut, CommandStatsOut, FacetsOut, FacetValueOut, FileSummaryOut, IssueOut,
-    FlagCountOut, LogEventOut, LogPageOut, PrivacyCategoryOut, PrivacyFileOut, PrivacyReportOut,
+    FlagCountOut, LogEventOut, LogPageOut, MetricsBucketOut, MetricsGroupOut, MetricsOut, PrivacyCategoryOut, PrivacyFileOut, PrivacyReportOut,
     SensitiveFlagOut, SequenceOut, SequencePageOut,
 )
 
@@ -207,6 +209,46 @@ def search_events(
     Newest first by default."""
     f = _with_job(f, job_id)
     return _page(db, user, f, limit=limit, order=order, cursor=cursor, action="logs_search", detail="", mask=mask)
+
+
+def _metrics_group(row) -> MetricsGroupOut:
+    return MetricsGroupOut(value=row.value, counts=row.counts, total=row.total)
+
+
+@router.get("/metrics", response_model=MetricsOut)
+def get_metrics(
+    f: EventFilter = Depends(_filter),
+    job_id: Optional[str] = Query(None, description="Limit to one collection, or 'unassigned'."),
+    group_by: Literal["process", "category", "source", "device", "component"] = Query(
+        "process", description="What to break the counts down by; the service that wrote the log is its process."),
+    bucket: Literal["auto", "minute", "hour", "day"] = Query(
+        "auto", description="Size of the time buckets. auto picks the smallest that keeps the chart readable."),
+    top: int = Query(metrics_store.DEFAULT_TOP, ge=1, le=metrics_store.MAX_TOP,
+                     description="How many groups to list, the ones with the most errors first."),
+    mask: bool = Query(False, description="Withhold the group values for fields that can hold flagged text "
+                                          "(process, category, device, component), as the filter options do."),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_active_user),
+):
+    """Counts of events by severity, over time and by service, for the logs matching the filters.
+    Use since/until for a period. Counts only: no log text is returned."""
+    f = _with_job(f, job_id)
+    try:
+        r = metrics_store.metrics(db, f, group_by=group_by, bucket=bucket, top=top, mask=mask)
+    except FilterError as e:
+        raise HTTPException(422, str(e))
+    log_action(
+        db, user.id, "logs_metrics_view",
+        detail=f"filters={f.used_fields()} group_by={group_by} bucket={r.bucket or bucket} matched={r.total} masked={mask}",
+        session_id=user.session_id,
+    )
+    return MetricsOut(
+        total=r.total, first_timestamp=_utc(r.first_timestamp), last_timestamp=_utc(r.last_timestamp),
+        severities=r.severities, bucket=r.bucket,
+        buckets=[MetricsBucketOut(start=_utc(b.start), counts=b.counts, total=b.total) for b in r.buckets],
+        group_by=r.group_by, groups=[_metrics_group(g) for g in r.groups], groups_total=r.groups_total,
+        other=_metrics_group(r.other) if r.other else None, withheld=r.withheld,
+    )
 
 
 @router.get("/facets", response_model=FacetsOut)

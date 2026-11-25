@@ -5,8 +5,9 @@ import LogFilters from "./LogFilters";
 import LogTable from "./LogTable";
 import SourcePicker, { fileName } from "./SourcePicker";
 import InsightsPanel from "./InsightsPanel";
+import MetricsPanel from "./MetricsPanel";
 import { activeFilters, removeFilter } from "./activeFilters";
-import { emptyFilter, getFacets, IMPORTED, type Facets, type LogFilter } from "./logsApi";
+import { emptyFilter, getFacets, getMetrics, IMPORTED, type Facets, type LogFilter, type Metrics, type MetricsGroup } from "./logsApi";
 import { defaultTimeFrame, filterRange, type TimeFrameChoice } from "./timeframe";
 import PrivacyPanel from "../privacy/PrivacyPanel";
 import { noPrivacyOptions, type PrivacyOptions } from "../privacy/privacyApi";
@@ -77,6 +78,17 @@ export default function LogsPage() {
     return () => ac.abort();
   }, [applied, reloadKey, privacy.mask]);
 
+  // Counts per level, over time and by service; follow every filter, like the insights.
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [groupBy, setGroupBy] = useState<MetricsGroup>("process");
+  useEffect(() => {
+    const ac = new AbortController();
+    getMetrics(applied, groupBy, privacy.mask, ac.signal)
+      .then((m) => { if (!ac.signal.aborted) setMetrics(m); })
+      .catch(() => { if (!ac.signal.aborted) setMetrics(null); });
+    return () => ac.abort();
+  }, [applied, groupBy, reloadKey, privacy.mask]);
+
   const pick = (set: string | null, f: string | null) => {
     const next: Record<string, string> = {};
     if (set) next.job = set;
@@ -123,6 +135,7 @@ export default function LogsPage() {
       </div>
 
       <InsightsPanel facets={insights} filter={filter} onFilter={setFilter} masked={privacy.mask} />
+      <MetricsPanel metrics={metrics} groupBy={groupBy} onGroupBy={setGroupBy} masked={privacy.mask} />
 
       <PrivacyPanel jobId={jobId} options={privacy} onOptions={setPrivacy} reloadKey={reloadKey}
         onScanned={() => setReloadKey((k) => k + 1)} />
