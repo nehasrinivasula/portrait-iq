@@ -51,16 +51,6 @@ export function stepIndex(current: string | null, complete: boolean): number {
   return complete ? STEPS.length : current ? STEPS.indexOf(current as (typeof STEPS)[number]) : -1;
 }
 
-/** The next index to show on the way from `shown` to `target`, one step at a
- * time and passing over steps the run skips, so each step gets its moment on
- * screen even when the server finished it between two polls. */
-export function nextPaced(shown: number, target: number, skipped: readonly string[] = []): number {
-  for (let n = shown + 1; n < target; n++) {
-    if (n >= STEPS.length || !skipped.includes(STEPS[n])) return n;
-  }
-  return Math.max(shown, target);
-}
-
 /** Parses an API timestamp. Times without an offset are UTC (the backend
  * stores naive UTC), not the browser's local time. */
 export function parseServerTime(ts: string | null | undefined): number | null {

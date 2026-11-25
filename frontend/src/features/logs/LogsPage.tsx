@@ -3,13 +3,15 @@ import { Link, useSearchParams } from "react-router-dom";
 import ImportLogs from "./ImportLogs";
 import LogFilters from "./LogFilters";
 import LogTable from "./LogTable";
+import SourcePicker, { fileName } from "./SourcePicker";
+import InsightsPanel from "./InsightsPanel";
 import { activeFilters, removeFilter } from "./activeFilters";
-import { emptyFilter, getFacets, type Facets, type LogFilter } from "./logsApi";
+import { emptyFilter, getFacets, IMPORTED, type Facets, type LogFilter } from "./logsApi";
 import { defaultTimeFrame, filterRange, type TimeFrameChoice } from "./timeframe";
 import PrivacyPanel from "../privacy/PrivacyPanel";
 import { noPrivacyOptions, type PrivacyOptions } from "../privacy/privacyApi";
 
-const DEBOUNCE_MS = 300;
+const TYPING_MS = 300;
 
 // Keyed on the value's JSON: callers pass a new object each render, and
 // restarting the timer on identity alone re-ran the search every 300 ms,
@@ -22,11 +24,19 @@ function useDebounced<T>(value: T, ms: number): T {
   return v;
 }
 
-// One page: filters on top (always in view), the log table below and scrolling
-// on its own. Filtering by date, source, level, column value and text.
+/** The same object until its JSON changes, so effects keyed on it run once per real change. */
+function useStable<T>(value: T): T {
+  const key = JSON.stringify(value);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => value, [key]);
+}
+
+// One toolbar (which logs, then how to narrow them), two one-line summaries
+// (insights, PHI / PII) that open for detail, then the table, scrolling on its own.
 export default function LogsPage() {
   const [params, setParams] = useSearchParams();
   const jobId = params.get("job");
+  const file = params.get("file");
   const [frame, setFrame] = useState<TimeFrameChoice>({ ...defaultTimeFrame(), preset: "any" });
   const [filter, setFilter] = useState<LogFilter>(emptyFilter);
   const [facets, setFacets] = useState<Facets | null>(null);
@@ -42,45 +52,80 @@ export default function LogsPage() {
     return lastRange.current;
   }, [frame]);
 
-  const applied = useDebounced<LogFilter>({ ...filter, ...range, jobId }, DEBOUNCE_MS);
+  // Only typed text waits for a pause; clicks (chips, dropdowns, dates) apply at once.
+  const q = useDebounced(filter.q, TYPING_MS);
+  const process = useDebounced(filter.process, TYPING_MS);
+  const applied = useStable<LogFilter>({ ...filter, q, process, ...range, jobId, sourceFile: file ?? "" });
 
   // Options come from the date range and run only, so picking one doesn't hide the others.
-  const optionScope = useDebounced({ ...emptyFilter(), ...range, jobId }, DEBOUNCE_MS);
+  const optionScope = useStable({ ...emptyFilter(), ...range, jobId, sourceFile: file ?? "" });
   useEffect(() => {
-    let live = true;
-    getFacets(optionScope, privacy.mask).then((f) => live && setFacets(f)).catch(() => live && setFacets(null));
-    return () => { live = false; };
+    const ac = new AbortController();   // a newer scope cancels the older request instead of racing it
+    getFacets(optionScope, privacy.mask, ac.signal)
+      .then((f) => { if (!ac.signal.aborted) setFacets(f); })
+      .catch(() => { if (!ac.signal.aborted) setFacets(null); });
+    return () => ac.abort();
   }, [optionScope, reloadKey, privacy.mask]);
 
-  const active = activeFilters(frame, filter);
+  // Insights follow every filter, unlike the dropdown options above, so hiding noise shows its effect.
+  const [insights, setInsights] = useState<Facets | null>(null);
+  useEffect(() => {
+    const ac = new AbortController();
+    getFacets(applied, privacy.mask, ac.signal)
+      .then((f) => { if (!ac.signal.aborted) setInsights(f); })
+      .catch(() => { if (!ac.signal.aborted) setInsights(null); });
+    return () => ac.abort();
+  }, [applied, reloadKey, privacy.mask]);
+
+  const pick = (set: string | null, f: string | null) => {
+    const next: Record<string, string> = {};
+    if (set) next.job = set;
+    if (f) next.file = f;
+    setParams(next);
+  };
+  const active = activeFilters(frame, { ...filter, sourceFile: file ?? "" });
   const onRemove = (id: string) => {
+    if (id === "file") { pick(jobId, null); return; }
     const next = removeFilter(id, frame, filter);
     setFrame(next.frame);
     setFilter(next.filter);
   };
-  const onClear = () => { setFilter(emptyFilter()); setFrame({ ...defaultTimeFrame(), preset: "any" }); };
+  const onClear = () => {
+    setFilter(emptyFilter());
+    setFrame({ ...defaultTimeFrame(), preset: "any" });
+    if (file) pick(jobId, null);
+  };
   const onTotal = useCallback((n: number | null) => setTotal(n), []);
 
+  const scope = jobId ?? "all";
+  const title = jobId === null ? "All logs" : jobId === IMPORTED ? "Imported files" : `Run ${jobId.slice(0, 8)}`;
   return (
     <div className="logs-page">
       <div className="logs-head">
-        <h1>Logs{total !== null && <span className="muted" style={{ fontWeight: 400, fontSize: 18 }}> · {total} match{total === 1 ? "" : "es"}</span>}</h1>
-        <ImportLogs onImported={() => setReloadKey((k) => k + 1)} />
+        <div className="logs-title">
+          <h1>Logs</h1>
+          <p className="logs-head-sub">
+            {title}{file ? ` › ${fileName(file)}` : ""}{total !== null && ` · ${total.toLocaleString()} match${total === 1 ? "" : "es"}`}
+          </p>
+        </div>
+        <div className="logs-head-actions">
+          <ImportLogs onImported={() => setReloadKey((k) => k + 1)} />
+          <Link to={`/export/${encodeURIComponent(scope)}?from=logs`} className="btn">
+            {jobId === null ? "Export all logs" : jobId === IMPORTED ? "Export imported files" : "Export this run"}
+          </Link>
+        </div>
       </div>
 
-      {jobId && (
-        <p className="job-chip" role="status">
-          Showing logs from run <code>{jobId.slice(0, 8)}</code>{" "}
-          <button type="button" className="btn ghost" onClick={() => setParams({})}>Show all logs</button>{" "}
-          <Link to={`/jobs/${encodeURIComponent(jobId)}/export?from=logs`} className="btn ghost">Export this run</Link>
-        </p>
-      )}
+      <div className="toolbar">
+        <SourcePicker selected={jobId} file={file} onSelect={pick} reloadKey={reloadKey} />
+        <LogFilters frame={frame} onFrame={setFrame} filter={filter} onFilter={setFilter} masked={privacy.mask}
+          facets={privacy.mask && facets ? { ...facets, devices: [], categories: [] } : facets} active={active} onRemove={onRemove} onClear={onClear} />
+      </div>
+
+      <InsightsPanel facets={insights} filter={filter} onFilter={setFilter} masked={privacy.mask} />
 
       <PrivacyPanel jobId={jobId} options={privacy} onOptions={setPrivacy} reloadKey={reloadKey}
         onScanned={() => setReloadKey((k) => k + 1)} />
-
-      <LogFilters frame={frame} onFrame={setFrame} filter={filter} onFilter={setFilter}
-        facets={privacy.mask && facets ? { ...facets, devices: [], categories: [] } : facets} active={active} onRemove={onRemove} onClear={onClear} />
 
       <div className="logs-body">
         <LogTable filter={applied} reloadKey={reloadKey} onTotal={onTotal} privacy={privacy}

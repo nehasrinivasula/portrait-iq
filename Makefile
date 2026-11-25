@@ -35,6 +35,9 @@ TSHARK_LIVE_CAPTURE ?= false
 GRAFANA_BASE_URL ?=#  in-cluster Grafana for the system-health collector (SCRUM-105); empty = off
 PROMETHEUS_TSDB_HOSTPATH ?=#  node path to the Prometheus data dir for the TSDB export (SCRUM-105); empty = off
 LOG_EXPORT_URL ?= http://$(LOG_EXPORT_SERVICE).$(LOG_EXPORT_NAMESPACE).svc.cluster.local:9200
+# Namespaces Kubernetes diagnostics reads: ours and Portrait's (LOG_EXPORT_NAMESPACE).
+DIAGNOSTICS_NAMESPACES ?= $(NAMESPACE)$(if $(strip $(LOG_EXPORT_NAMESPACE)),$(COMMA)$(strip $(LOG_EXPORT_NAMESPACE)))
+COMMA := ,
 SECRETS_DIR   ?=#   folder OUTSIDE the repo, one file per secret (backend/SECRETS.md)
 API_CHECK_HOUR ?=#  optional, YYYY-MM-DDTHH; default is the last full hour on the node
 
@@ -133,17 +136,21 @@ ship:  ## Build and save the image, then copy and import it on the node
 # render: fill in the manifests and write config.env locally (no SSH).
 # bundle: render, then copy everything to REMOTE_DIR on the node.
 render:
-	@rm -rf $(BUNDLE_DIR) && mkdir -p $(BUNDLE_DIR)/k8s
+	@rm -rf $(BUNDLE_DIR) && mkdir -p $(BUNDLE_DIR)/k8s $(BUNDLE_DIR)/k8s-portrait
 	@cp deploy/scripts/remote.sh $(BUNDLE_DIR)/
-	@printf "NAMESPACE='%s'\nIMPORT_CMD='%s'\nTAG_CMD='%s'\nIMAGE_ALIAS_PREFIX='%s'\nLOG_EXPORT_URL='%s'\nLOG_EXPORT_SERVICE='%s'\nAPI_CHECK_HOUR='%s'\n" \
-		"$(NAMESPACE)" "$(IMPORT_CMD)" "$(TAG_CMD)" "$(IMAGE_ALIAS_PREFIX)" "$(LOG_EXPORT_URL)" "$(LOG_EXPORT_SERVICE)" "$(API_CHECK_HOUR)" > $(BUNDLE_DIR)/config.env
+	@printf "NAMESPACE='%s'\nIMPORT_CMD='%s'\nTAG_CMD='%s'\nIMAGE_ALIAS_PREFIX='%s'\nLOG_EXPORT_URL='%s'\nLOG_EXPORT_SERVICE='%s'\nAPI_CHECK_HOUR='%s'\nPORTRAIT_NAMESPACE='%s'\n" \
+		"$(NAMESPACE)" "$(IMPORT_CMD)" "$(TAG_CMD)" "$(IMAGE_ALIAS_PREFIX)" "$(LOG_EXPORT_URL)" "$(LOG_EXPORT_SERVICE)" "$(API_CHECK_HOUR)" "$(LOG_EXPORT_NAMESPACE)" > $(BUNDLE_DIR)/config.env
 	@image=$$(cat $(BUILD_DIR)/image.ref 2>/dev/null || echo "$(IMAGE_NAME):unbuilt"); \
 	for f in deploy/k8s/*.yaml; do \
 		sed -e "s|__IMAGE__|$$image|" -e "s|__LOG_EXPORT_URL__|$(LOG_EXPORT_URL)|" \
 		    -e "s|__NODE_PORT__|$(NODE_PORT)|" -e "s|__NAMESPACE__|$(NAMESPACE)|" \
 		    -e "s|__TSHARK_LIVE_CAPTURE__|$(TSHARK_LIVE_CAPTURE)|" \
 		    -e "s|__GRAFANA_BASE_URL__|$(GRAFANA_BASE_URL)|" \
-		    -e "s|__PROMETHEUS_TSDB_HOSTPATH__|$(PROMETHEUS_TSDB_HOSTPATH)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
+		    -e "s|__PROMETHEUS_TSDB_HOSTPATH__|$(PROMETHEUS_TSDB_HOSTPATH)|" \
+		    -e "s|__DIAGNOSTICS_NAMESPACES__|$(DIAGNOSTICS_NAMESPACES)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
+	done
+	@for f in deploy/k8s-portrait/*.yaml; do \
+		sed -e "s|__NAMESPACE__|$(NAMESPACE)|" "$$f" > $(BUNDLE_DIR)/k8s-portrait/$$(basename $$f); \
 	done
 
 bundle: render

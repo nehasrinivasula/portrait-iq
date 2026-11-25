@@ -34,3 +34,28 @@ Example: `{ "tools": ["tshark"], "plugin_options": { "tshark": { "mode": "run", 
 | Correct a name or role (D-7) | `PATCH /api/devices/{id}` | `{ name?, kind? }` | the device; later searches keep the change |
 
 `kind` is `hub`, `viewer`, `server` (the system the tool runs on) or `unknown`. A search runs one short-lived pod on the system: it reads the ARP table and, when live capture is on, watches the system's own traffic for `duration_s`. A device using RTI domain 12 (source pod) ports is listed as the hub, domain 13 (view pod) as a viewer. Only addresses and ports leave the pod. One search at a time (409 while one runs).
+
+## Kubernetes diagnostics (`kubernetes`)
+
+A read-only snapshot of the cluster for troubleshooting. Select `kubernetes` in
+`tools`; it takes no options. It starts no pod and changes nothing: it only lists
+nodes, and pods and events in the namespaces in `K8S_DIAGNOSTICS_NAMESPACES`
+(default: ours and Portrait's `pm`). RBAC: `deploy/k8s/tool-rbac.yaml` and
+`deploy/k8s-portrait/`.
+
+| Collected | Never collected |
+|---|---|
+| Node Ready state and pressure, roles, kubelet version, capacity | Container environment variables and command lines |
+| Pod phase, ready containers, restart counts, last restart reason and exit code | Secrets, ConfigMaps, annotations |
+| Events (newest first), `kubectl describe`-style text | Pod logs |
+
+Free text the cluster writes (event, pod and condition messages) has personal data
+masked, as on the Logs page. Size caps: 500 pods and 500 events per namespace, a
+cut per describe section, and a byte cap per file; anything left out is named in
+`warnings`. A namespace that can't be read is a warning, not a failure.
+
+Result: the usual `{ tool, summary, warnings, artifact_paths }`, plus `details`
+for the results page (`/jobs/{id}/results/kubernetes`):
+`{ namespaces, nodes, problem_pods, problem_pods_total, warning_events,
+warning_events_total, notes }`. Files `kubernetes.json`, `describe.txt` and
+`events.txt` go in the export zip under `tools/kubernetes/`.

@@ -4,18 +4,18 @@ HTTP surface for log acquisition (SCRUM-43). Mounted at /api/sources.
   GET  /api/sources                       what sources exist and whether each is usable
   POST /api/sources/{id}/test             reach the source, specific reason on failure
   GET  /api/sources/{id}/files            preview: what is in range, what is already pulled
-  POST /api/sources/{id}/acquire          pull only the new files (and ingest them)
-  POST /api/sources/local/upload          upload files / ZIPs from the browser, then acquire them
+  POST /api/sources/{id}/acquire          start pulling the new files (and ingesting them) in the background
+  POST /api/sources/local/upload          upload files / ZIPs from the browser, then import them in the background
+  (both return a task; follow it at GET /api/tasks/{id})
 """
 import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
-from app.analysis import auto as auto_analysis
 from app.audit import log_action
 from app.auth import User, get_active_user
 from app.config import settings
@@ -25,12 +25,14 @@ from app.schemas import (
     AcquireRequest, AcquisitionOut, DeviceAddRequest, FileOutcomeOut, KnownDeviceOut, RemoteFileOut,
     SourceOut, SourceStatusOut,
 )
+from app.tasks import service as tasks
 from app.sources import registry
+from app.tasks.routes import TaskOut, task_out
 from app.validation import ValidationFailure, validate_upload_name
 from app.sources.base import ALLOWED_SUFFIXES, LogSource, SourceError
 from app.sources.devices import add_manual, display_name, list_known
 from app.sources.service import (
-    WindowError, AcquisitionResult, acquire, clamp_to_source, is_already_acquired, plan_new_windows,
+    WindowError, AcquisitionResult, clamp_to_source, is_already_acquired, plan_new_windows,
     resolve_window,
 )
 
@@ -44,7 +46,7 @@ def _source(source_id: str) -> LogSource:
     return source
 
 
-def _to_out(result: AcquisitionResult) -> AcquisitionOut:
+def to_out(result: AcquisitionResult) -> AcquisitionOut:
     return AcquisitionOut(
         run_id=result.run_id,
         source=result.source,
@@ -143,48 +145,56 @@ def preview_files(
             for r, covered in plan_new_windows(db, remotes, source)]
 
 
-def _run(db: Session, source: LogSource, user: User, req: AcquireRequest,
-         background: BackgroundTasks) -> AcquisitionOut:
+def _start(db: Session, source: LogSource, user: User, req: AcquireRequest, *,
+           scratch_dirs: tuple[str, ...] = ()) -> TaskOut:
+    """Check the request, then hand the pull to a background task and return at once.
+
+    Only cheap checks happen here (the run exists, the window makes sense, the source is set up). Listing,
+    fetching and ingesting - which can take minutes and a lot of CPU - run in the worker (app/tasks), so the API
+    stays responsive. A problem found there fails the task with a message the page shows."""
     if req.job_id and db.get(Job, req.job_id) is None:
         raise HTTPException(404, "job not found")
     try:
-        options = dict(req.options)
-        if req.device_uuids:
-            options["device_uuids"] = ",".join(req.device_uuids)
-        result = acquire(db, source, actor=user.id, session_id=user.session_id, since=req.since, until=req.until,
-                         options=options, job_id=req.job_id, ingest=req.ingest)
+        since, until = resolve_window(req.since, req.until, default_lookback=source.default_lookback)
+        status = source.is_configured()
+        if not status.ok:
+            raise SourceError(status.reason)
     except WindowError as e:
         raise HTTPException(422, str(e))
     except SourceError as e:
         raise HTTPException(400, str(e))
-    if auto_analysis.should_run(req.job_id, result.files):
-        # After the response: the pull must not wait for, or fail because of, pattern detection.
-        background.add_task(auto_analysis.run_in_background, db.get_bind(), req.job_id, user.id, user.session_id)
-    return _to_out(result)
+    options = dict(req.options)
+    if req.device_uuids:
+        options["device_uuids"] = ",".join(req.device_uuids)
+    task, _ = tasks.create_task(
+        db, kind="acquire", actor=user.id, session_id=user.session_id, scope=source.id,
+        params={"source_id": source.id, "since": since.isoformat(), "until": until.isoformat(), "options": options,
+                "job_id": req.job_id, "ingest": req.ingest, "scratch_dirs": list(scratch_dirs)},
+    )
+    return task_out(tasks.submit(db, task))
 
 
-@router.post("/{source_id}/acquire", response_model=AcquisitionOut)
-def acquire_logs(source_id: str, req: AcquireRequest, background: BackgroundTasks, db: Session = Depends(get_db),
+@router.post("/{source_id}/acquire", response_model=TaskOut, status_code=202)
+def acquire_logs(source_id: str, req: AcquireRequest, db: Session = Depends(get_db),
                  user: User = Depends(get_active_user)):
-    return _run(db, _source(source_id), user, req, background)
+    """Start pulling logs. Returns a task right away; poll GET /api/tasks/{id} for progress and, when it is done,
+    the same AcquisitionOut this endpoint used to return, under `result`."""
+    return _start(db, _source(source_id), user, req)
 
 
-@router.post("/local/upload", response_model=AcquisitionOut)
+@router.post("/local/upload", response_model=TaskOut, status_code=202)
 def upload_logs(
-    background: BackgroundTasks,
     files: list[UploadFile] = File(...),
     job_id: str | None = None,
     ingest: bool = True,
     db: Session = Depends(get_db),
     user: User = Depends(get_active_user),
 ):
-    """Save uploads to a fresh folder, then acquire that folder through the
-    local import source, so uploads get the same dedupe, ZIP checks, limits
-    and audit as everything else.
+    """Save uploads to a fresh folder, then import that folder through the local source in a background task,
+    so uploads get the same dedupe, ZIP checks, limits and audit as everything else.
 
-    Deliberately a plain `def`: acquiring and ingesting a big ZIP takes tens
-    of seconds of blocking work, and FastAPI runs plain routes in a worker
-    thread. As `async def` it would freeze the whole server meanwhile."""
+    Saving the files happens here (it is disk I/O, which does not hold up other requests). Reading, parsing and
+    scanning them happens in the worker, which also deletes the folder when it is done."""
     inbox = Path(settings.staging_dir) / "uploads" / uuid.uuid4().hex[:12]
     limit = settings.default_max_output_mb * 1024 * 1024
     total = 0
@@ -204,7 +214,8 @@ def upload_logs(
                         raise HTTPException(413, f"Upload is larger than the {settings.default_max_output_mb} MB limit.")
                     out.write(chunk)
         req = AcquireRequest(options={"path": str(inbox)}, job_id=job_id, ingest=ingest)
-        return _run(db, _source("local"), user, req, background)
-    finally:
-        # acquire() copied what it kept into staging; the inbox is scratch.
+        return _start(db, _source("local"), user, req, scratch_dirs=(str(inbox),))
+    except BaseException:
+        # Nothing took over the folder (the task was never created), so it is scratch to remove now.
         shutil.rmtree(inbox, ignore_errors=True)
+        raise

@@ -1,4 +1,5 @@
 import { apiFetch } from "../../api";
+import { runTask, waitForTask, type TaskProgress, type TaskStatus } from "../tasks/tasksApi";
 
 // PHI/PII flagging (S-3): GET/POST /api/logs/collections/{id}/privacy[/scan] and, for every collection, /api/logs/privacy[/scan].
 // The report holds counts only, never log text.
@@ -103,8 +104,15 @@ export async function loadPrivacy(jobId: string | null): Promise<PrivacyView> {
 }
 
 /** Scan whatever in this scope has not been scanned. */
-export const scanScope = (jobId: string | null) =>
-  apiFetch<{ scanned: number }>(`${scope(jobId)}/scan`, { method: "POST" });
+export const scanScope = (jobId: string | null, onProgress?: TaskProgress) =>
+  runTask<{ scanned: number }>(
+    () => apiFetch<TaskStatus<{ scanned: number }>>(`${scope(jobId)}/scan`, { method: "POST" }),
+    onProgress,
+  );
+
+/** Follow a scan the server is already running (after a reload). */
+export const followScan = (taskId: string, onProgress?: TaskProgress) =>
+  waitForTask<{ scanned: number }>(taskId, onProgress);
 
 /** Panel colour for a report: only a fully scanned, fully loaded, flag-free one is green. */
 export function privacyKind(r: PrivacyReport): "ok" | "warn" {

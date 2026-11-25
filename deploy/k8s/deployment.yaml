@@ -99,6 +99,10 @@ spec:
             # the one privileged tool pod; keep the value accurate.
             - name: PROMETHEUS_TSDB_HOSTPATH
               value: "__PROMETHEUS_TSDB_HOSTPATH__"
+            # Kubernetes diagnostics reads these namespaces, read-only: ours and
+            # Portrait's (deploy/k8s/tool-rbac.yaml, deploy/k8s-portrait/).
+            - name: K8S_DIAGNOSTICS_NAMESPACES
+              value: "__DIAGNOSTICS_NAMESPACES__"
           # The pod shares the MiniEdge with the Portrait software and must
           # not starve it. Raise only after watching real usage.
           resources:
@@ -121,6 +125,9 @@ spec:
             httpGet: {path: /health, port: 8000}
             initialDelaySeconds: 20
             periodSeconds: 30
+            # A busy backend can be slow to answer for a while; tolerate ~3 minutes of that before restarting.
+            timeoutSeconds: 5
+            failureThreshold: 6
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: tmp, mountPath: /tmp}
