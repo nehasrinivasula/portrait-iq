@@ -121,6 +121,14 @@ def reader_qos_override_xml(base_profile: str) -> str:
     )
 
 
+# cleanup() deletes the pod gracefully (not a force delete) and waits for it to
+# disappear before freeing the domain, so the fixed host WAN port is confirmed
+# free before another run can claim it. The kubelet removes the pod object only
+# after the process stops, so "gone" means the port is released.
+RTI_TERM_GRACE_S = 15   # SIGTERM grace for the tool pod; rtiddsspy exits promptly
+RTI_TERM_WAIT_S = 30    # how long cleanup waits for the pod (and its WAN port) to go
+
+
 class RtiCollector(Collector):
     name = "rti"
     display_name = "UMF RTI"
@@ -310,19 +318,24 @@ class RtiCollector(Collector):
         )
 
     def cleanup(self) -> None:
-        # Release the per-domain claim only once the pod is actually gone. A pod
-        # that is still running holds this domain's fixed local WAN port, so a new
-        # run on the domain would collide with it (SCRUM-39 review). If delete()
-        # raises (Kubernetes could not remove the pod) we keep both the pod
-        # reference and the claim: the domain stays blocked. The orchestrator then
-        # discards this instance, so no later cleanup() retries -- but a new run
-        # reconciles the claim against pod existence and reclaims the domain once
-        # that pod has actually gone, so the block cannot outlive the pod. A
-        # delete() that returns — including for an already-absent pod, which the
-        # runner treats as success — means the pod is gone.
+        # Release the per-domain claim only once the pod is CONFIRMED gone. The
+        # pod runs on the host network and holds this domain's fixed local WAN
+        # port, so a run on the domain cannot start while it is up. A force delete
+        # removes the pod object before the process (and its socket) has stopped,
+        # so returning from delete() is not proof the port is free -- a second run
+        # could grab it mid-shutdown (SCRUM-39 review). Instead we delete
+        # gracefully and wait for the pod to disappear: the kubelet removes the
+        # object only after the process terminates, so "gone" means the port is
+        # released. If delete() raises, or the pod is not gone within the wait, we
+        # keep both the pod reference and the claim so the domain stays blocked;
+        # the orchestrator discards this instance, and a later run reconciles the
+        # claim against pod existence and reclaims the domain once the pod has
+        # actually gone, so the block cannot outlive the pod.
         pod = self._pod
         if pod and self._runner:
-            self._runner.delete(pod)   # raises if the pod could not be deleted
+            self._runner.delete(pod, grace_period_seconds=RTI_TERM_GRACE_S)  # raises if it could not be deleted
+            if not self._runner.wait_gone(pod, RTI_TERM_WAIT_S):
+                return               # still terminating: keep the claim; a later run frees it
         self._pod = None
         if self._claimed_domain is not None:
             with _active_lock:

@@ -221,11 +221,18 @@ class PodRunner:
         except ApiException as e:
             return e.status != 404
 
-    def delete(self, name: str) -> None:
-        """Delete the pod now. Already gone is fine."""
+    def delete(self, name: str, grace_period_seconds: int = 0) -> None:
+        """Delete the pod. Already gone is fine. The default (0) forces immediate
+        removal of the pod object. Pass a positive grace period to let the kubelet
+        terminate the process first: the object then lingers until the kubelet
+        confirms the process has stopped, so -- together with wait_gone -- a caller
+        can tell when a host resource the pod held (e.g. a fixed host port) is
+        actually free again. A force delete gives no such guarantee: the object
+        can disappear while the process is still shutting down."""
         try:
             self.api.delete_namespaced_pod(
-                name, self.namespace, grace_period_seconds=0, _request_timeout=API_TIMEOUT_S
+                name, self.namespace, grace_period_seconds=grace_period_seconds,
+                _request_timeout=API_TIMEOUT_S,
             )
         except ApiException as e:
             if e.status == 404:
@@ -234,6 +241,21 @@ class PodRunner:
                 f"could not delete pod {name}: {_api_message(e)}",
                 safe_reason="Could not remove the diagnostic's pod.",
             ) from None
+
+    def wait_gone(self, name: str, timeout_s: int) -> bool:
+        """Poll until the pod object is no longer present, or timeout. Returns
+        True only when it is confirmed gone (exists() is False -- a 404). After a
+        graceful delete the kubelet removes the object only once the process has
+        terminated, so a True here means a host resource the pod held is free. A
+        read error other than 404 keeps the pod 'present' (exists() is
+        conservative), so a flaky API never makes a still-running pod look gone."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            if not self.exists(name):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            self._sleep(2)
 
     def list_tool_pods(self) -> list[PodInfo]:
         """Every tool pod of ours in the namespace, for the cleanup prompt."""
