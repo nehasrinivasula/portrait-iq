@@ -4,6 +4,7 @@ import { useAuth } from "../../auth/AuthContext";
 import { useNotify } from "../../ui/Notifications";
 import { getJob, getResults, isFinished, type Job, type ToolResult } from "../plugins/api";
 import type { AcquisitionResult } from "../logs/logsApi";
+import type { ConnectionSettings } from "../connect/connectionApi";
 import { progressText, type TaskProgress } from "../tasks/tasksApi";
 import { activeJobStore, resumeJobId } from "./jobStorage";
 
@@ -30,6 +31,9 @@ interface JobsState {
    * Memory only, never browser storage, and forgotten on sign-out. */
   targetIp: string;
   setTargetIp: (ip: string) => void;
+  /** Safe setup values from the Connect page. Memory only; credentials are never included. */
+  connectionSettings: ConnectionSettings | null;
+  setConnectionSettings: (settings: ConnectionSettings | null) => void;
 }
 
 const Ctx = createContext<JobsState | null>(null);
@@ -50,6 +54,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   const [lost, setLost] = useState(false);
   const [logPull, setLogPull] = useState<LogPull | null>(null);
   const [targetIp, setTargetIp] = useState("");
+  const [connectionSettings, setConnectionSettings] = useState<ConnectionSettings | null>(null);
   const announced = useRef<string | null>(null);
 
   const clear = useCallback(() => { activeJobStore.clear(); setJob(null); setResults(null); setLost(false); setLogPull(null); setRestoring(false); }, []);
@@ -71,7 +76,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
       });
   }, [notify]);
 
-  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); setLogPull(null); setRestoring(false); setTargetIp(""); } }, [user]);
+  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); setLogPull(null); setRestoring(false); setTargetIp(""); setConnectionSettings(null); } }, [user]);
 
   // Sign-out removes the bearer token, not the opaque job id. Once the same
   // browser session signs in again, recover the persisted server-side run.
@@ -123,5 +128,5 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     else notify({ kind: "error", title: "The run failed", body: "Open Run diagnostics for details." });
   }, [job, notify]);
 
-  return <Ctx.Provider value={{ job, results, restoring, lost, logPull, track, clear, targetIp, setTargetIp }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ job, results, restoring, lost, logPull, track, clear, targetIp, setTargetIp, connectionSettings, setConnectionSettings }}>{children}</Ctx.Provider>;
 }
