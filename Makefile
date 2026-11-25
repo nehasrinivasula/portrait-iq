@@ -34,6 +34,14 @@ NODE_PORT     ?= 30080
 TSHARK_LIVE_CAPTURE ?= false
 GRAFANA_BASE_URL ?=#  in-cluster Grafana for the system-health collector (SCRUM-105); empty = off
 PROMETHEUS_TSDB_HOSTPATH ?=#  node path to the Prometheus data dir for the TSDB export (SCRUM-105); empty = off
+RTI ?= false
+RTI_IMAGE ?= docker-axone-all/axone-umf-rtitools:branch-latest
+# The -WithWAN QoS carries the umfwan_server_* profiles the collector drives
+# over Real-Time WAN. Empty would fall back to the image's default QoS.
+RTI_QOS_FILE ?= /opt/axone-tools/qos/MDH-tools-RTIAdminConsole-WithWAN.xml
+RTI_PEER ?=
+RTI_SECURITY_SECRET ?=
+RTI_SDDS_DIR ?= /opt/axone-tools/sdds
 LOG_EXPORT_URL ?= http://$(LOG_EXPORT_SERVICE).$(LOG_EXPORT_NAMESPACE).svc.cluster.local:9200
 # Namespaces Kubernetes diagnostics reads: ours and Portrait's (LOG_EXPORT_NAMESPACE).
 DIAGNOSTICS_NAMESPACES ?= $(NAMESPACE)$(if $(strip $(LOG_EXPORT_NAMESPACE)),$(COMMA)$(strip $(LOG_EXPORT_NAMESPACE)))
@@ -42,7 +50,13 @@ SECRETS_DIR   ?=#   folder OUTSIDE the repo, one file per secret (backend/SECRET
 API_CHECK_HOUR ?=#  optional, YYYY-MM-DDTHH; default is the last full hour on the node
 
 IMAGE_NAME    ?= portrait-iq
-TAG           := $(shell git rev-parse --short HEAD 2>/dev/null)$(shell git diff --quiet HEAD -- 2>/dev/null || echo -dirty)
+# A content hash of exactly what the backend image is built from (the Dockerfile
+# and the files it COPYs: requirements.txt and app/). A changed image gets a new
+# tag so `kubectl apply` rolls the pod on its own; an unchanged image keeps its
+# tag (no needless churn), and a commit that doesn't touch those inputs -- a
+# frontend/docs change, or an edit to backend/tests/ -- never forces a rollout.
+# See deploy/scripts/image-tag.sh; tested in backend/tests/test_image_tag.py.
+TAG           := $(shell deploy/scripts/image-tag.sh backend)
 BUILD_DIR     := dist
 BUNDLE_DIR    := $(BUILD_DIR)/remote
 
@@ -55,7 +69,7 @@ require = $(if $(strip $($(1))),,$(error $(1) is not set. Add it to deploy/lab.m
 
 .DEFAULT_GOAL := help
 .PHONY: help setup test dev dev-nocluster image image-save image-load secrets deploy pod-check \
-        status logs api-check undeploy clean render bundle ship tool-images
+        status logs api-check undeploy clean-images clean render bundle ship tool-images
 
 help:  ## List targets
 	@grep -hE '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -147,7 +161,8 @@ render:
 		    -e "s|__TSHARK_LIVE_CAPTURE__|$(TSHARK_LIVE_CAPTURE)|" \
 		    -e "s|__GRAFANA_BASE_URL__|$(GRAFANA_BASE_URL)|" \
 		    -e "s|__PROMETHEUS_TSDB_HOSTPATH__|$(PROMETHEUS_TSDB_HOSTPATH)|" \
-		    -e "s|__DIAGNOSTICS_NAMESPACES__|$(DIAGNOSTICS_NAMESPACES)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
+		    -e "s|__DIAGNOSTICS_NAMESPACES__|$(DIAGNOSTICS_NAMESPACES)|" \
+		    -e "s|__RTI__|$(RTI)|" -e "s|__RTI_IMAGE__|$(RTI_IMAGE)|" -e "s|__RTI_QOS_FILE__|$(RTI_QOS_FILE)|" -e "s|__RTI_PEER__|$(RTI_PEER)|" -e "s|__RTI_SECURITY_SECRET__|$(RTI_SECURITY_SECRET)|" -e "s|__RTI_SDDS_DIR__|$(RTI_SDDS_DIR)|" "$$f" > $(BUNDLE_DIR)/k8s/$$(basename $$f); \
 	done
 	@for f in deploy/k8s-portrait/*.yaml; do \
 		sed -e "s|__NAMESPACE__|$(NAMESPACE)|" "$$f" > $(BUNDLE_DIR)/k8s-portrait/$$(basename $$f); \
@@ -194,6 +209,9 @@ logs: bundle  ## Follow the pod's logs (Ctrl-C to stop)
 undeploy: bundle  ## Remove everything make deploy created (deletes the database volume)
 	$(REMOTE) undeploy
 	$(SSH) $(NODE) rm -rf $(REMOTE_DIR)
+
+clean-images: bundle  ## Remove old portrait-iq images from the node, keeping the deployed one
+	$(REMOTE) clean-images
 
 clean:  ## Remove local build output (dist/)
 	rm -rf $(BUILD_DIR)

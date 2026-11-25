@@ -125,15 +125,22 @@ class PodRunner:
         run_as_user: int | None = None,
         extra_volumes: tuple[dict, ...] = (),
         extra_mounts: tuple[dict, ...] = (),
+        secret_mount: tuple[str, str] | None = None,
     ) -> None:
         """Start a pod that runs command (usually a long sleep) so the plugin
         can exec its checks in it. Only /tmp is writable, unless extra_volumes
-        are given. run_as_user and the extra_volumes/extra_mounts exist for the
-        Prometheus TSDB export (SCRUM-105): a root pod with a read-only hostPath
-        onto the node's Prometheus data and a writable mount of the backend's
-        data PVC, so a multi-GB file is written straight to where the backend
-        reads it rather than streamed out over exec. Every other plugin leaves
-        them unset and keeps the locked-down default (non-root, no host access)."""
+        are given.
+
+        run_as_user and the extra_volumes/extra_mounts exist for the Prometheus
+        TSDB export (SCRUM-105): a root pod with a read-only hostPath onto the
+        node's Prometheus data and a writable mount of the backend's data PVC,
+        so a multi-GB file is written straight to where the backend reads it
+        rather than streamed out over exec. Every other plugin leaves them unset
+        and keeps the locked-down default (non-root, no host access).
+
+        secret_mount, when given, is (secret_name, mount_path): that Secret is
+        mounted read-only at mount_path, each of its keys appearing as a file.
+        Used for the DDS security files rtiddsspy needs (SCRUM-39)."""
         labels = {
             **TOOL_LABELS,
             "portrait-iq/tool": tool.replace("_", "-"),
@@ -175,6 +182,15 @@ class PodRunner:
                 "volumes": volumes,
             },
         }
+        if secret_mount is not None:
+            secret_name, mount_path = secret_mount
+            # Read-only, and the key is 0444 inside this single-use tool pod.
+            body["spec"]["containers"][0]["volumeMounts"].append(
+                {"name": "dds-security", "mountPath": mount_path, "readOnly": True}
+            )
+            body["spec"]["volumes"].append(
+                {"name": "dds-security", "secret": {"secretName": secret_name, "defaultMode": 0o444}}
+            )
         try:
             self.api.create_namespaced_pod(self.namespace, body, _request_timeout=API_TIMEOUT_S)
         except ApiException as e:
@@ -212,11 +228,28 @@ class PodRunner:
                 )
             self._sleep(2)
 
-    def delete(self, name: str) -> None:
-        """Delete the pod now. Already gone is fine."""
+    def exists(self, name: str) -> bool:
+        """True if the pod is still present. A 404 means it is gone; any other
+        API error is reported as present -- we must not assume a pod we could
+        not check on has been removed (it may still hold a resource)."""
+        try:
+            self.api.read_namespaced_pod(name, self.namespace, _request_timeout=API_TIMEOUT_S)
+            return True
+        except ApiException as e:
+            return e.status != 404
+
+    def delete(self, name: str, grace_period_seconds: int = 0) -> None:
+        """Delete the pod. Already gone is fine. The default (0) forces immediate
+        removal of the pod object. Pass a positive grace period to let the kubelet
+        terminate the process first: the object then lingers until the kubelet
+        confirms the process has stopped, so -- together with wait_gone -- a caller
+        can tell when a host resource the pod held (e.g. a fixed host port) is
+        actually free again. A force delete gives no such guarantee: the object
+        can disappear while the process is still shutting down."""
         try:
             self.api.delete_namespaced_pod(
-                name, self.namespace, grace_period_seconds=0, _request_timeout=API_TIMEOUT_S
+                name, self.namespace, grace_period_seconds=grace_period_seconds,
+                _request_timeout=API_TIMEOUT_S,
             )
         except ApiException as e:
             if e.status == 404:
@@ -225,6 +258,21 @@ class PodRunner:
                 f"could not delete pod {name}: {_api_message(e)}",
                 safe_reason="Could not remove the diagnostic's pod.",
             ) from None
+
+    def wait_gone(self, name: str, timeout_s: int) -> bool:
+        """Poll until the pod object is no longer present, or timeout. Returns
+        True only when it is confirmed gone (exists() is False -- a 404). After a
+        graceful delete the kubelet removes the object only once the process has
+        terminated, so a True here means a host resource the pod held is free. A
+        read error other than 404 keeps the pod 'present' (exists() is
+        conservative), so a flaky API never makes a still-running pod look gone."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            if not self.exists(name):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            self._sleep(2)
 
     def list_tool_pods(self) -> list[PodInfo]:
         """Every tool pod of ours in the namespace, for the cleanup prompt."""

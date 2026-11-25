@@ -105,6 +105,23 @@ def test_host_network_pod_still_resolves_cluster_names(runner, api):
     assert api.created[0][1]["metadata"]["labels"]["portrait-iq/job"] == "adhoc"
 
 
+def test_a_secret_mount_is_added_read_only(runner, api):
+    runner.create(name="p", tool="rti", job_id="j", image="i", command=["sleep", "1"],
+                  deadline_s=10, limits=LIMITS, secret_mount=("rti-dds-security", "/opt/axone-tools/sdds"))
+    spec = api.created[0][1]["spec"]
+    mount = next(m for m in spec["containers"][0]["volumeMounts"] if m["name"] == "dds-security")
+    assert mount == {"name": "dds-security", "mountPath": "/opt/axone-tools/sdds", "readOnly": True}
+    vol = next(v for v in spec["volumes"] if v["name"] == "dds-security")
+    assert vol["secret"]["secretName"] == "rti-dds-security"
+
+
+def test_no_secret_volume_without_a_secret_mount(runner, api):
+    runner.create(name="p", tool="netshoot", job_id="j", image="i", command=["x"],
+                  deadline_s=10, limits=LIMITS)
+    spec = api.created[0][1]["spec"]
+    assert [v["name"] for v in spec["volumes"]] == ["tmp"]
+
+
 def test_create_failure_says_why(runner, api):
     def forbidden(*a, **kw):
         raise ApiException(status=403, reason="Forbidden")
