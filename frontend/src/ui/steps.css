@@ -7,7 +7,7 @@
 .steps > li:not(:last-child)::before {
   content: ""; position: absolute; left: 9px; top: 24px; bottom: 2px; width: 2px; border-radius: 1px; background: var(--line);
 }
-.steps > li:is([data-state="done"], [data-state="warn"]):not(:last-child)::before { background: var(--primary); }
+.steps > li:is([data-state="done"], [data-state="warn"], [data-state="partial"]):not(:last-child)::before { background: var(--primary); }
 
 /* Marks */
 .step-mark { position: relative; width: 20px; height: 20px; margin-top: 3px; border-radius: 50%; border: 2px solid var(--line-strong); background: var(--panel); }
@@ -15,9 +15,10 @@
   border-color: color-mix(in srgb, var(--primary) 25%, transparent); border-top-color: var(--primary);
   animation: step-spin 700ms linear infinite;
 }
-.steps > li:is([data-state="done"], [data-state="warn"], [data-state="failed"]) .step-mark { border: 0; }
+.steps > li:is([data-state="done"], [data-state="warn"], [data-state="partial"], [data-state="failed"]) .step-mark { border: 0; }
 .steps > li[data-state="done"] .step-mark { background: var(--primary); }
 .steps > li[data-state="warn"] .step-mark { background: #8a6d00; }
+.steps > li[data-state="partial"] .step-mark { background: #8a6d00; }
 .steps > li[data-state="failed"] .step-mark { background: var(--error-text); }
 /* check */
 .steps > li[data-state="done"] .step-mark::after {
@@ -25,10 +26,10 @@
   border-right: 2px solid #fff; border-bottom: 2px solid #fff; transform: rotate(45deg);
 }
 /* exclamation */
-.steps > li[data-state="warn"] .step-mark::after {
+.steps > li:is([data-state="warn"], [data-state="partial"]) .step-mark::after {
   content: ""; position: absolute; left: 9px; top: 4px; width: 2px; height: 7px; border-radius: 1px; background: #fff;
 }
-.steps > li[data-state="warn"] .step-mark::before {
+.steps > li:is([data-state="warn"], [data-state="partial"]) .step-mark::before {
   content: ""; position: absolute; left: 9px; top: 14px; width: 2px; height: 2px; background: #fff;
 }
 /* cross */
@@ -51,8 +52,10 @@
 .step-time { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 15px; }
 .step-detail { margin: 2px 0 0; color: var(--muted); }
 .steps > li[data-state="failed"] .step-detail { color: var(--text); }
+.steps > li[data-state="partial"] .step-detail { color: var(--text); }
 .step-tag { display: inline-block; padding: 0 8px; border-radius: 999px; font-weight: 600; font-size: 14px; }
 .step-tag.warn { background: var(--warn-bg); color: #5c4800; }
+.step-tag.partial { background: var(--warn-bg); color: #5c4800; }
 .step-tag.failed { background: var(--error-bg); color: var(--error-text); }
 .step-issues { margin-top: 4px; }
 .step-issues > summary, .steps-summary > summary {

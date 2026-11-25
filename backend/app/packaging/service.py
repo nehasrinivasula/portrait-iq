@@ -165,6 +165,7 @@ class PackageStatus:
     masked: bool
     requested_by: str
     started_at: str
+    run_status: Optional[str] = None
     finished_at: Optional[str] = None
     steps: list[Step] = field(default_factory=list)
     file_name: Optional[str] = None
@@ -182,7 +183,9 @@ class PackageStatus:
 
     @property
     def partial(self) -> bool:
-        return any(s.status == "failed" for s in self.steps)
+        return self.run_status in ("partial", "failed", "cleanup_failed", "interrupted") or any(
+            s.status in ("partial", "failed") for s in self.steps
+        )
 
 
 # --- reading state --------------------------------------------------------------
@@ -341,7 +344,8 @@ def start(db: Session, job_id: str, *, masked: bool, requested_by: str) -> Packa
             raise PackageError("An export of this run is already being prepared.")
         _building.add(job_id)
     status = PackageStatus(job_id=job_id, state="preparing", masked=masked, requested_by=requested_by,
-                           started_at=_now(), steps=[Step(i, label) for i, label in STEPS], export_id=_new_id("exp"))
+                           started_at=_now(), run_status=job.status if job is not None else None,
+                           steps=[Step(i, label) for i, label in STEPS], export_id=_new_id("exp"))
     _save(status)
     return status
 
@@ -441,7 +445,8 @@ def _run_step(ctx: _Ctx, step: Step, func, *, fatal: bool = False) -> None:
         _save(ctx.status)
     try:
         func(ctx, step)
-        step.status = "warn" if step.issues else "done"
+        if step.status == "running":
+            step.status = "warn" if step.issues else "done"
     except PackageError as e:
         step.status = "failed"
         step.issues.append(Issue(step.label, str(e)))
@@ -672,19 +677,25 @@ def _step_tools(ctx: _Ctx, step: Step) -> None:
         return
     masked = ctx.status.masked
     results, results_scan = _clean_results(read_results(ctx.job.id), masked)
-    _write_json(tools_dir / "results.json", results)
     job_root = job_output_dir(ctx.job.id)
     copied = 0
     entries: list[dict] = []
+    omitted_for_masking = False
+    exported_results = []
     for r in results:
         tool = str(r.get("tool", "unknown"))
+        exported = {key: value for key, value in r.items() if key != "artifact_paths"}
+        exported_paths = []
+        exported_results.append(exported)
         if "error" in r:
             step.issues.append(Issue(tool, f"This diagnostic did not finish during the run: {r['error']}"))
-            continue
         for raw in r.get("artifact_paths", []):
             src = Path(raw)
             if not src.is_absolute():
-                src = job_root / src
+                # Accept both paths relative to the backend and paths relative
+                # to this run, then enforce containment in either case.
+                if not _inside(src, job_root):
+                    src = job_root / src
             name = src.name
             if not _inside(src, job_root):
                 step.issues.append(Issue(f"{tool}: {name}", "Left out: the file is outside this run's folder."))
@@ -695,15 +706,20 @@ def _step_tools(ctx: _Ctx, step: Step) -> None:
             ok, scan = _scan_artifact(src, tools_dir / tool / name, masked)
             entries.append(_file_entry(tool, name, scan, ok))
             if not ok:
+                omitted_for_masking = True
                 step.issues.append(Issue(f"{tool}: {name}", "Left out: only text files can be masked. "
                                                               "Export with masking off to include it."))
                 ctx.status.warnings.append(f"{tool}: {name} was left out because it could not be masked.")
                 continue
             copied += 1
+            exported_paths.append(f"tools/{tool}/{name}")
             if not scan.scanned:                      # in the zip, and the scanner could not read it
                 w = f"{tool}: {name} is in the zip but could not be scanned for PHI / PII ({scan.reason})."
                 step.issues.append(Issue(f"{tool}: {name}", w))
                 ctx.status.warnings.append(w)
+        if exported_paths:
+            exported["artifact_paths"] = exported_paths
+    _write_json(tools_dir / "results.json", exported_results)
     tool_report = _files_report(entries, results_scan)
     ctx.report["tools"] = tool_report
     _write_json(ctx.work / "privacy" / "report.json", ctx.report)
@@ -716,6 +732,8 @@ def _step_tools(ctx: _Ctx, step: Step) -> None:
                                             files=copied + 1, masked=masked))
     ran = len(results)
     failed = sum(1 for r in results if "error" in r)
+    if failed:
+        step.status = "failed" if failed == ran and copied == 0 and not omitted_for_masking else "partial"
     if not ran:
         step.detail = "This run used no diagnostics."
     else:
@@ -951,6 +969,7 @@ def _step_run(ctx: _Ctx, step: Step) -> None:
         (work / name).mkdir(parents=True, exist_ok=True)
     sub = PackageStatus(job_id=job.id, state="preparing", masked=ctx.status.masked,
                         requested_by=ctx.status.requested_by, started_at=ctx.status.started_at,
+                        run_status=job.status,
                         steps=[Step(i, label) for i, label in STEPS if i != "zip"])
     sub_ctx = _Ctx(db=ctx.db, scope=job.id, job=job, work=work, status=sub, persist=False)
     for s in sub.steps:
@@ -966,6 +985,8 @@ def _step_run(ctx: _Ctx, step: Step) -> None:
     step.detail = next((s.detail for s in sub.steps if s.id == "logs"), None)
     if any(s.status == "failed" for s in sub.steps):
         raise PackageError("Part of this run could not be added. The notes say which.")
+    if any(s.status == "partial" for s in sub.steps):
+        step.status = "partial"
 
 
 def _step_set_metadata(ctx: _Ctx, step: Step) -> None:

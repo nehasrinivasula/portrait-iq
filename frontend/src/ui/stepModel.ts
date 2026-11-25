@@ -3,7 +3,7 @@
 // readability. Readability comes from each step's duration and from finished
 // steps being ticked off in order (see Steps.tsx), not from delay.
 
-export type StepStatus = "pending" | "running" | "done" | "warn" | "failed";
+export type StepStatus = "pending" | "running" | "done" | "warn" | "partial" | "failed";
 
 export interface StepIssue { item: string; reason: string }
 
@@ -24,10 +24,11 @@ export const STATUS_TEXT: Record<StepStatus, string> = {
   running: "in progress",
   done: "done",
   warn: "done, with notes",
+  partial: "partially complete",
   failed: "failed",
 };
 
-export const isFinished = (s: StepStatus) => s === "done" || s === "warn" || s === "failed";
+export const isFinished = (s: StepStatus) => s === "done" || s === "warn" || s === "partial" || s === "failed";
 
 /** 1-based position of the running step (or of the last finished one while between steps); null before and after. */
 export function stepPosition(steps: StepItem[]): { position: number | null; total: number } {

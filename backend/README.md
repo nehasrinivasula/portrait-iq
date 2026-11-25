@@ -671,6 +671,19 @@ status `queued`; poll `GET /api/jobs/{id}`, then read each plugin's summary,
 warnings and files from `GET /api/jobs/{id}/results`. Files land in
 `JOB_OUTPUT_DIR/<job id>/<plugin>/` (default `./data/jobs`, gitignored).
 
+**Firewall settings** (`{"tools": ["firewall"]}`) connects from the backend
+to the target IP as `gehc` via SSH and reads `sudo -n firewall-cmd
+--zone=external --list-all`. It saves `firewall-info.txt` in the run's
+`firewall/` directory; the normal run ZIP includes it at
+`tools/firewall/firewall-info.txt`. The backend needs network access to the
+node, a trusted SSH host key in its `known_hosts`, an approved SSH identity
+(agent/default identity or a mounted private key selected by
+`FIREWALL_SSH_IDENTITY_FILE`), and noninteractive sudo permission for this
+read-only command. Do not place the private key in the repository or job
+options. SSH, sudo and firewalld failures are reported as tool failures.
+Only the external zone is collected; confirm any additional zones with the
+sponsor before expanding this scope.
+
 **Netshoot** (`{"tools": ["netshoot"]}`) starts one pod from
 `NETSHOOT_IMAGE` in `TOOLS_NAMESPACE` (default `portrait-iq`), runs
 interface, route and DNS checks plus ping, traceroute and TCP port checks
