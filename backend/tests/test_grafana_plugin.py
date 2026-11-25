@@ -196,3 +196,26 @@ def test_oversize_snapshot_is_trimmed_until_within_cap(tmp_path, monkeypatch, en
     assert "firing alert names" in saved.get("truncated", [])     # the bulky section was the one cut
     assert saved["alerts"]["firing"] == len(names)                # counts survive the trim
     assert saved["alerts"]["firing_names"] == []
+
+
+def test_oversize_scalar_health_is_capped_by_a_final_marker(tmp_path, monkeypatch, enabled):
+    # The bulk is in a scalar-fallback field (the data-source health payload), so
+    # trimming the dashboard/alert lists can't bring it under the cap. After the
+    # fallback to scalar health the file is re-measured and, if still over,
+    # replaced with a minimal marker, so the written file always respects the cap
+    # (allen re-review #3). The old code wrote the scalar fallback unchecked.
+    monkeypatch.setattr(settings, "grafana_max_snapshot_mb", 1)
+    huge = "m" * (2 * 1024 * 1024)                                 # 2 MB health message
+
+    def bulky(request):
+        if request.url.path == "/api/datasources/uid/prom1/health":
+            return httpx.Response(200, json={"status": "OK", "message": huge})
+        return grafana_handler(request)
+
+    configured(tmp_path, monkeypatch, handler=bulky).run("192.0.2.3")
+
+    text = (tmp_path / "grafana_health.json").read_text()
+    assert len(text.encode()) <= 1 * 1024 * 1024                   # the written file respects the cap
+    saved = json.loads(text)
+    assert "all fields" in saved.get("truncated", [])             # fell through to the final marker
+    assert huge not in text                                        # the oversized payload was dropped

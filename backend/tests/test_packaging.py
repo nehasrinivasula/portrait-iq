@@ -164,6 +164,45 @@ def test_unmasked_export_includes_binary_tool_files(env):
     assert "tools/tshark/capture.pcap" in open_zip(client).namelist()
 
 
+def _seed_tsdb_archive() -> str:
+    out = job_output_dir("job-1") / "prometheus_tsdb"
+    out.mkdir(parents=True, exist_ok=True)
+    archive = out / "prometheus_tsdb.tar.gz"
+    archive.write_bytes(b"\x1f\x8b\x08\x00tsdb-bytes")              # gzip magic + payload
+    results_path = job_output_dir("job-1") / "results.json"
+    results = json.loads(results_path.read_text())
+    results.append({"tool": "prometheus_tsdb", "summary": "TSDB exported.",
+                    "warnings": [], "artifact_paths": [str(archive)]})
+    results_path.write_text(json.dumps(results))
+    return "tools/prometheus_tsdb/prometheus_tsdb.tar.gz"
+
+
+def test_tsdb_archive_is_left_out_of_a_masked_export(env):
+    # The Prometheus TSDB export is a binary .tar.gz: it can't be masked, so a
+    # masked zip leaves it out and says so (allen re-review #2).
+    client, _ = env
+    arcname = _seed_tsdb_archive()
+    status = export(client)                                        # masked (default)
+    assert arcname not in open_zip(client).namelist()
+    tools = next(s for s in status["steps"] if s["id"] == "tools")
+    assert any("prometheus_tsdb.tar.gz" in i["item"] for i in tools["issues"])
+
+
+def test_tsdb_archive_is_included_in_an_unmasked_export(env):
+    # With masking off the raw metrics archive is in the zip as-is (allen re-review #2).
+    client, _ = env
+    arcname = _seed_tsdb_archive()
+    export(client, mask=False)
+    assert arcname in open_zip(client).namelist()
+
+
+def test_exports_root_uses_the_reserved_name_excluded_from_retention():
+    # The packaging export store and the retention exclusion must name the same
+    # folder, or run pruning could delete every export (allen re-review #1).
+    from app.cleanup.files import EXPORTS_DIRNAME
+    assert service.exports_root().name == EXPORTS_DIRNAME
+
+
 def test_findings_in_the_zip_carry_their_evidence_fields(env):
     client, _ = env
     export(client)

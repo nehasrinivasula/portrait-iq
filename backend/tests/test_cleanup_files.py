@@ -4,8 +4,8 @@ import os
 import pytest
 
 from app.cleanup.files import (
-    CleanupError, clear_job_files, folder_stats, human_size, parse_ids,
-    prune_old_runs, safe_job_dir,
+    CleanupError, EXPORTS_DIRNAME, clear_job_files, folder_stats, human_size,
+    job_dirs_newest_first, parse_ids, prune_old_runs, safe_job_dir,
 )
 from app.config import settings
 
@@ -164,3 +164,28 @@ def test_prune_with_min_age_still_removes_settled_old_runs(jobs_dir):
     removed = prune_old_runs(keep=0, max_total_mb=1, min_age_seconds=3600)
     assert removed == ["settled"]
     assert (jobs_dir / "fresh").is_dir()
+
+
+def test_job_dirs_newest_first_excludes_the_exports_folder(jobs_dir):
+    _run(jobs_dir, "run-a")
+    (jobs_dir / EXPORTS_DIRNAME).mkdir()                        # the reserved export store
+    names = [p.name for p in job_dirs_newest_first()]
+    assert names == ["run-a"]                                  # _exports is not a run
+
+
+def test_prune_never_touches_the_exports_dir(jobs_dir):
+    import time
+    now = time.time()
+    # One old run, plus the reserved _exports store holding finished exports.
+    # _exports is old and large, exactly the folder the old code would have
+    # deleted in one pass, wiping every stored export (allen #1).
+    _run(jobs_dir, "old-run", size=2 * _MB, mtime=now - 7200)  # over the cap, so it prunes
+    exports = jobs_dir / EXPORTS_DIRNAME
+    exports.mkdir()
+    (exports / "exp-1").mkdir()
+    (exports / "exp-1" / "bundle.zip").write_bytes(b"x" * (5 * _MB))
+    os.utime(exports, (now - 7200, now - 7200))                # as old as the run
+
+    removed = prune_old_runs(keep=0, max_total_mb=1)           # cap ignores the 5 MB export
+    assert removed == ["old-run"]                              # the run ages out
+    assert exports.is_dir() and (exports / "exp-1" / "bundle.zip").exists()  # exports survive

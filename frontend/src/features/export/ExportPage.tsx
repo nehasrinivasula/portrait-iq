@@ -143,6 +143,10 @@ export default function ExportPage() {
   const events = picked.reduce((n, p) => n + p.events, 0);
   const flagged = picked.reduce((n, p) => n + p.privacy.flagged_events, 0);
   const unfinished = picked.some((p) => !p.finished);
+  // The Prometheus TSDB archive is a binary database: it can't be masked, so a
+  // masked zip leaves it out, and an unmasked zip carries it raw (metric labels
+  // and all). Make that trade explicit when such an export is in the selection.
+  const hasTsdb = picked.some((p) => p.tools.some((t) => t.tool === "prometheus_tsdb"));
   const empty = ready && events === 0 && !picked.some((p) => p.scope === "run");
 
   // Nothing picked yet is a prompt, not an error: only real problems are shown in red.
@@ -187,6 +191,14 @@ export default function ExportPage() {
                 </label>
               </div>
               <p id="mask-hint" className="hint">Replaces flagged values with [REDACTED:kind], as the Logs page does. Packet captures can't be masked, so they're left out.</p>
+              {hasTsdb && (
+                <div className={mask ? "alert" : "alert warn"} role="status">
+                  <strong>Prometheus TSDB archive</strong>
+                  {mask
+                    ? "This export includes the raw metrics database, a binary file that can't be masked — a masked zip leaves it out. Turn masking off to include it."
+                    : "The raw metrics database will be in the zip as-is, metric label sets included. The audit log records this."}
+                </div>
+              )}
               {!mask && flagged > 0 && (
                 <div className="alert warn" role="status">
                   <strong>Masking is off</strong>

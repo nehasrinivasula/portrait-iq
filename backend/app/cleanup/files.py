@@ -22,6 +22,13 @@ class CleanupError(ValueError):
 # download, even for an interrupted run. It is never listed or removed as a leftover.
 PROTECTED_DIRS = frozenset({"package"})
 
+# The packaging service keeps finished exports in one reserved folder that sits
+# next to the run folders under the job output dir (packaging.service.exports_root
+# imports this name). It is NOT a run, so run retention must never iterate over it
+# or delete it -- doing so would wipe every stored export in a single pass.
+# test_prune_never_touches_the_exports_dir keeps this in sync with the service.
+EXPORTS_DIRNAME = "_exports"
+
 
 def folder_stats(path: Path) -> tuple[int, int]:
     """Files and bytes in a job folder, not counting the protected export folder."""
@@ -72,7 +79,8 @@ def job_dirs_newest_first() -> list[Path]:
     base = Path(settings.job_output_dir)
     if not base.is_dir():
         return []
-    dirs = [p for p in base.iterdir() if p.is_dir() and not p.is_symlink()]
+    dirs = [p for p in base.iterdir()
+            if p.is_dir() and not p.is_symlink() and p.name != EXPORTS_DIRNAME]
     return sorted(dirs, key=lambda p: p.stat().st_mtime, reverse=True)
 
 

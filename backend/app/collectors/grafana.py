@@ -258,6 +258,14 @@ class GrafanaHealthCollector(Collector):
                 trimmed = {k: snapshot.get(k) for k in ("grafana", "datasource", "node", "health")}
                 dropped.append("all lists")
                 blob = _dump({**trimmed, "dashboards": None, "alerts": None, "truncated": dropped})
+            if _too_big(blob):
+                # Even the scalar health is over the cap (a pathologically large
+                # Grafana or data-source health payload). Write a minimal marker so
+                # the file on disk is never bigger than the cap we promise; the
+                # summary and warnings still carry the real counts and levels.
+                dropped.append("all fields")
+                blob = _dump({"truncated": dropped,
+                              "note": "snapshot exceeded the size cap even as scalar health only"})
             notes.append("snapshot exceeded the size cap; trimmed: " + ", ".join(dropped))
         artifact.write_text(blob)
 
