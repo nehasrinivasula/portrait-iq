@@ -4,9 +4,13 @@ export default function HomePage() {
   return (
     <>
       <h1>What would you like to do?</h1>
-      <p className="muted">Export logs from the system, or run diagnostics on it. You can do either, in any order.</p>
+      <p className="muted">Connect to the system, then export logs or run diagnostics. You can review saved results in any order.</p>
 
       <div className="card-grid">
+        <Link to="/connect" className="action-card">
+          <h2>Connect to system</h2>
+          <span className="muted">Check the Portrait Mobile address and prefill safe starting settings for a run.</span>
+        </Link>
         <Link to="/logs" className="action-card">
           <h2>Logs</h2>
           <span className="muted">Browse every run and imported file, search and filter them, and export them as a zip.</span>

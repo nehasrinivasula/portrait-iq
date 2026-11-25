@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     # Wait this long after an hour ends before pulling it, so logs that
     # devices upload a little late still land in that hour's pull.
     axone_settle_minutes: int = 15
+    # CMS uses the same Log Export API as device logs, but GE has to confirm
+    # its integer eventCategory before collection can be enabled. None keeps
+    # the feature safely unavailable rather than guessing a category.
+    axone_cms_event_category: int | None = None
 
     # --- Diagnostic tool plugins (SCRUM-39) ---
     # Tool pods go in our own namespace, never in Portrait's (pm) or GE's
