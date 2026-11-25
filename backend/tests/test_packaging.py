@@ -270,6 +270,39 @@ def test_failed_binary_capture_can_be_exported_without_masking(env):
     assert "tools/interrupted_binary/capture.pcap" in open_zip(client).namelist()
 
 
+def test_failed_tool_salvage_respects_output_limit_in_unmasked_export(env):
+    client, db = env
+
+    class OversizedCapture(Collector):
+        name = "oversized_capture"
+
+        def run(self, target_ip):
+            folder = self.require_output_dir()
+            (folder / "a-small.pcap").write_bytes(b"partial capture")
+            (folder / "z-large.pcap").write_bytes(b"x" * (1024 * 1024))
+            raise PluginError("Capture stopped.")
+
+        def cleanup(self):
+            pass
+
+    registry = PluginRegistry()
+    registry.register(OversizedCapture)
+    job = db.get(Job, "job-1")
+    job.tools = '["oversized_capture"]'
+    job.cpu_limit_pct, job.mem_limit_mb, job.max_output_mb = 50, 512, 1
+    db.commit()
+    run_job(db, job, "192.0.2.10", registry=registry)
+
+    result = read_results(job.id)[0]
+    assert [Path(path).name for path in result["artifact_paths"]] == ["a-small.pcap"]
+    assert any("exceeded the output limit" in warning for warning in result["warnings"])
+
+    export(client, mask=False)
+    with open_zip(client) as package:
+        assert "tools/oversized_capture/a-small.pcap" in package.namelist()
+        assert "tools/oversized_capture/z-large.pcap" not in package.namelist()
+
+
 def test_a_failed_step_still_exports_the_rest(env, monkeypatch):
     client, _ = env
     monkeypatch.setitem(service._STEP_FUNCS, "findings", lambda *_: (_ for _ in ()).throw(KeyError("x")))
