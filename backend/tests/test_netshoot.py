@@ -20,6 +20,12 @@ from app.orchestrator.jobs import create_job, read_results, run_job
 
 LIMITS = ResourceLimits(cpu_pct=50, mem_mb=512, max_output_mb=100)
 
+@pytest.fixture(autouse=True)
+def check_delays(monkeypatch):
+    delays = []
+    monkeypatch.setattr("app.collectors.netshoot.sleep", delays.append)
+    return delays
+
 
 class FakeRunner:
     def __init__(self, results=None, start_error=None):
@@ -60,11 +66,14 @@ def plugin(tmp_path):
 def test_configure_validates_every_value():
     p = NetshootCollector(LIMITS)
     p.configure({"ports": [80], "dns_names": ["example.internal"], "extra_targets": ["192.168.0.5"]})
-    assert p.options == {"ports": [80], "dns_names": ["example.internal"], "extra_targets": ["192.168.0.5"]}
+    assert p.options == {"ports": [80], "dns_names": ["example.internal"],
+                         "extra_targets": ["192.168.0.5"], "check_interval_seconds": 1}
     for bad in (
         {"ports": [0]}, {"ports": [70000]}, {"ports": ["22"]}, {"ports": [True]}, {"ports": 22},
         {"dns_names": ["-oProxyCommand=x"]}, {"extra_targets": ["a b"]}, {"extra_targets": ["x;rm"]},
         {"ports": list(range(1, 30))}, {"verbose": True},
+        {"check_interval_seconds": 0}, {"check_interval_seconds": 61},
+        {"check_interval_seconds": True}, {"check_interval_seconds": 1.5},
     ):
         with pytest.raises(PluginConfigError):
             p.configure(bad)
@@ -78,7 +87,8 @@ def test_is_host(value, ok):
     assert is_host(value) is ok
 
 
-def test_run_deploys_checks_and_reports(plugin, runner, tmp_path):
+def test_run_deploys_checks_and_reports(plugin, runner, tmp_path, check_delays):
+    plugin.configure({"check_interval_seconds": 3})
     runner.results["nc"] = k8s.ExecResult(1, "", "nc: connect to 192.0.2.10 port 22 (tcp) failed: Connection refused\n")
     runner.results["dig"] = k8s.ExecResult(0, "", "")   # resolves to nothing
     result = plugin.run("192.0.2.10")
@@ -93,6 +103,7 @@ def test_run_deploys_checks_and_reports(plugin, runner, tmp_path):
     total = 3 + 2 + 2 + 3        # pod info, 2 DNS names, ping + traceroute, 3 ports
     assert result.summary == f"{total - 5} of {total} network checks passed against 192.0.2.10"
     assert len(result.checks) == total
+    assert check_delays == [3] * (total - 1)
     assert [check.status for check in result.checks].count("fail") == 5
     assert next(c for c in result.checks if c.label == "TCP 192.0.2.10:22").reason == "Connection refused."
     assert next(c for c in result.checks if c.label == "resolve kubernetes.default.svc.cluster.local").reason == "No answer returned."
@@ -106,6 +117,17 @@ def test_run_deploys_checks_and_reports(plugin, runner, tmp_path):
     plugin.cleanup()
     plugin.cleanup()   # twice is fine
     assert runner.deleted == [pod["name"]]
+
+def test_large_outputs_are_capped_and_reported(plugin, runner, tmp_path):
+    plugin.limits = ResourceLimits(cpu_pct=50, mem_mb=512, max_output_mb=1)
+    runner.results["nc"] = k8s.ExecResult(0, "é" * 131072, "y" * 262144, True)
+    result = plugin.run("192.0.2.10")
+    records = json.loads((tmp_path / "netshoot.json").read_text())
+    assert 0 < len(records) < len(result.checks)
+    for name in ("netshoot.json", "netshoot.txt"):
+        assert (tmp_path / name).stat().st_size <= 1024 * 1024
+    assert "[output truncated]" in (tmp_path / "netshoot.txt").read_text()
+    assert sum("truncated" in warning for warning in result.warnings) == 3
 
 
 def test_check_output_is_redacted(plugin, runner, monkeypatch):

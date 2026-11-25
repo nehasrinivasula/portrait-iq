@@ -23,7 +23,7 @@ export interface JobConfiguration {
   max_output_mb: number;
   tshark: { duration_s: number; interface: string; filter_preset: string };
   rti: { domain: number; duration_s: number };
-  netshoot: { ports: number[]; dns_names: string[]; extra_targets: string[] };
+  netshoot: { ports: number[]; dns_names: string[]; extra_targets: string[]; check_interval_seconds: number };
 }
 
 export type JobStatus = "queued" | "running" | "done" | "partial" | "failed" | "cleanup_failed" | "interrupted";
