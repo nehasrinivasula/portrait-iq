@@ -4,6 +4,7 @@ import { useAuth } from "../../auth/AuthContext";
 import { useNotify } from "../../ui/Notifications";
 import { getJob, getResults, isFinished, type Job, type ToolResult } from "../plugins/api";
 import type { AcquisitionResult } from "../logs/logsApi";
+import type { ConnectionSettings } from "../connect/connectionApi";
 import { progressText, type TaskProgress } from "../tasks/tasksApi";
 import { activeJobStore, resumeJobId } from "./jobStorage";
 
@@ -11,7 +12,7 @@ const POLL_MS = 2000;
 
 export type LogPull =
   | { state: "running"; progress?: string }
-  | { state: "done"; newFiles: number; events: number; skipped: number }
+  | { state: "done"; newFiles: number; events: number; skipped: number; sources: number }
   | { state: "error"; message: string };
 
 interface JobsState {
@@ -24,12 +25,15 @@ interface JobsState {
   /** True while polling is failing; the run itself is unaffected (S-2). */
   lost: boolean;
   /** Watch a run; pullLogs, when given, starts the log pull for it right away. */
-  track: (job: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult>) => void;
+  track: (job: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult | AcquisitionResult[]>) => void;
   clear: () => void;
   /** The Run page's target IP, kept here so it survives leaving the page.
    * Memory only, never browser storage, and forgotten on sign-out. */
   targetIp: string;
   setTargetIp: (ip: string) => void;
+  /** Safe setup values from the Connect page. Memory only; credentials are never included. */
+  connectionSettings: ConnectionSettings | null;
+  setConnectionSettings: (settings: ConnectionSettings | null) => void;
 }
 
 const Ctx = createContext<JobsState | null>(null);
@@ -50,19 +54,23 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   const [lost, setLost] = useState(false);
   const [logPull, setLogPull] = useState<LogPull | null>(null);
   const [targetIp, setTargetIp] = useState("");
+  const [connectionSettings, setConnectionSettings] = useState<ConnectionSettings | null>(null);
   const announced = useRef<string | null>(null);
 
   const clear = useCallback(() => { activeJobStore.clear(); setJob(null); setResults(null); setLost(false); setLogPull(null); setRestoring(false); }, []);
-  const track = useCallback((j: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult>) => {
+  const track = useCallback((j: Job, pullLogs?: (onProgress: TaskProgress) => Promise<AcquisitionResult | AcquisitionResult[]>) => {
     activeJobStore.set(j.id); setResults(null); setLost(false); setRestoring(false); announced.current = null; setJob(j); setLogPull(null);
     if (!pullLogs) return;
     setLogPull({ state: "running" });
     pullLogs((t) => setLogPull({ state: "running", progress: progressText(t) }))
-      .then((r) => {
-        const events = r.files.reduce((n, f) => n + (f.events ?? 0), 0);
-        const skipped = r.files.reduce((n, f) => n + (f.rows_rejected ?? 0), 0);
-        setLogPull({ state: "done", newFiles: r.new_files, events, skipped });
-        notify({ kind: r.failed || skipped ? "warn" : "ok", title: r.failed ? "Some logs couldn't be collected" : skipped ? "Logs collected with skipped lines" : "Logs collected", body: `${events} events from ${r.new_files} new file${r.new_files === 1 ? "" : "s"}${skipped ? `; ${skipped} malformed log lines skipped` : ""}.` });
+      .then((result) => {
+        const pulls = Array.isArray(result) ? result : [result];
+        const events = pulls.reduce((total, r) => total + r.files.reduce((n, f) => n + (f.events ?? 0), 0), 0);
+        const skipped = pulls.reduce((total, r) => total + r.files.reduce((n, f) => n + (f.rows_rejected ?? 0), 0), 0);
+        const newFiles = pulls.reduce((total, r) => total + r.new_files, 0);
+        const failed = pulls.reduce((total, r) => total + r.failed, 0);
+        setLogPull({ state: "done", newFiles, events, skipped, sources: pulls.length });
+        notify({ kind: failed || skipped ? "warn" : "ok", title: failed ? "Some logs couldn't be collected" : skipped ? "Logs collected with skipped lines" : "Logs collected", body: `${events} events from ${newFiles} new file${newFiles === 1 ? "" : "s"}${skipped ? `; ${skipped} malformed log lines skipped` : ""}.` });
       })
       .catch((e) => {
         const message = e instanceof ApiError && e.status !== 0 ? e.message : "Can't reach the server.";
@@ -71,7 +79,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
       });
   }, [notify]);
 
-  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); setLogPull(null); setRestoring(false); setTargetIp(""); } }, [user]);
+  useEffect(() => { if (!user) { setJob(null); setResults(null); setLost(false); setLogPull(null); setRestoring(false); setTargetIp(""); setConnectionSettings(null); } }, [user]);
 
   // Sign-out removes the bearer token, not the opaque job id. Once the same
   // browser session signs in again, recover the persisted server-side run.
@@ -123,5 +131,5 @@ export function JobsProvider({ children }: { children: ReactNode }) {
     else notify({ kind: "error", title: "The run failed", body: "Open Run diagnostics for details." });
   }, [job, notify]);
 
-  return <Ctx.Provider value={{ job, results, restoring, lost, logPull, track, clear, targetIp, setTargetIp }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ job, results, restoring, lost, logPull, track, clear, targetIp, setTargetIp, connectionSettings, setConnectionSettings }}>{children}</Ctx.Provider>;
 }

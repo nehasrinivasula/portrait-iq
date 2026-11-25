@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     # Wait this long after an hour ends before pulling it, so logs that
     # devices upload a little late still land in that hour's pull.
     axone_settle_minutes: int = 15
+    # CMS uses the same Log Export API as device logs, but GE has to confirm
+    # its integer eventCategory before collection can be enabled. None keeps
+    # the feature safely unavailable rather than guessing a category.
+    axone_cms_event_category: int | None = None
 
     # --- Diagnostic tool plugins (SCRUM-39) ---
     # Tool pods go in our own namespace, never in Portrait's (pm) or GE's
@@ -76,6 +80,9 @@ class Settings(BaseSettings):
     tools_namespace: str = "portrait-iq"
     # Comma-separated namespaces explicitly provisioned for diagnostic pods.
     tools_allowed_namespaces: str = ""
+    # Optional private key mounted on the backend for read-only node diagnostics.
+    # When unset, SSH uses the backend process's agent/default identities.
+    firewall_ssh_identity_file: str | None = None
     # Namespaces the Kubernetes diagnostics tool reads (pods, events), comma-separated.
     # Empty: ours (tools_namespace) and Portrait's pm. Read-only RBAC for each is in
     # deploy/k8s/tool-rbac.yaml and deploy/k8s-portrait/.

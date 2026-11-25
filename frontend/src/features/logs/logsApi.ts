@@ -121,13 +121,30 @@ export function importLogFiles(files: File[], onProgress?: TaskProgress) {
   );
 }
 
-export interface Source { id: string; display_name: string; configured: boolean; reason: string }
+export interface Source {
+  id: string;
+  display_name: string;
+  configured: boolean;
+  reason: string;
+  /** Server-advertised, non-secret source capabilities. */
+  options?: Record<string, string[]>;
+}
 export const listSources = () => apiFetch<Source[]>("/api/sources");
 
 /** Pull a window from a source and ingest it under a job, so the logs belong to that run. */
 export const acquireForJob = (sourceId: string, jobId: string, since: string, until: string, onProgress?: TaskProgress) =>
   runTask<AcquisitionResult>(
     () => apiFetch<TaskStatus<AcquisitionResult>>(`/api/sources/${sourceId}/acquire`, {
+      method: "POST",
+      body: JSON.stringify({ since, until, job_id: jobId, ingest: true }),
+    }),
+    onProgress,
+  );
+
+/** Pull the server-configured CMS category through the Axone CSV export. */
+export const acquireCmsForJob = (jobId: string, since: string, until: string, onProgress?: TaskProgress) =>
+  runTask<AcquisitionResult>(
+    () => apiFetch<TaskStatus<AcquisitionResult>>("/api/sources/axone/cms/acquire", {
       method: "POST",
       body: JSON.stringify({ since, until, job_id: jobId, ingest: true }),
     }),

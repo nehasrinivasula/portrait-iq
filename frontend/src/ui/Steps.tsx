@@ -35,13 +35,14 @@ export default function Steps({ steps, live, under = {}, collapsible = false }: 
               <div className="step-head">
                 <span className="step-label">{s.label}<span className="visually-hidden">: {STATUS_TEXT[s.status]}</span></span>
                 {s.status === "warn" && <span className="step-tag warn">Notes</span>}
+                {s.status === "partial" && <span className="step-tag partial">Partial</span>}
                 {s.status === "failed" && <span className="step-tag failed">Failed</span>}
                 {took && <span className="step-time">{took}</span>}
               </div>
               {s.detail && <p className="step-detail">{s.detail}</p>}
               {s.issues && s.issues.length > 0 && (
-                <details className="step-issues" open={s.status === "failed"}>
-                  <summary>{s.status === "failed" ? "What went wrong" : `${s.issues.length} note${s.issues.length === 1 ? "" : "s"}`}</summary>
+                <details className="step-issues" open={s.status === "failed" || s.status === "partial"}>
+                  <summary>{s.status === "failed" || s.status === "partial" ? "What went wrong" : `${s.issues.length} note${s.issues.length === 1 ? "" : "s"}`}</summary>
                   <ul>{s.issues.map((i, n) => <li key={`${n}-${i.item}`}><strong>{i.item}</strong>: {i.reason}</li>)}</ul>
                 </details>
               )}
@@ -56,7 +57,7 @@ export default function Steps({ steps, live, under = {}, collapsible = false }: 
   if (live) {
     return <div className="steps-wrap">{position && <p className="steps-count">Step {position} of {total}</p>}{list}</div>;
   }
-  const needsLook = steps.some((s) => s.status === "failed" || s.status === "warn");
+  const needsLook = steps.some((s) => s.status === "failed" || s.status === "partial" || s.status === "warn");
   if (!collapsible || needsLook || !steps.every((s) => isFinished(s.status))) return <div className="steps-wrap">{list}</div>;
   const took = totalDuration(steps);
   return (

@@ -146,7 +146,7 @@ def preview_files(
 
 
 def _start(db: Session, source: LogSource, user: User, req: AcquireRequest, *,
-           scratch_dirs: tuple[str, ...] = ()) -> TaskOut:
+           scratch_dirs: tuple[str, ...] = (), extra_params: dict | None = None) -> TaskOut:
     """Check the request, then hand the pull to a background task and return at once.
 
     Only cheap checks happen here (the run exists, the window makes sense, the source is set up). Listing,
@@ -166,12 +166,58 @@ def _start(db: Session, source: LogSource, user: User, req: AcquireRequest, *,
     options = dict(req.options)
     if req.device_uuids:
         options["device_uuids"] = ",".join(req.device_uuids)
+    params = {
+        "source_id": source.id, "since": since.isoformat(), "until": until.isoformat(), "options": options,
+        "job_id": req.job_id, "ingest": req.ingest, "scratch_dirs": list(scratch_dirs),
+    }
+    # Endpoint-owned metadata is kept separate from browser options, so a
+    # specialised route can add a truthful audit action without a caller
+    # relabelling arbitrary source data.
+    if extra_params:
+        params.update(extra_params)
     task, _ = tasks.create_task(
         db, kind="acquire", actor=user.id, session_id=user.session_id, scope=source.id,
-        params={"source_id": source.id, "since": since.isoformat(), "until": until.isoformat(), "options": options,
-                "job_id": req.job_id, "ingest": req.ingest, "scratch_dirs": list(scratch_dirs)},
+        params=params,
     )
     return task_out(tasks.submit(db, task))
+
+
+def _cms_event_category() -> int:
+    """Return GE-confirmed CMS category, never a caller-supplied guess."""
+    category = settings.axone_cms_event_category
+    if category is None:
+        raise HTTPException(
+            409,
+            "CMS collection is not configured. Ask GE to confirm the CMS event-category code, then set AXONE_CMS_EVENT_CATEGORY.",
+        )
+    return category
+
+
+@router.post("/axone/cms/acquire", response_model=TaskOut, status_code=202)
+def acquire_cms_logs(
+    req: AcquireRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_active_user),
+):
+    """Acquire GE-confirmed CMS rows through the established Axone CSV path.
+
+    The setting is intentionally server-side. It prevents a browser request
+    from relabelling an arbitrary event category as CMS, and sends CMS rows
+    through the same bounded windows, deduplication, normalization, privacy
+    scan and audit trail as the normal Axone export.
+    """
+    category = _cms_event_category()
+    options = dict(req.options)
+    options["event_category"] = str(category)
+    cms_request = req.model_copy(update={"options": options})
+    return _start(
+        db, _source("axone"), user, cms_request,
+        extra_params={
+            "audit_action": "acquire_cms_logs",
+            "audit_detail": f"source=axone category={category}",
+            "cms_event_category": category,
+        },
+    )
 
 
 @router.post("/{source_id}/acquire", response_model=TaskOut, status_code=202)

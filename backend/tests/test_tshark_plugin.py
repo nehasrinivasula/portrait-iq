@@ -234,8 +234,26 @@ def test_failed_capture_reports_tsharks_reason(tmp_path, live_capture, tools, mo
     t.bind_job("job-1", tmp_path)
     with pytest.raises(PluginError, match=r"tshark capture failed \(exit 2\) tshark: permission denied"):
         t.run("192.0.2.10")
+    assert (tmp_path / "capture.pcapng").read_bytes() == synthetic_pcap()
+    assert runner.copied == [("/tmp/capture.pcapng", 101 * 1024 * 1024)]
     t.cleanup()
     assert runner.deleted == [runner.created[0]["name"]]
+
+
+def test_failed_capture_keeps_original_reason_if_partial_file_is_unavailable(tmp_path, live_capture, tools, monkeypatch):
+    class NoPartialFile(FakeRunner):
+        def read_file(self, name, path, dest, max_bytes):
+            raise PluginError("partial capture is missing")
+
+    runner = NoPartialFile(exit_code=2)
+    monkeypatch.setattr(k8s, "get_pod_runner", lambda: runner)
+    t = TsharkCollector(LIMITS)
+    t.configure({"filter_preset": "rti_all"})
+    t.bind_job("job-1", tmp_path)
+    with pytest.raises(PluginError, match=r"tshark capture failed \(exit 2\) tshark: permission denied"):
+        t.run("192.0.2.10")
+    assert not (tmp_path / "capture.pcapng").exists()
+    t.cleanup()
 
 
 # uploads --------------------------------------------------------------------

@@ -6,6 +6,7 @@ import { getCleanup } from "../features/cleanup/cleanupApi";
 
 const links = [
   { to: "/", label: "Home", end: true },
+  { to: "/connect", label: "Connect" },
   { to: "/run", label: "Run diagnostics" },
   { to: "/logs", label: "Logs" },
   { to: "/export", label: "Export" },

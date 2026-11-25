@@ -12,6 +12,9 @@ from app.connectivity import service
 from app.db import get_db
 from app.orchestrator import routes
 from app.schemas import (
+    ConnectRequest,
+    ConnectResponse,
+    ConnectionSettingsOut,
     ConnectivityCheckRequest,
     ConnectivityCheckResponse,
     ConnectivityPortResult,
@@ -316,3 +319,44 @@ def test_api_rejects_check_when_session_is_locked(monkeypatch):
 
     assert response.status_code == 423
     assert fake_db.entries == []
+
+
+def test_connect_request_requires_a_valid_ip_and_nonblank_credentials():
+    assert ConnectRequest(ip_address="192.0.2.10", username=" engineer ", password="demo-password").username == "engineer"
+    with pytest.raises(ValidationError, match="valid IPv4 or IPv6"):
+        ConnectRequest(ip_address="not-an-ip", username="engineer", password="demo-password")
+    with pytest.raises(ValidationError, match="must not be blank"):
+        ConnectRequest(ip_address="192.0.2.10", username=" ", password="demo-password")
+
+
+def test_connect_returns_safe_prefilled_settings_and_never_audits_credentials(monkeypatch):
+    fake_db = FakeDb()
+    expected = ConnectResponse(
+        mode="live",
+        ip_address="192.0.2.10",
+        connectivity=ConnectivityCheckResponse(
+            target="192.0.2.10", resolved_addresses=["192.0.2.10"], status="reachable", reachable=True,
+            summary="All requested TCP ports are reachable.",
+            results=[ConnectivityPortResult(port=22, status="reachable", message="TCP connection succeeded.")],
+        ),
+        settings=ConnectionSettingsOut(
+            namespace="portrait-iq", node_ips=["192.0.2.10"], interfaces=["en0"], dds_domain_ids=[],
+        ),
+        notes=["DDS domain IDs are not guessed."],
+    )
+    monkeypatch.setattr(routes, "inspect_connection", lambda *args: expected)
+    monkeypatch.setattr("app.auth.is_locked", lambda *_: False)
+    password = "do-not-store-this"
+
+    response = _api_client(fake_db).post(
+        "/api/connect", json={"ip_address": "192.0.2.10", "username": "field-engineer", "password": password},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["settings"]["namespace"] == "portrait-iq"
+    assert response.json()["settings"]["dds_domain_ids"] == []
+    assert password not in response.text
+    audit_text = " ".join(entry.detail for entry in fake_db.entries)
+    assert password not in audit_text
+    assert "field-engineer" not in audit_text
+    assert [entry.action for entry in fake_db.entries] == ["connect", "connect"]

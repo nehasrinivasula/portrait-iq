@@ -285,18 +285,26 @@ def auto_name(kind: str, ip: str) -> str:
 
 def save(db: Session, result: Discovery) -> list[tuple[Device, Found]]:
     """Upsert by IP. A device the engineer edited keeps their name and role
-    (D-7); every device not seen this time is marked not reachable."""
+    (D-7); every device not seen this time is marked not reachable.
+
+    The node itself is the exception: it is the system this tool runs on, so its
+    identity is authoritative. Each run re-asserts it as the server and clears
+    any stale manual override on its IP (you can't relabel the MiniEdge as a
+    hub/viewer device)."""
     by_ip = {d.ip_address: d for d in db.query(Device).all()}
     out = []
     seen = set()
     for f in result.devices:
         row = by_ip.get(f.ip)
+        is_node = bool(result.node_ip) and f.ip == result.node_ip
         if row is None:
             row = Device(ip_address=f.ip, name=auto_name(f.kind, f.ip), kind=f.kind)
             db.add(row)
-        elif not row.overridden:
+        elif is_node or not row.overridden:
             row.kind = f.kind
             row.name = auto_name(f.kind, f.ip)
+            if is_node:
+                row.overridden = 0
         row.reachable = 1
         seen.add(f.ip)
         out.append((row, f))

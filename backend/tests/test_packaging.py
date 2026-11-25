@@ -5,6 +5,7 @@ import io
 import shutil
 import json
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -16,11 +17,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.auth import User, get_current_user
+from app.collectors.base import Collector, PluginError
+from app.collectors.registry import PluginRegistry
 from app.db import Base, get_db
 from app.ingestion import pipeline
 from app.main import app
 from app.models import AcquiredFileRecord, AuditLogEntry, Job, Signal
-from app.orchestrator.jobs import job_output_dir
+from app.orchestrator.jobs import job_output_dir, read_results, run_job
 from app.packaging import service
 
 HEADER = (
@@ -120,6 +123,22 @@ def test_export_builds_the_standard_layout(env):
     assert json.loads(zf.read("findings/findings.json"))[0]["title"] == "Timeouts"
 
 
+def test_firewall_text_artifact_is_downloaded_in_run_zip(env):
+    client, _ = env
+    out = job_output_dir("job-1") / "firewall"
+    out.mkdir(parents=True, exist_ok=True)
+    artifact = out / "firewall-info.txt"
+    artifact.write_text("external (active)\n  services: ssh\n")
+    results_path = job_output_dir("job-1") / "results.json"
+    results = json.loads(results_path.read_text())
+    results.append({"tool": "firewall", "summary": "External-zone firewall settings captured.",
+                    "warnings": [], "artifact_paths": [str(artifact)]})
+    results_path.write_text(json.dumps(results))
+
+    export(client)
+    assert open_zip(client).read("tools/firewall/firewall-info.txt").decode() == artifact.read_text()
+
+
 def test_masked_by_default_in_logs_and_text_tool_files(env):
     client, _ = env
     export(client)
@@ -168,13 +187,87 @@ def test_each_step_explains_what_it_did_and_what_failed(env):
     assert [x["id"] for x in s["steps"]] == [i for i, _ in service.STEPS]
     assert all(x["detail"] for x in s["steps"])
     tools = steps["tools"]
-    assert tools["status"] == "warn" and tools["detail"] == "2 of 3 diagnostics ran; 1 file added. 1 text file scanned; 1 with PHI / PII."
+    assert tools["status"] == "partial" and tools["detail"] == "2 of 3 diagnostics ran; 1 file added. 1 text file scanned; 1 with PHI / PII."
     reasons = {i["item"]: i["reason"] for i in tools["issues"]}
     assert reasons["rti"] == "This diagnostic did not finish during the run: RTI is turned off on this server."
     assert "no longer on the server" in reasons["netshoot: gone.txt"]
     assert "Left out: only text files can be masked" in reasons["tshark: capture.pcap"]
     assert any("capture.pcap was left out" in w for w in s["warnings"])
-    assert not s["partial"]
+    assert s["partial"]
+
+
+def test_cleanup_failure_is_distinct_from_missing_diagnostic_results(env):
+    client, db = env
+    db.get(Job, "job-1").status = "cleanup_failed"
+    db.commit()
+    status = export(client)
+    assert status["run_status"] == "cleanup_failed" and status["partial"]
+
+
+def test_failed_tool_keeps_text_partial_in_masked_export(env):
+    client, db = env
+
+    class Interrupted(Collector):
+        name = "interrupted"
+
+        def run(self, target_ip):
+            (self.require_output_dir() / "capture.txt").write_text(f"partial\npatient ssn {SSN}\n")
+            raise PluginError("Capture stopped.")
+
+        def cleanup(self):
+            pass
+
+    registry = PluginRegistry()
+    registry.register(Interrupted)
+    job = db.get(Job, "job-1")
+    job.tools = '["interrupted"]'
+    job.cpu_limit_pct, job.mem_limit_mb, job.max_output_mb = 50, 512, 100
+    db.commit()
+    run_job(db, job, "192.0.2.10", registry=registry)
+    assert job.status == "failed"
+    assert len(read_results(job.id)[0]["artifact_paths"]) == 1
+
+    status = export(client)
+    tools = next(step for step in status["steps"] if step["id"] == "tools")
+    assert tools["status"] == "partial" and status["partial"]
+    with open_zip(client) as package:
+        assert "tools/interrupted/capture.txt" in package.namelist()
+        assert SSN not in package.read("tools/interrupted/capture.txt").decode()
+        exported = json.loads(package.read("tools/results.json"))
+        assert exported[0]["artifact_paths"] == ["tools/interrupted/capture.txt"]
+        assert str(job_output_dir(job.id).resolve()) not in package.read("tools/results.json").decode()
+
+
+def test_failed_binary_capture_can_be_exported_without_masking(env):
+    client, db = env
+
+    class InterruptedBinary(Collector):
+        name = "interrupted_binary"
+
+        def run(self, target_ip):
+            (self.require_output_dir() / "capture.pcap").write_bytes(b"partial capture")
+            raise PluginError("Capture stopped.")
+
+        def cleanup(self):
+            pass
+
+    registry = PluginRegistry()
+    registry.register(InterruptedBinary)
+    job = db.get(Job, "job-1")
+    job.tools = '["interrupted_binary"]'
+    job.cpu_limit_pct, job.mem_limit_mb, job.max_output_mb = 50, 512, 100
+    db.commit()
+    run_job(db, job, "192.0.2.10", registry=registry)
+
+    masked = export(client)
+    masked_tools = next(step for step in masked["steps"] if step["id"] == "tools")
+    assert masked_tools["status"] == "partial"
+    assert "tools/interrupted_binary/capture.pcap" not in open_zip(client).namelist()
+
+    unmasked = export(client, mask=False)
+    unmasked_tools = next(step for step in unmasked["steps"] if step["id"] == "tools")
+    assert unmasked_tools["status"] == "partial"
+    assert "tools/interrupted_binary/capture.pcap" in open_zip(client).namelist()
 
 
 def test_a_failed_step_still_exports_the_rest(env, monkeypatch):
@@ -396,7 +489,7 @@ def test_several_runs_go_in_one_zip_each_in_the_standard_layout(env):
         assert {run["folder"] + p for p in LAYOUT} <= set(zf.namelist())
     assert SSN not in zf.read(meta["runs"][0]["folder"] + "logs/events.jsonl").decode()     # masked by default
     tools = next(x for x in s["steps"] if x["id"] == "run:job-1")
-    assert tools["status"] == "warn" and any("rti" in i["item"] for i in tools["issues"])     # each run's notes surface
+    assert tools["status"] == "partial" and any("rti" in i["item"] for i in tools["issues"])  # partial run surfaces
 
 
 def test_a_set_refuses_unfinished_or_unknown_runs(env):

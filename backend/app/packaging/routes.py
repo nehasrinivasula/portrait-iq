@@ -68,6 +68,7 @@ class PackageOut(BaseModel):
     state: str                       # preparing | ready | failed | interrupted
     masked: bool
     partial: bool                    # ready, but a step failed: the zip is missing something
+    run_status: Optional[str] = None  # run status is separate from export completeness
     requested_by: str
     started_at: str
     finished_at: Optional[str] = None
@@ -137,7 +138,8 @@ class ExportListOut(BaseModel):
 def _out(s: service.PackageStatus) -> PackageOut:
     return PackageOut(
         export_id=s.id, job_id=s.job_id, scope=service.scope_kind(s.job_id), title=service.scope_title(s.job_id), runs=s.runs,
-        state=s.state, masked=s.masked, partial=s.partial, requested_by=s.requested_by,
+        state=s.state, masked=s.masked, partial=s.partial, run_status=s.run_status,
+        requested_by=s.requested_by,
         started_at=s.started_at, finished_at=s.finished_at,
         steps=[StepOut(id=x.id, label=x.label, status=x.status, detail=x.detail,
                        issues=[IssueOut(item=i.item, reason=i.reason) for i in x.issues],

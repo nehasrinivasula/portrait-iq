@@ -204,6 +204,23 @@ def test_save_keeps_engineer_overrides_and_marks_missing_devices(db, runner):
     assert viewer.reachable == 0
 
 
+def test_a_new_run_resets_a_stale_override_on_the_node(db, runner):
+    discovery.save(db, discovery.run_discovery(20))
+    node = db.query(Device).filter_by(ip_address=NODE).one()
+    assert (node.kind, node.name) == ("server", "System (MiniEdge)")
+
+    # Someone wrongly relabels the MiniEdge itself as a viewer.
+    user = User(id="tester", name="Tester")
+    routes.update_device(node.id, DeviceUpdate(kind="viewer"), db=db, user=user)
+    db.refresh(node)
+    assert (node.kind, node.overridden) == ("viewer", 1)
+
+    # A new run re-asserts the node as the server and clears the stale override.
+    discovery.save(db, discovery.run_discovery(20))
+    db.refresh(node)
+    assert (node.kind, node.name, node.overridden) == ("server", "System (MiniEdge)", 0)
+
+
 def test_discover_route_returns_evidence_and_audits(db, runner):
     user = User(id="tester", name="Tester")
     out = routes.discover(DiscoverRequest(duration_s=20), db=db, user=user)
