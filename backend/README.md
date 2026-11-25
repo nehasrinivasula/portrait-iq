@@ -153,6 +153,23 @@ uvicorn app.main:app --reload
 pytest tests/
 ```
 
+## Diagnostic limits (SCRUM-107)
+
+In **Run diagnostics → Limits and namespace**, set CPU, memory, output size,
+and the interval between Netshoot checks. The Netshoot interval defaults to
+1 second and accepts whole numbers from 1 to 60. API clients can set
+`plugin_options.netshoot.check_interval_seconds` on `POST /api/jobs`.
+The delay runs after each completed check except the last. The existing pod
+deadline still applies, so large batches with long intervals can time out.
+
+Netshoot caps each report at the configured output size and flags truncated
+command streams or report files in the run warnings. JSON reports remain
+parseable, and individual check statuses remain available.
+
+The initial throttling assumption is to pace checks launched by Portrait IQ.
+Per-packet, bandwidth, and passive-capture rate limits remain outside this
+implementation.
+
 ## Connectivity preflight
 
 Before starting diagnostics, the backend can run bounded TCP checks against a
