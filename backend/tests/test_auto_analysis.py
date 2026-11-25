@@ -167,7 +167,8 @@ def _csv(message):
 def test_uploading_logs_to_a_collection_produces_findings_without_pressing_run(client_env):
     client, db = client_env
     response = client.post("/api/sources/local/upload?job_id=job-1", files=[("files", ("logs.csv", _csv(PING)))])
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "done"
     findings = client.get("/api/jobs/job-1/findings").json()
     assert [f["rule_id"] for f in findings] == ["ping_timeout"] and findings[0]["count"] == 1
     status = client.get("/api/jobs/job-1/findings/status").json()
@@ -177,7 +178,7 @@ def test_uploading_logs_to_a_collection_produces_findings_without_pressing_run(c
 def test_uploading_without_a_collection_runs_nothing(client_env):
     client, db = client_env
     response = client.post("/api/sources/local/upload", files=[("files", ("logs.csv", _csv(PING)))])
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert db.query(AnalysisRun).count() == 0
 
 
@@ -185,7 +186,7 @@ def test_a_failure_in_the_background_does_not_fail_the_upload(client_env, monkey
     client, db = client_env
     monkeypatch.setattr(auto, "run_analysis", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     response = client.post("/api/sources/local/upload?job_id=job-1", files=[("files", ("logs.csv", _csv(PING)))])
-    assert response.status_code == 200
+    assert response.status_code == 202 and response.json()["status"] == "done"
     assert client.get("/api/jobs/job-1/findings/status").json()["state"] == "failed"
 
 

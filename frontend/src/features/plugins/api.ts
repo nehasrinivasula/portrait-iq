@@ -43,13 +43,14 @@ export interface Job {
   tools?: string[];            // the tools selected for this run, in run order
   configuration?: Record<string, unknown> | null;
   skipped_steps?: string[];   // steps the selected tools never use
+  step_times?: Record<string, [string | null, string | null]>;   // step -> [started, finished], naive UTC
   error: RunError | null;   // set only on a failed/interrupted run
   created_at: string;
   finished_at: string | null;
 }
 
 export type ToolResult =
-  | { tool: string; summary: string; warnings: string[]; artifact_paths: string[] }
+  | { tool: string; summary: string; warnings: string[]; artifact_paths: string[]; details?: Record<string, unknown> }
   | { tool: string; step?: string; error: string };
 
 export const listPlugins = () => apiFetch<PluginList>("/api/plugins");

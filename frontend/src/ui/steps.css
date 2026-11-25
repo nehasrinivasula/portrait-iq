@@ -1,0 +1,76 @@
+/* Shared progress list (ui/Steps.tsx). Marks are drawn, not text glyphs, so they
+   stay crisp and centred at any size. A rail joins the marks; it fills as steps finish. */
+.steps-count { margin: 0 0 6px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; }
+.steps > li { position: relative; display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 12px; padding-bottom: 12px; }
+.steps > li:last-child { padding-bottom: 0; }
+.steps > li:not(:last-child)::before {
+  content: ""; position: absolute; left: 9px; top: 24px; bottom: 2px; width: 2px; border-radius: 1px; background: var(--line);
+}
+.steps > li:is([data-state="done"], [data-state="warn"], [data-state="partial"]):not(:last-child)::before { background: var(--primary); }
+
+/* Marks */
+.step-mark { position: relative; width: 20px; height: 20px; margin-top: 3px; border-radius: 50%; border: 2px solid var(--line-strong); background: var(--panel); }
+.steps > li[data-state="running"] .step-mark {
+  border-color: color-mix(in srgb, var(--primary) 25%, transparent); border-top-color: var(--primary);
+  animation: step-spin 700ms linear infinite;
+}
+.steps > li:is([data-state="done"], [data-state="warn"], [data-state="partial"], [data-state="failed"]) .step-mark { border: 0; }
+.steps > li[data-state="done"] .step-mark { background: var(--primary); }
+.steps > li[data-state="warn"] .step-mark { background: #8a6d00; }
+.steps > li[data-state="partial"] .step-mark { background: #8a6d00; }
+.steps > li[data-state="failed"] .step-mark { background: var(--error-text); }
+/* check */
+.steps > li[data-state="done"] .step-mark::after {
+  content: ""; position: absolute; left: 7px; top: 4px; width: 5px; height: 9px;
+  border-right: 2px solid #fff; border-bottom: 2px solid #fff; transform: rotate(45deg);
+}
+/* exclamation */
+.steps > li:is([data-state="warn"], [data-state="partial"]) .step-mark::after {
+  content: ""; position: absolute; left: 9px; top: 4px; width: 2px; height: 7px; border-radius: 1px; background: #fff;
+}
+.steps > li:is([data-state="warn"], [data-state="partial"]) .step-mark::before {
+  content: ""; position: absolute; left: 9px; top: 14px; width: 2px; height: 2px; background: #fff;
+}
+/* cross */
+.steps > li[data-state="failed"] .step-mark::before,
+.steps > li[data-state="failed"] .step-mark::after {
+  content: ""; position: absolute; left: 9px; top: 5px; width: 2px; height: 10px; border-radius: 1px; background: #fff; transform: rotate(45deg);
+}
+.steps > li[data-state="failed"] .step-mark::after { transform: rotate(-45deg); }
+
+/* A step that finished since the last update is ticked off in order: mark pops, rail fills. */
+.steps > li[data-fresh] .step-mark { animation: step-tick 220ms var(--ease-out) both; animation-delay: var(--stagger, 0ms); }
+@keyframes step-tick { from { transform: scale(.6); opacity: .3; } }
+@keyframes step-spin { to { transform: rotate(360deg); } }
+
+/* Text */
+.step-body { min-width: 0; }
+.step-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-height: 26px; }
+.step-label { font-weight: 600; }
+.steps > li[data-state="pending"] .step-label { color: var(--muted); font-weight: 400; }
+.step-time { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 15px; }
+.step-detail { margin: 2px 0 0; color: var(--muted); }
+.steps > li[data-state="failed"] .step-detail { color: var(--text); }
+.steps > li[data-state="partial"] .step-detail { color: var(--text); }
+.step-tag { display: inline-block; padding: 0 8px; border-radius: 999px; font-weight: 600; font-size: 14px; }
+.step-tag.warn { background: var(--warn-bg); color: #5c4800; }
+.step-tag.partial { background: var(--warn-bg); color: #5c4800; }
+.step-tag.failed { background: var(--error-bg); color: var(--error-text); }
+.step-issues { margin-top: 4px; }
+.step-issues > summary, .steps-summary > summary {
+  cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 8px; min-height: 32px; font-weight: 600; color: var(--primary);
+}
+.step-issues > summary::-webkit-details-marker, .steps-summary > summary::-webkit-details-marker { display: none; }
+.step-issues > summary::before, .steps-summary > summary::before {
+  content: ""; width: 7px; height: 7px; margin: 0 2px; border-right: 2px solid var(--primary); border-bottom: 2px solid var(--primary);
+  transform: rotate(-45deg); transition: transform 150ms var(--ease-out);
+}
+.step-issues[open] > summary::before, .steps-summary[open] > summary::before { transform: translateY(-2px) rotate(45deg); }
+.step-issues ul { margin: 4px 0 0; padding-left: 20px; display: grid; gap: 4px; }
+.steps-summary > .steps { margin-top: 8px; animation: fade-in 150ms ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .steps > li[data-fresh] .step-mark { animation: none; }
+  .steps > li[data-state="running"] .step-mark { animation: none; border-color: var(--primary); }
+}

@@ -1,5 +1,5 @@
 /* Export page (SCRUM-61). Built from the shared pieces: .card, .alert, .btn, .log-table, .privacy-switches. */
-.export-page { display: grid; gap: 16px; max-width: 900px; }
+.export-page { display: grid; gap: 20px; max-width: 900px; counter-reset: step; }
 .export-page > h1 { font-size: 26px; margin-bottom: 0; }  /* same as .page > h1 */
 .export-page > p.muted { margin: 0; }
 .export-card { display: grid; gap: 10px; }
@@ -10,8 +10,8 @@
 .export-result-head:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
 .export-list { margin: 6px 0 0; padding-left: 20px; display: grid; gap: 6px; }
 .export-tools { list-style: none; padding: 0; margin: 6px 0 0; display: grid; gap: 4px; }
-.export-tools li[data-ok="true"] .tool-status { color: var(--ok); }
-.export-tools li[data-ok="false"] .tool-status { color: var(--error); }
+.export-tools li[data-ok="true"] .tool-status { color: var(--ok-text); }
+.export-tools li[data-ok="false"] .tool-status { color: var(--error-text); }
 .export-inline-actions { display: inline-flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .export-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 
@@ -21,34 +21,6 @@
 .export-hash { word-break: break-all; font-size: 15px; }
 .export-facts .hint { display: block; }
 .export-table { height: auto; }
-
-/* Steps: same marks and states as the run's step list */
-.export-steps ol { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 8px; }
-.export-steps .muted { margin: 0; }
-.export-steps > ol > li { border-left: 4px solid var(--line); padding: 4px 0 4px 12px; }
-.export-step-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
-.export-mark { width: 1.2em; text-align: center; font-weight: 600; }
-.export-steps > ol > li[data-state="pending"] { color: var(--muted); }
-.export-steps > ol > li[data-state="running"] { border-left-color: var(--primary); font-weight: 600; }
-.export-steps > ol > li[data-state="running"] .export-mark { color: var(--primary); }
-.export-steps > ol > li[data-state="done"] { border-left-color: var(--ok); }
-.export-steps > ol > li[data-state="done"] .export-mark { color: var(--ok); }
-.export-steps > ol > li[data-state="warn"] { border-left-color: var(--warn); }
-.export-steps > ol > li[data-state="partial"] { border-left-color: var(--warn); background: var(--warn-bg); }
-.export-steps > ol > li[data-state="failed"] { border-left-color: var(--error); background: var(--error-bg); }
-.export-step-detail { margin: 2px 0 0 calc(1.2em + 10px); font-weight: 400; color: var(--muted); }
-.export-steps > ol > li[data-state="failed"] .export-step-detail { color: var(--text); }
-.export-steps > ol > li[data-state="partial"] .export-step-detail { color: var(--text); }
-.export-tag {
-  display: inline-block; padding: 0 10px; border-radius: 999px; font-weight: 600; font-size: 14px; border: 1.5px solid;
-}
-.export-tag.warn { background: var(--warn-bg); border-color: var(--warn); }
-.export-tag.partial { background: var(--warn-bg); border-color: var(--warn); }
-.export-tag.failed { background: var(--panel); border-color: var(--error); }
-.export-issues { margin: 4px 0 0 calc(1.2em + 10px); font-weight: 400; }
-.export-issues summary { cursor: pointer; min-height: 32px; font-weight: 600; color: var(--primary); }
-.export-issues ul { margin: 4px 0 0; padding-left: 20px; display: grid; gap: 4px; list-style: disc; }
-.export-issues li { border: 0; padding: 0; background: none; }
 
 /* Download confirmation */
 .export-dialog {
@@ -61,3 +33,59 @@
 .export-dialog .export-actions { margin-top: 18px; }
 .btn.small { padding: 4px 12px; min-height: 44px; font-size: 15px; }
 .export-facts code { word-break: break-all; }
+
+/* Numbered steps, as on Run diagnostics */
+.export-step { display: grid; gap: 12px; }
+.export-step > h2 { font-size: 22px; margin: 0; display: flex; align-items: center; gap: 10px; }
+.export-step > h2::before {
+  counter-increment: step; content: counter(step); flex: none; display: grid; place-items: center;
+  width: 28px; height: 28px; border-radius: 50%; background: var(--primary); color: var(--on-primary); font-size: 16px;
+}
+.export-step .alert { margin-top: 0; }
+.export-step .privacy-switches { margin-top: 0; }
+.export-step .hint { margin-top: -8px; }
+
+/* Picking runs: one row each, the whole row is the checkbox's label */
+.export-picker { display: grid; gap: 12px; }
+.export-runs-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 44px; }
+.export-runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.export-runs label {
+  display: flex; align-items: center; gap: 14px; padding: 10px 14px; min-height: 56px; cursor: pointer;
+  background: var(--panel); border: 1.5px solid var(--line); border-radius: 8px; transition: border-color 150ms ease, background-color 150ms ease;
+}
+.export-runs li.on label { border-color: var(--primary); background: var(--primary-tint); }
+.export-runs input { width: 22px; height: 22px; flex: none; accent-color: var(--primary); cursor: pointer; }
+.export-runs input:disabled { cursor: not-allowed; }
+.export-runs input:disabled + .export-run-main { opacity: .55; }
+@media (hover: hover) and (pointer: fine) { .export-runs li:not(.on) label:hover { border-color: var(--primary); } }
+.export-run-main { flex: 1; min-width: 0; display: grid; gap: 0; }
+.export-run-main .muted { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.export-run-facts { display: flex; align-items: center; gap: 12px; flex: none; font-size: 15px; font-variant-numeric: tabular-nums; }
+.run-status { font-weight: 600; }
+.run-status.ok { color: var(--ok-text); }
+.run-status.warn { color: #5c4800; }
+.run-status.error { color: var(--error-text); }
+@media (max-width: 640px) { .export-runs label { flex-wrap: wrap; } .export-run-facts { width: 100%; padding-left: 36px; } }
+.export-set-note { margin: 0; }
+.text-warn { color: #5c4800; font-weight: 600; }
+
+/* History */
+.export-history .section-head { flex-wrap: wrap; }
+.export-history h2 { margin: 0; }
+.export-history-total { margin: 0; }
+.export-history-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.export-history-list > li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 10px 0; border-top: 1px solid var(--line); }
+.export-history-main { flex: 1 1 220px; min-width: 0; display: grid; }
+.export-history-main .muted { font-size: 15px; }
+.export-history-facts { display: flex; gap: 12px; align-items: center; font-size: 15px; font-variant-numeric: tabular-nums; }
+.export-state { font-weight: 600; }
+.export-state.ready { color: var(--ok-text); }
+.export-state.failed { color: var(--error-text); }
+.export-state.interrupted { color: #5c4800; }
+.export-state.preparing { color: var(--primary); }
+.export-history-actions { display: flex; gap: 8px; align-items: center; margin-left: auto; }
+.export-history-actions .btn, .confirm-inline .btn { padding: 6px 14px; min-height: 40px; }
+.confirm-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-weight: 600; color: var(--error-text); }
+.sr-inline { font-weight: 600; color: var(--error-text); }
+.export-history-list > li { animation: fade-in 150ms ease; }
+.export-more { justify-self: start; }

@@ -140,10 +140,10 @@ def test_scan_endpoint_judges_unscanned_events(env):
                     message=f"legacy {SSN}", job_id="job-1", source_file="old.csv", source_line=1))
     db.commit()
     assert client.get("/api/logs/collections/job-1/privacy").json()["all_scanned"] is False
-    assert client.post("/api/logs/collections/job-1/privacy/scan").json() == {"scanned": 1}
+    assert client.post("/api/logs/collections/job-1/privacy/scan").json()["result"] == {"scanned": 1}
     after = client.get("/api/logs/collections/job-1/privacy").json()
     assert after["all_scanned"] and after["flagged_events"] == 3
-    assert client.post("/api/logs/collections/job-1/privacy/scan").json() == {"scanned": 0}
+    assert client.post("/api/logs/collections/job-1/privacy/scan").json()["result"] == {"scanned": 0}
     assert client.post("/api/logs/collections/missing/privacy/scan").status_code == 404
 
 
@@ -246,7 +246,7 @@ def test_report_and_scan_cover_every_collection(env, monkeypatch):
     body = client.get("/api/logs/privacy").json()
     assert (body["job_id"], body["events"], body["unscanned_events"], body["all_scanned"]) == ("all", 4, 1, False)
     assert body["complete_for_packaging"] is False
-    assert client.post("/api/logs/privacy/scan").json() == {"scanned": 1}
+    assert client.post("/api/logs/privacy/scan").json()["result"] == {"scanned": 1}
     after = client.get("/api/logs/privacy").json()
     assert after["all_scanned"] and after["flagged_events"] == 3
     # "all" is complete only when every collection is; it never reads as complete by default.
@@ -291,17 +291,20 @@ def test_a_collection_known_to_be_incomplete_cannot_be_certified(env, monkeypatc
 
 def test_a_scan_is_audited_when_it_starts_and_when_it_fails(env, monkeypatch):
     client, db = env
-    import app.storage.routes as routes
+    import app.privacy.service as privacy_service
 
-    def boom(_db, _scope):
+    def boom(_db, _scope, progress=None):
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr(routes.privacy, "rescan", boom)
-    with pytest.raises(RuntimeError):
-        client.post("/api/logs/collections/job-1/privacy/scan")
+    monkeypatch.setattr(privacy_service, "rescan", boom)
+    r = client.post("/api/logs/collections/job-1/privacy/scan")
+    # The request itself succeeds (the scan is a task); the failure is recorded and surfaced on the task.
+    assert r.status_code == 202 and r.json()["status"] == "failed"
+    assert "disk full" not in r.json()["error"]
     entries = [(e.action, e.detail) for e in db.scalars(select(AuditLogEntry).order_by(AuditLogEntry.id))]
     assert ("logs_privacy_scan_start", "job=job-1") in entries
     assert ("logs_privacy_scan", "job=job-1 failed error=RuntimeError") in entries
+    assert any(a == "background_task_failed" for a, _ in entries)
     assert "disk full" not in repr(entries)
 
 

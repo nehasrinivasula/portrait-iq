@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.config import settings
@@ -8,6 +8,26 @@ engine = create_engine(
     settings.database_url,
     connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
 )
+
+
+def configure_sqlite(eng) -> None:
+    """Two processes now write to the database (the API and the background worker). Without a busy timeout the
+    second writer fails at once with "database is locked"; WAL lets readers (every request, /api polling) carry on
+    while a long ingest holds the write lock."""
+    if eng.dialect.name != "sqlite":
+        return
+
+    @event.listens_for(eng, "connect")
+    def _pragmas(dbapi_conn, _record):  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        cur.execute(f"PRAGMA busy_timeout={int(settings.sqlite_busy_timeout_ms)}")
+        if settings.sqlite_wal:
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA synchronous=NORMAL")
+        cur.close()
+
+
+configure_sqlite(engine)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -40,6 +60,7 @@ def _apply_audit_compatibility_columns() -> None:
         ("jobs", "session_id", "VARCHAR"),
         ("jobs", "error", "TEXT"),
         ("jobs", "configuration", "TEXT"),
+        ("jobs", "step_times_json", "TEXT"),
         ("normalized_events", "privacy_scan_version", "INTEGER"),
         ("normalized_events", "sensitive_flags", "TEXT"),
         ("normalized_events", "network_flags", "TEXT"),

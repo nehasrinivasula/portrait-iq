@@ -53,58 +53,67 @@ export default function DeviceFinder({ selectedIp, onUse }: { selectedIp: string
   return (
     <div className="device-finder">
       <div className="finder-head">
-        <span className="filter-label" id={`${uid}-len`}>Find devices on this system</span>
-        <RadioGroup.Root className="segmented" aria-labelledby={`${uid}-len`} value={String(length)}
-          onValueChange={(v) => setLength(Number(v))} disabled={busy}>
-          {SEARCH_LENGTHS.map((l) => (
-            <RadioGroup.Item key={l.s} value={String(l.s)} className="seg"><span>{l.label}</span></RadioGroup.Item>
-          ))}
-        </RadioGroup.Root>
-        <button type="button" className="btn" onClick={search} disabled={busy}>
-          {busy ? "Searching…" : "Find devices"}
+        <span className="filter-label">Devices on this system</span>
+        <button type="button" className="btn ghost" onClick={search} disabled={busy}>
+          {busy ? "Searching…" : list.length ? "Search again" : "Find devices"}
         </button>
       </div>
-      <label className="sweep-option">
-        <input type="checkbox" checked={sweep} disabled={busy} onChange={(e) => setSweep(e.target.checked)} />
-        <span>
-          Also check every address on the system's network
-          <span className="muted"> Finds devices that are on but quiet. Sends one small packet to each address,
-            so use it only where the site allows network scanning.</span>
-        </span>
-      </label>
-      <div className="hint" role="status">
-        {busy ? `Watching the system's network for about ${length} seconds…`
-          : "Lists the hub, viewers and other devices the system talks to. Only addresses and ports are kept."}
-      </div>
+      {busy && <div className="hint" role="status">Watching the system's network for about {length} seconds…</div>}
+      <details className="finder-options">
+        <summary>Search options</summary>
+        <div className="finder-options-body">
+          <RadioGroup.Root className="segmented" aria-labelledby={`${uid}-len`} value={String(length)}
+            onValueChange={(v) => setLength(Number(v))} disabled={busy}>
+            <span className="visually-hidden" id={`${uid}-len`}>Search length</span>
+            {SEARCH_LENGTHS.map((l) => (
+              <RadioGroup.Item key={l.s} value={String(l.s)} className="seg"><span>{l.label}</span></RadioGroup.Item>
+            ))}
+          </RadioGroup.Root>
+          <label className="sweep-option">
+            <input type="checkbox" checked={sweep} disabled={busy} onChange={(e) => setSweep(e.target.checked)} />
+            <span>
+              Also check every address on the network
+              <span className="muted"> Finds quiet devices by sending one small packet to each address. Use only where the site allows network scanning.</span>
+            </span>
+          </label>
+        </div>
+      </details>
 
       {error && <div className="alert error" role="alert"><strong>Couldn't search for devices</strong>{error}</div>}
       {notes.map((n) => <div key={n} className="alert warn" role="status">{n}</div>)}
 
       {list.length > 0 && (
         <ul className="device-list" aria-label="Devices found">
-          {list.map((d) => (
-            <li key={d.id} className={d.ip_address === selectedIp.trim() ? "device selected" : "device"}>
-              <span className={`kind kind-${d.kind}`}>{KIND_LABELS[d.kind]}</span>
-              <span className="device-main">
-                <strong>{d.name}</strong> <code>{d.ip_address}</code>
-                {d.evidence && d.evidence.length > 0 && <span className="muted device-why">{d.evidence.join(" · ")}</span>}
-              </span>
-              <span className="device-actions">
-                <Label.Root htmlFor={`${uid}-k-${d.id}`} className="visually-hidden">Role of {d.ip_address}</Label.Root>
-                <select id={`${uid}-k-${d.id}`} value={d.kind} onChange={(e) => setKind(d, e.target.value as DeviceKind)}>
-                  {(Object.keys(KIND_LABELS) as DeviceKind[]).map((k) => <option key={k} value={k}>{KIND_LABELS[k]}</option>)}
-                </select>
-                <button type="button" className="btn ghost" onClick={() => onUse(d.ip_address)}
-                  disabled={d.ip_address === selectedIp.trim()}>
-                  {d.ip_address === selectedIp.trim() ? "Selected" : "Use this device"}
-                </button>
-              </span>
-            </li>
-          ))}
+          {list.map((d) => {
+            const target = d.ip_address === selectedIp.trim();
+            // Searches name a device after its role ("Hub", "System (MiniEdge)"); only a name someone typed adds anything.
+            const ownName = d.name !== "Device" && !d.name.startsWith(KIND_LABELS[d.kind]);
+            return (
+              <li key={d.id} className={target ? "device selected" : "device"}>
+                <span className="device-role">
+                  <Label.Root htmlFor={`${uid}-k-${d.id}`} className="visually-hidden">Role of {d.ip_address}</Label.Root>
+                  <select id={`${uid}-k-${d.id}`} value={d.kind} onChange={(e) => setKind(d, e.target.value as DeviceKind)}
+                    title="Best guess from network traffic. Change it if it's wrong.">
+                    {(Object.keys(KIND_LABELS) as DeviceKind[]).map((k) => <option key={k} value={k}>{KIND_LABELS[k]}</option>)}
+                  </select>
+                </span>
+                <span className="device-main" title={d.evidence?.join(" · ") || undefined}>
+                  <code>{d.ip_address}</code>
+                  {ownName && <span className="muted">{d.name}</span>}
+                </span>
+                {target ? (
+                  <span className="device-target" role="status">✓ Target</span>
+                ) : (
+                  <button type="button" className="btn ghost" onClick={() => onUse(d.ip_address)}
+                    aria-label={`Set ${d.ip_address} as the target`}>Set as target</button>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
       {devices && list.length === 0 && !busy && !error && notes.length === 0 && (
-        <p className="muted">No devices found yet. Search to list what's on the network.</p>
+        <p className="muted">None found yet.</p>
       )}
     </div>
   );

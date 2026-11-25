@@ -8,6 +8,7 @@ SessionActivity (server-side idle lock).
 import json
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import relationship
@@ -42,6 +43,8 @@ class Job(Base):
     mode = Column(String, nullable=False, default="live")     # "live" | "pre_install"
     status = Column(String, nullable=False, default="queued")  # queued|running|done|partial|failed|cleanup_failed|interrupted
     current_step = Column(String, nullable=True)
+    # {step: [started, finished]} as naive-UTC ISO strings, so the UI can show how long each step took.
+    step_times_json = Column(Text, nullable=True)
     cpu_limit_pct = Column(Integer, nullable=True)
     mem_limit_mb = Column(Integer, nullable=True)
     max_output_mb = Column(Integer, nullable=True)
@@ -50,6 +53,13 @@ class Job(Base):
     # The request that started this background job. The job can finish after
     # the browser request ends, so these fields preserve its audit ownership.
     requested_by = Column(String, nullable=True)
+
+    @property
+    def step_times(self) -> dict[str, list[Optional[str]]]:
+        try:
+            return json.loads(self.step_times_json or "{}")
+        except ValueError:   # a display hint must never break job reads
+            return {}
 
     @property
     def skipped_steps(self) -> list[str]:
@@ -285,3 +295,31 @@ class CleanupDecision(Base):
     decided_by = Column(String, nullable=False)
     session_id = Column(String, nullable=True)
     decided_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BackgroundTask(Base):
+    """Heavy work that runs outside the request: a log pull with ingest, or a PHI/PII scan.
+
+    The request creates the row and returns its id at once; a separate worker process does the work and
+    updates progress here, and the UI polls GET /api/tasks/{id}. A task that was queued or running when the
+    backend stopped is marked interrupted at the next start (app/tasks/service.py).
+    kind: acquire | privacy_scan | noop.   status: queued | running | done | failed | interrupted."""
+    __tablename__ = "background_tasks"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex[:12])
+    kind = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="queued", index=True)
+    requested_by = Column(String, nullable=False)
+    session_id = Column(String, nullable=True)
+    scope = Column(String, nullable=True)            # what it works on (a collection id, "all", a source), for de-duplicating
+    params = Column(Text, nullable=True)             # JSON the worker needs; never secrets
+    stage = Column(String, nullable=True)            # short plain-language line, e.g. "Scanning events"
+    done = Column(Integer, nullable=False, default=0)
+    total = Column(Integer, nullable=True)           # None while the amount of work is not known yet
+    result = Column(Text, nullable=True)             # JSON, set when done
+    error = Column(String, nullable=True)            # safe to show; set when failed or interrupted
+    pid = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow)

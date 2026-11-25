@@ -1,4 +1,4 @@
-import type { ExportStep, Package, StepStatus } from "./exportApi";
+import type { ExportStep, Package } from "./exportApi";
 
 // Pure helpers behind the Export page, kept apart so they can be tested.
 
@@ -8,35 +8,18 @@ export type AlertKind = "info" | "ok" | "warn" | "error";
 export interface ReturnTarget { to: string; label: string }
 
 export function returnTarget(from: string | null, jobId: string): ReturnTarget {
-  if (from === "logs") return { to: `/logs?job=${encodeURIComponent(jobId)}`, label: "Back to Logs" };
+  if (from === "logs") return { to: logsLink(jobId), label: "Back to Logs" };
   return { to: "/run", label: "Back to Run diagnostics" };
 }
 
-/** Plain words for a step's status, read by screen readers next to the mark. */
-export const STEP_STATUS_TEXT: Record<StepStatus, string> = {
-  pending: "not started",
-  running: "in progress",
-  done: "done",
-  warn: "done, with notes",
-  partial: "partially complete",
-  failed: "failed",
-};
+/** The Logs page showing the same set: "all" is the unfiltered page. */
+export const logsLink = (jobId: string) => (jobId === "all" ? "/logs" : `/logs?job=${encodeURIComponent(jobId)}`);
 
-/** The mark shown beside a step. Never the only signal: the status text goes with it. */
-export const STEP_MARK: Record<StepStatus, string> = {
-  pending: "○",
-  running: "●",
-  done: "✓",
-  warn: "!",
-  partial: "!",
-  failed: "✗",
-};
-
-export function stepPosition(steps: ExportStep[]): { position: number | null; total: number } {
-  const i = steps.findIndex((s) => s.status === "running");
-  if (i >= 0) return { position: i + 1, total: steps.length };
-  const finished = steps.filter((s) => s.status !== "pending").length;
-  return { position: finished > 0 && finished < steps.length ? finished : null, total: steps.length };
+/** Heading and one-line description of what is being exported. */
+export function scopeText(scope: string, jobId: string): { heading: string; about: string } {
+  if (scope === "imported") return { heading: "Export imported files", about: "Every log file imported without a run, in one zip file." };
+  if (scope === "all") return { heading: "Export all logs", about: "Every log on this machine, from every run and import, in one zip file." };
+  return { heading: "Export run", about: `Run ${jobId.slice(0, 8)}: all its logs, diagnostic results and findings in one zip file.` };
 }
 
 export function headline(p: Package): [AlertKind, string, string] {
@@ -66,7 +49,7 @@ export function headline(p: Package): [AlertKind, string, string] {
   if (notes) {
     return ["warn", "Export ready, with notes", `${notes} thing${notes === 1 ? "" : "s"} to check before sharing it. They are listed below.`];
   }
-  return ["ok", "Export ready", "Everything from this run is in the zip."];
+  return ["ok", "Export ready", "Everything is in the zip."];
 }
 
 export function issueCount(steps: ExportStep[]): number {

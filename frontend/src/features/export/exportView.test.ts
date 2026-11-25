@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExportStep, Package } from "./exportApi";
-import { formatBytes, headline, issueCount, returnTarget, shortHash, stepPosition } from "./exportView";
+import { formatBytes, headline, issueCount, returnTarget, scopeText, shortHash } from "./exportView";
 
 const step = (id: string, status: ExportStep["status"], issues = 0): ExportStep => ({
   id, label: `Step ${id}`, status, detail: null,
@@ -8,7 +8,7 @@ const step = (id: string, status: ExportStep["status"], issues = 0): ExportStep 
 });
 
 const pkg = (over: Partial<Package> = {}): Package => ({
-  job_id: "job-1", state: "ready", masked: true, partial: false, run_status: "done", requested_by: "t", started_at: "", finished_at: "",
+  export_id: "exp-1", scope: "run", title: "Run", runs: [], job_id: "job-1", state: "ready", masked: true, partial: false, run_status: "done", requested_by: "t", started_at: "", finished_at: "",
   steps: [step("a", "done"), step("b", "done")], file_name: "x.zip", size_bytes: 10, sha256: "a".repeat(64),
   contents: [], warnings: [], error: null, downloadable: true, ...over,
 });
@@ -18,16 +18,17 @@ describe("returnTarget", () => {
     expect(returnTarget("logs", "job 1")).toEqual({ to: "/logs?job=job%201", label: "Back to Logs" });
     expect(returnTarget("run", "j")).toEqual({ to: "/run", label: "Back to Run diagnostics" });
     expect(returnTarget(null, "j").to).toBe("/run");
+    expect(returnTarget("logs", "all").to).toBe("/logs");
+    expect(returnTarget("logs", "unassigned").to).toBe("/logs?job=unassigned");
   });
 });
 
-describe("stepPosition", () => {
-  it("counts the running step", () => {
-    expect(stepPosition([step("a", "done"), step("b", "running"), step("c", "pending")])).toEqual({ position: 2, total: 3 });
-  });
-  it("has no position before the start or after the end", () => {
-    expect(stepPosition([step("a", "pending")]).position).toBeNull();
-    expect(stepPosition([step("a", "done"), step("b", "warn")]).position).toBeNull();
+describe("scopeText", () => {
+  it("names what is exported", () => {
+    expect(scopeText("run", "abcdef0123").heading).toBe("Export run");
+    expect(scopeText("run", "abcdef0123").about).toContain("Run abcdef01");
+    expect(scopeText("imported", "unassigned").heading).toBe("Export imported files");
+    expect(scopeText("all", "all").heading).toBe("Export all logs");
   });
 });
 
@@ -49,13 +50,13 @@ describe("headline", () => {
     expect([kind, title]).toEqual(["warn", "Export ready, but something is missing"]);
     expect(body).toContain("1 part could not be added");
   });
-  it("calls out a partial diagnostic run even when the export itself succeeded", () => {
-    const [kind, title, body] = headline(pkg({ partial: true, steps: [step("tools", "partial", 1), step("zip", "done")] }));
+  it("shows available results from a partly completed diagnostic", () => {
+    const [kind, title, body] = headline(pkg({ partial: true, run_status: "partial", steps: [step("tools", "partial", 1)] }));
     expect([kind, title]).toEqual(["warn", "Export ready with partial results"]);
     expect(body).toContain("Available results are in the zip");
   });
-  it("names cleanup failure even when diagnostic artifacts were complete", () => {
-    const [kind, title, body] = headline(pkg({ run_status: "cleanup_failed", partial: true }));
+  it("names cleanup failure separately from incomplete diagnostics", () => {
+    const [kind, title, body] = headline(pkg({ partial: true, run_status: "cleanup_failed" }));
     expect([kind, title]).toEqual(["warn", "Export ready, but cleanup failed"]);
     expect(body).toContain("may still be running");
   });

@@ -148,10 +148,10 @@ def test_since_and_until_accept_offsets(env):
 @pytest.mark.parametrize(
     "params, status",
     [
-        ({"severity": "loud"}, 400),
-        ({"min_severity": "loud"}, 400),
-        ({"since": "2024-06-02T10:00:00", "until": "2024-06-02T09:00:00"}, 400),
-        ({"cursor": "garbage"}, 400),
+        ({"severity": "loud"},422),
+        ({"min_severity": "loud"},422),
+        ({"since": "2024-06-02T10:00:00", "until": "2024-06-02T09:00:00"},422),
+        ({"cursor": "garbage"},422),
         ({"limit": 0}, 422),
         ({"limit": 5000}, 422),
         ({"order": "sideways"}, 422),

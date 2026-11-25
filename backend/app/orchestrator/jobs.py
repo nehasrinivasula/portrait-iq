@@ -120,6 +120,7 @@ def run_job(
             # deployed. A bad option fails here; "configure" is the step the
             # field engineer sees for it.
             job.current_step = "configure"
+            _mark_step(job, "configure")
             db.commit()
             plugins = (registry or get_registry()).create_all(tools, limits, plugin_options)
 
@@ -128,6 +129,7 @@ def run_job(
             if step in skipped:
                 continue        # no selected tool uses it; the UI shows it as not needed
             job.current_step = step
+            _mark_step(job, step)
             db.commit()
             _audit_job(db, job, "job_step", f"step={step}")
 
@@ -267,6 +269,7 @@ def recover_interrupted_jobs(db: Session) -> None:
     for job in stale:
         job.status = "interrupted"
         job.finished_at = datetime.utcnow()
+        _mark_step(job, None)
         _set_error(job, job.current_step,
                    "The run was interrupted before it finished (the backend restarted). Any partial results are kept.")
         log_action(db, "system", "job_interrupted", detail=f"job={job.id} step={job.current_step}")
@@ -300,9 +303,22 @@ def _note_leftovers(db: Session, interrupted: int) -> None:
         log_action(db, "system", "leftovers_pending", detail=f"interrupted_jobs={interrupted} pods={len(pods)}")
 
 
+def _mark_step(job: Job, step: str | None) -> None:
+    """Close the step that is open and, when given, start `step`. Naive UTC, like the job's other times."""
+    now = datetime.utcnow().isoformat(timespec="milliseconds")
+    times = job.step_times
+    for t in times.values():
+        if t[1] is None:
+            t[1] = now
+    if step:
+        times[step] = [now, None]
+    job.step_times_json = json.dumps(times)
+
+
 def _finish(db: Session, job: Job, status: str) -> None:
     job.status = status
     job.finished_at = datetime.utcnow()
+    _mark_step(job, None)
     db.commit()
     _audit_job(db, job, "job_status", f"status={status}")
 

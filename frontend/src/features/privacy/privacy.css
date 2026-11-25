@@ -1,14 +1,23 @@
-.privacy { margin: 12px 0 4px; }
-.privacy-stats { display: flex; flex-wrap: wrap; gap: 8px 24px; list-style: none; padding: 0; margin: 10px 0 0; }
-.privacy-cats { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 10px 0 0; }
+/* PHI / PII strip on the logs page: a one-line summary (opens for counts and limits) with the switches beside it */
+.privacy { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0 12px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding-right: 10px; }
+.privacy > .strip { border: 0; background: none; }
+.privacy > .alert { grid-column: 1 / -1; margin: 0 10px 10px; }
+.privacy-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 16px; min-height: 44px; }
+.privacy-actions .btn { padding: 4px 12px; min-height: 36px; }
+.privacy-actions label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; font-weight: 600; font-size: 16px; }
+.privacy-actions input { width: 20px; height: 20px; accent-color: var(--primary); }
+@media (max-width: 760px) { .privacy { grid-template-columns: 1fr; } .privacy-actions { justify-content: flex-start; padding-left: 14px; } }
+.privacy-stats { display: flex; flex-wrap: wrap; gap: 8px 24px; list-style: none; padding: 0; margin: 0; }
+.privacy-cats { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0; }
 .privacy-cat, .flag-tag {
   display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 600; font-size: 14px;
-  background: var(--warn-bg); border: 1.5px solid var(--warn);
+  background: var(--warn-bg); border: 1.5px solid #c9a400;
 }
-.privacy-switches { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 10px; }
-.privacy-switches label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; font-weight: 600; }
-.privacy-switches input { width: 20px; height: 20px; }
-.privacy-limits { margin-top: 6px; }
-.privacy-limits summary { cursor: pointer; min-height: 32px; }
+.privacy-limits { margin: 4px 0 0; padding-left: 20px; }
 .flag-tag.low { background: var(--bg); border-color: var(--line); }
 .flag-col { white-space: normal; min-width: 140px; }
+/* Export page reuses the switch row */
+.privacy-switches { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 10px; }
+.privacy-switches label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; cursor: pointer; font-weight: 600; }
+.privacy-switches input { width: 20px; height: 20px; accent-color: var(--primary); }

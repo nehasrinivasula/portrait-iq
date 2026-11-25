@@ -25,6 +25,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.tasks import service as tasks
 from app.audit import log_action
 from app.auth import User, get_active_user
 from app.db import get_db
@@ -33,6 +34,7 @@ from app.privacy import service as privacy
 from app.privacy.scanner import (
     CATEGORY_LABELS, SCANNER_VERSION, category_group, decode_flags, mask_text, scan_columns, scan_text,
 )
+from app.tasks.routes import TaskOut, task_out
 from app.storage.completeness import PROBLEM
 from app.storage import events as store
 from app.storage import sequences
@@ -40,7 +42,7 @@ from app.validation import ValidationFailure, clean_text
 from app.storage.filters import DEFAULT_LIMIT, MAX_LIMIT, MAX_TEXT_LENGTH, UNASSIGNED, EventFilter, FilterError, build_filter
 from app.storage.schemas import (
     CollectionOut, CollectionSummaryOut, CommandStatsOut, FacetsOut, FacetValueOut, FileSummaryOut, IssueOut,
-    FlagCountOut, LogEventOut, LogPageOut, PrivacyCategoryOut, PrivacyFileOut, PrivacyReportOut, RescanOut,
+    FlagCountOut, LogEventOut, LogPageOut, PrivacyCategoryOut, PrivacyFileOut, PrivacyReportOut,
     SensitiveFlagOut, SequenceOut, SequencePageOut,
 )
 
@@ -64,6 +66,9 @@ def _filter(
     message_kind: list[str] = Query([], description="request, reply, response, publish or timeout; repeat for several."),
     component: list[str] = Query([], description="Class from sourceInfo, e.g. ConfigMessageProcessor; repeat for several."),
     correlation_id: Optional[str] = Query(None, description="Show one whole exchange: the request and its reply."),
+    not_category: list[str] = Query([], description="Hide events in this category; repeat for several."),
+    not_process: list[str] = Query([], description="Hide events from this process; repeat for several."),
+    not_message: list[str] = Query([], description="Hide events whose message starts with this text; repeat for several."),
 ) -> EventFilter:
     try:
         return build_filter(
@@ -71,6 +76,7 @@ def _filter(
             severities=severity, min_severity=min_severity, process=process,
             source_file=source_file, text=q, flagged=flagged, flag_categories=flag_category,
             message_kinds=message_kind, components=component, correlation_id=correlation_id,
+            not_categories=not_category, not_processes=not_process, not_messages=not_message,
         )
     except FilterError as e:
         raise HTTPException(422, str(e))
@@ -224,6 +230,8 @@ def get_facets(
         sources=_facet_values(r.sources), severities=_facet_values(r.severities),
         categories=[] if mask else _facet_values(r.categories), devices=[] if mask else _facet_values(r.devices),
         distinct_devices=r.distinct_devices, message_kinds=_facet_values(r.message_kinds),
+        processes=[] if mask else _facet_values(r.processes),
+        repeated_messages=[] if mask else _facet_values(r.repeated_messages),   # raw text can hold PHI/PII
     )
 
 
@@ -246,7 +254,7 @@ def get_sequences(
     newest first. Uses the same time/device/component filters as /events."""
     bad = [s for s in state if s not in sequences.STATES]
     if bad:
-        raise HTTPException(400, f"Unknown state '{bad[0]}'. Use one of: {', '.join(sequences.STATES)}.")
+        raise HTTPException(422, f"Unknown state '{bad[0]}'. Use one of: {', '.join(sequences.STATES)}.")
     f = _with_job(f, job_id)
     window_end = f.until or datetime.now(timezone.utc).replace(tzinfo=None)
     try:
@@ -294,7 +302,7 @@ def list_collections(limit: int = Query(50, ge=1, le=200), db: Session = Depends
         CollectionOut(
             job_id=c.job_id, status=c.status, mode=c.mode, created_at=_utc(c.created_at),
             finished_at=_utc(c.finished_at), events=c.events,
-            first_timestamp=_utc(c.first_timestamp), last_timestamp=_utc(c.last_timestamp),
+            first_timestamp=_utc(c.first_timestamp), last_timestamp=_utc(c.last_timestamp), tools=c.tools,
         )
         for c in store.list_collections(db, limit)
     ]
@@ -425,22 +433,20 @@ def _report(db: Session, user: User, scope: Optional[str]) -> PrivacyReportOut:
     return _privacy_out(r, complete)
 
 
-def _scan(db: Session, user: User, scope: Optional[str]) -> RescanOut:
+def _scan(db: Session, user: User, scope: Optional[str]) -> TaskOut:
+    """Start a PHI/PII scan in the background and return its task at once.
+
+    A big scan is CPU-bound Python; running it in the request would starve the API (including /health) for as
+    long as it takes. The worker runs it, records start and end in the audit log, and reports progress on the
+    task. Asking again while a scan of the same scope is running returns that scan instead of starting a second."""
     label = scope or "all"
     if scope not in (None, UNASSIGNED) and db.get(Job, scope) is None:
         raise HTTPException(404, "collection not found")
-    # Each batch is committed as it goes, so a scan that stops partway has already changed events.
-    # Record that it started, and how it ended.
-    log_action(db, user.id, "logs_privacy_scan_start", detail=f"job={label}", session_id=user.session_id)
-    try:
-        n = privacy.rescan(db, scope)
-    except Exception as e:
-        db.rollback()
-        log_action(db, user.id, "logs_privacy_scan", detail=f"job={label} failed error={type(e).__name__}",
-                   session_id=user.session_id)
-        raise
-    log_action(db, user.id, "logs_privacy_scan", detail=f"job={label} scanned={n}", session_id=user.session_id)
-    return RescanOut(scanned=n)
+    task, created = tasks.create_task(
+        db, kind="privacy_scan", actor=user.id, session_id=user.session_id, scope=label,
+        params={"scope": scope}, reuse_active=True,
+    )
+    return task_out(tasks.submit(db, task) if created else task)
 
 
 @router.get("/privacy", response_model=PrivacyReportOut)
@@ -449,9 +455,9 @@ def all_privacy(db: Session = Depends(get_db), user: User = Depends(get_active_u
     return _report(db, user, None)
 
 
-@router.post("/privacy/scan", response_model=RescanOut)
+@router.post("/privacy/scan", response_model=TaskOut, status_code=202)
 def scan_all(db: Session = Depends(get_db), user: User = Depends(get_active_user)):
-    """Scan every event the current scanner has not judged yet. Safe to repeat."""
+    """Start scanning every event the current scanner has not judged yet. Returns a task; safe to repeat."""
     return _scan(db, user, None)
 
 
@@ -462,9 +468,9 @@ def collection_privacy(job_id: str, db: Session = Depends(get_db), user: User = 
     return _report(db, user, job_id)
 
 
-@router.post("/collections/{job_id}/privacy/scan", response_model=RescanOut)
+@router.post("/collections/{job_id}/privacy/scan", response_model=TaskOut, status_code=202)
 def scan_collection(job_id: str, db: Session = Depends(get_db), user: User = Depends(get_active_user)):
-    """Scan the events of this collection that the current scanner has not
+    """Start scanning the events of this collection that the current scanner has not
     judged yet (logs stored before PHI/PII flagging existed, or scanned by an
     older rule set). Safe to repeat."""
     return _scan(db, user, job_id)

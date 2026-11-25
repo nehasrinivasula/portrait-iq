@@ -1,0 +1,30 @@
+# Kubernetes diagnostics in Portrait's namespace (LOG_EXPORT_NAMESPACE, pm on the
+# bench): READ pods and events, nothing else. No create, update, delete or exec,
+# and no Secrets or ConfigMaps. Applied by `make deploy` with
+# `kubectl -n <Portrait namespace>`, so it lands in that namespace; removed by
+# `make undeploy`. Changes access on GE's cluster: get mentor approval first.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: portrait-iq-diagnostics-reader
+  labels:
+    app.kubernetes.io/name: portrait-iq
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: portrait-iq-diagnostics-reader
+  labels:
+    app.kubernetes.io/name: portrait-iq
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: portrait-iq-diagnostics-reader
+subjects:
+  - kind: ServiceAccount
+    name: portrait-iq
+    namespace: __NAMESPACE__
