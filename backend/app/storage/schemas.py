@@ -64,6 +64,33 @@ class FacetsOut(BaseModel):
     repeated_messages: list[FacetValueOut] = []   # the most repeated messages (first 200 characters); empty when masked
 
 
+class MetricsBucketOut(BaseModel):
+    start: datetime                  # always UTC; the start of the minute, hour or day
+    counts: dict[str, int]           # events per severity, zeros included
+    total: int
+
+
+class MetricsGroupOut(BaseModel):
+    value: Optional[str]             # null = events with no value for this field
+    counts: dict[str, int]
+    total: int
+
+
+class MetricsOut(BaseModel):
+    """Plain counts for the events that match the filters (A-4): by severity, over time, and by service."""
+    total: int
+    first_timestamp: Optional[datetime]
+    last_timestamp: Optional[datetime]
+    severities: dict[str, int]       # DEBUG, INFO, WARN, ERROR (CRITICAL and FATAL are counted as ERROR)
+    bucket: Optional[str]            # minute | hour | day; null when there are no events
+    buckets: list[MetricsBucketOut]
+    group_by: str                    # process | category | source | device | component
+    groups: list[MetricsGroupOut]    # most errors first; empty when withheld
+    groups_total: int                # how many different values there are, listed or not
+    other: Optional[MetricsGroupOut] # everything outside the listed groups
+    withheld: bool = False           # true: the group values were left out because masking is on
+
+
 class CollectionOut(BaseModel):
     job_id: str                      # a job id, or "unassigned" for logs not tied to a collection
     status: Optional[str]

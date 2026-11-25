@@ -101,6 +101,31 @@ export function getFacets(f: LogFilter, mask = false, signal?: AbortSignal) {
   return apiFetch<Facets>(`/api/logs/facets?${p}`, { signal });
 }
 
+export type MetricsGroup = "process" | "category" | "source" | "device" | "component";
+export interface MetricsBucket { start: string; counts: Record<string, number>; total: number }
+export interface MetricsRow { value: string | null; counts: Record<string, number>; total: number }
+export interface Metrics {
+  total: number;
+  first_timestamp: string | null;
+  last_timestamp: string | null;
+  severities: Record<string, number>;
+  bucket: "minute" | "hour" | "day" | null;
+  buckets: MetricsBucket[];
+  group_by: MetricsGroup;
+  groups: MetricsRow[];
+  groups_total: number;
+  other: MetricsRow | null;
+  withheld: boolean;
+}
+
+/** Counts per level, over time and by service for the logs matching `f`. With mask on, the server withholds flagged field values. */
+export function getMetrics(f: LogFilter, groupBy: MetricsGroup, mask = false, signal?: AbortSignal) {
+  const p = filterParams(f);
+  p.set("group_by", groupBy);
+  if (mask) p.set("mask", "true");
+  return apiFetch<Metrics>(`/api/logs/metrics?${p}`, { signal });
+}
+
 export interface AcquisitionResult {
   run_id: string;
   source: string;

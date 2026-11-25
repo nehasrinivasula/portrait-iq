@@ -295,3 +295,20 @@ button.chip { cursor: pointer; }
 }
 .action-bar-text { flex: 1 1 240px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
 .action-bar .btn { flex: none; min-width: 220px; }
+
+/* Metrics panel (A-4) */
+.metric-tiles { display: flex; flex-wrap: wrap; gap: 10px; }
+.metric-tile { display: flex; flex-direction: column; padding: 8px 14px; border: 1px solid var(--border, #ccc); border-radius: 6px; min-width: 120px; }
+.metric-n { font-size: 1.4rem; font-weight: 700; }
+.metric-l { font-size: .85rem; }
+.metric-chart { display: flex; align-items: flex-end; gap: 1px; height: 90px; border-bottom: 1px solid var(--border, #ccc); }
+.metric-bar { flex: 1; min-width: 2px; height: 100%; display: flex; flex-direction: column-reverse; }
+.metric-seg { display: block; width: 100%; }
+.metric-seg.metric-error { background: #c62828; }
+.metric-seg.metric-warn { background: #ef8f00; }
+.metric-seg.metric-info { background: #5b8def; }
+.metric-seg.metric-debug { background: #9aa3b2; }
+.metric-axis { display: flex; justify-content: space-between; font-size: .8rem; }
+.metric-table { border-collapse: collapse; }
+.metric-table th, .metric-table td { padding: 4px 14px 4px 0; text-align: left; }
+.metric-table td:not(:first-child), .metric-table th:not(:first-child) { text-align: right; }
